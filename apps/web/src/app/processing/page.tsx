@@ -59,7 +59,7 @@ export default function ProcessingPage() {
         <>
           <div className="statgrid">
             {Object.entries(report.queue_depths)
-              .filter(([name]) => name !== "default" || report.queue_depths[name] > 0)
+              .filter(([name, depth]) => name !== "default" || depth > 0)
               .map(([name, depth]) => (
                 <div className="stat" key={name}>
                   <p className="eyebrow">{QUEUE_LABELS[name] ?? name}</p>

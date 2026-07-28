@@ -38,9 +38,10 @@ export default function Thumb({
       </div>
     );
   }
+  // Media comes from our own session-guarded endpoint, so the Next image
+  // loader (which would proxy and re-encode it) is deliberately bypassed.
   return (
-    // eslint-disable-next-line @next/next/no-img-element -- media is served
-    // by our own signed/session-guarded endpoint, not the Next image loader.
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={mediaUrl(assetId, kind)}
       alt=""
