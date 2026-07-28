@@ -157,9 +157,11 @@ async def reprocess_asset(asset_id: uuid.UUID, db: DbDep, _user: CurrentUser) ->
     if asset is None:
         raise HTTPException(404, "Asset not found")
     try:
-        from framefound.processing.tasks import generate_derivatives
+        from framefound.processing.tasks import generate_derivatives, generate_proxy
 
         generate_derivatives.delay(str(asset_id))
+        if asset.media_type == "video":
+            generate_proxy.delay(str(asset_id))
     except Exception as err:  # queue down
         raise HTTPException(503, "Processing queue is not available right now") from err
     return {"status": "queued"}
