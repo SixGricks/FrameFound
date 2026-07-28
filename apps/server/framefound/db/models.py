@@ -299,6 +299,34 @@ class TranscriptSegment(Base):
     transcript: Mapped[Transcript] = relationship(back_populates="segments")
 
 
+class Frame(Base):
+    """A sampled video frame (scene change or interval tick).
+
+    Images get exactly one row at ts_ms=0, so visual search later queries a
+    single table across stills and motion (docs/data-model.md §frames).
+    `embedding` stays NULL until an embedding provider runs — the sampling
+    stage is useful on its own for scene thumbnails and near-duplicate
+    detection via the perceptual hash.
+    """
+
+    __tablename__ = "frames"
+    __table_args__ = (UniqueConstraint("asset_id", "ts_ms"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    ts_ms: Mapped[int] = mapped_column(index=True)
+    scene_number: Mapped[int | None] = mapped_column(default=None)
+    is_scene_change: Mapped[bool] = mapped_column(Boolean, default=False)
+    relative_path: Mapped[str] = mapped_column(String(1024))  # thumbnail under data dir
+    phash: Mapped[str | None] = mapped_column(String(32), default=None, index=True)
+    caption: Mapped[str | None] = mapped_column(Text, default=None)
+    ocr_text: Mapped[str | None] = mapped_column(Text, default=None)
+    embedding_model: Mapped[str | None] = mapped_column(String(100), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Scan(Base):
     """One scan/reconciliation run over a library, with live progress counters.
     The scanner service polls `status` between batches, so pause/resume/cancel

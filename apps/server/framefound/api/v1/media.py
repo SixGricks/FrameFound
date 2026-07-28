@@ -54,6 +54,31 @@ async def _authorize(
     raise HTTPException(401, "Sign in to view media")
 
 
+@router.get("/{asset_id}/frame")
+async def serve_frame(
+    asset_id: uuid.UUID,
+    ts: int,
+    request: Request,
+    db: DbDep,
+    settings: SettingsDep,
+) -> Response:
+    """One sampled frame image, addressed by its timestamp."""
+    from framefound.db.models import Frame
+
+    await _authorize(request, db, settings, asset_id, "frame")
+    frame = (
+        await db.execute(select(Frame).where(Frame.asset_id == asset_id, Frame.ts_ms == ts))
+    ).scalar_one_or_none()
+    if frame is None:
+        raise HTTPException(404, "No frame at that timestamp")
+    path = settings.data_dir / frame.relative_path
+    if not path.is_file():
+        raise HTTPException(404, "Frame image is missing; it can be regenerated")
+    response = range_file_response(request, path, "image/jpeg")
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    return response
+
+
 @router.get("/{asset_id}/{kind}")
 async def serve_derivative(
     asset_id: uuid.UUID,

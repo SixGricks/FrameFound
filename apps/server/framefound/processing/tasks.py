@@ -127,6 +127,8 @@ async def _extract(db: AsyncSession, asset: Asset, library: Library, path: Path)
     has_audio = asset.media_type == "audio" or asset.audio_codec is not None
     if has_audio and library.transcribe_enabled:
         transcribe_asset.delay(str(asset.id))
+    if asset.media_type == "video":
+        sample_frames.delay(str(asset.id))
 
 
 async def _visuals(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
@@ -258,6 +260,83 @@ def generate_proxy(asset_id: str) -> None:
         asyncio.run(_with_asset("generate_proxy", uuid.UUID(asset_id), _proxy))
     except Exception:
         log.error("proxy.failed", asset_id=asset_id, exc_info=True)
+        raise
+
+
+async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+    from sqlalchemy import delete
+
+    from framefound.db.models import Frame
+    from framefound.media.phash import dhash
+    from framefound.processing import scenes
+
+    data_dir = get_settings().data_dir
+    if asset.media_type == "image":
+        # A still is a one-frame asset: reuse its preview so search covers
+        # photos and motion through the same table.
+        thumb_rel = deriv.derivative_relpath(asset.id, "thumbnail", "webp")
+        if not (data_dir / thumb_rel).is_file():
+            return
+        plan = [(0.0, False)]
+        sources = {0.0: data_dir / thumb_rel}
+    else:
+        if asset.media_type != "video":
+            return
+        duration = asset.duration_s or 0.0
+        scene_times = await asyncio.to_thread(scenes.detect_scene_timestamps, path)
+        plan = scenes.plan_samples(duration, scene_times)
+        sources = {}
+
+    await db.execute(delete(Frame).where(Frame.asset_id == asset.id))
+    await db.flush()
+
+    scene_counter = 0
+    written = 0
+    for ts, is_scene in plan:
+        ts_ms = int(ts * 1000)
+        rel = f"frames/{str(asset.id)[:2]}/{asset.id}/{ts_ms:09d}.jpeg"
+        target = data_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if ts in sources:
+            rel = str(sources[ts].relative_to(data_dir)).replace("\\", "/")
+            target = sources[ts]
+        else:
+            try:
+                await asyncio.to_thread(scenes.extract_frame, path, target, ts)
+            except Exception as exc:
+                # One unreadable timestamp must not fail the whole asset.
+                log.warning("frames.timestamp_skipped", ts=ts, reason=str(exc)[:120])
+                continue
+        if is_scene:
+            scene_counter += 1
+        db.add(
+            Frame(
+                asset_id=asset.id,
+                ts_ms=ts_ms,
+                scene_number=scene_counter if is_scene else None,
+                is_scene_change=is_scene,
+                relative_path=rel,
+                phash=await asyncio.to_thread(dhash, target),
+            )
+        )
+        written += 1
+    await db.commit()
+    log.info("frames.sampled", asset_id=str(asset.id), frames=written, scenes=scene_counter)
+
+
+@celery_app.task(
+    name="framefound.sample_frames",
+    queue="vision",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def sample_frames(asset_id: str) -> None:
+    """Scene-detect and sample frames for visual search (idempotent)."""
+    try:
+        asyncio.run(_with_asset("sample_frames", uuid.UUID(asset_id), _sample_frames))
+    except Exception:
+        log.error("frames.failed", asset_id=asset_id, exc_info=True)
         raise
 
 

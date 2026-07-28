@@ -173,6 +173,34 @@ async def get_transcript(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> 
     )
 
 
+class FrameOut(BaseModel):
+    ts_ms: int
+    is_scene_change: bool
+    scene_number: int | None
+    url: str
+
+
+@router.get("/{asset_id}/scenes", response_model=list[FrameOut])
+async def get_scenes(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list[FrameOut]:
+    """Sampled frames for the timeline strip (scene changes flagged)."""
+    from framefound.db.models import Frame
+
+    frames = (
+        (await db.execute(select(Frame).where(Frame.asset_id == asset_id).order_by(Frame.ts_ms)))
+        .scalars()
+        .all()
+    )
+    return [
+        FrameOut(
+            ts_ms=f.ts_ms,
+            is_scene_change=f.is_scene_change,
+            scene_number=f.scene_number,
+            url=f"/api/v1/media/{asset_id}/frame?ts={f.ts_ms}",
+        )
+        for f in frames
+    ]
+
+
 class MediaUrls(BaseModel):
     """Signed, short-lived URLs for each ready derivative of an asset."""
 
