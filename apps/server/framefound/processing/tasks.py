@@ -166,6 +166,11 @@ async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Pa
     if result is None:
         provider = get_transcription_provider()
         result = await asyncio.to_thread(provider.transcribe, path)
+    if not result.segments:
+        # Music beds and silent tracks legitimately yield nothing. Recording an
+        # empty transcript would only pollute search results.
+        log.info("transcript.no_speech", asset_id=str(asset.id))
+        return
 
     existing = (
         await db.execute(select(Transcript).where(Transcript.asset_id == asset.id))

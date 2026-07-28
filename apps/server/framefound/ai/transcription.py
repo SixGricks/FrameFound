@@ -15,6 +15,10 @@ from framefound.config import get_settings
 
 log = structlog.get_logger()
 
+# Hallucination guards, tuned against real music-bed audio.
+MIN_AVG_LOGPROB = -1.0
+MAX_NO_SPEECH_PROB = 0.6
+
 
 @dataclass(frozen=True)
 class SpeechSegment:
@@ -74,16 +78,33 @@ class FasterWhisperProvider:
 
     def transcribe(self, source: Path) -> TranscriptionResult:
         model = self._load()
-        segments_iter, info = model.transcribe(str(source), beam_size=1, vad_filter=False)  # type: ignore[attr-defined]
+        segments_iter, info = model.transcribe(  # type: ignore[attr-defined]
+            str(source),
+            beam_size=1,
+            # Whisper invents dialogue from music beds and room tone. Silero
+            # VAD skips non-speech audio outright, which both removes the
+            # hallucinations and shortens the work (seen on stock music in a
+            # real library).
+            vad_filter=True,
+            condition_on_previous_text=False,  # stops repetition loops
+        )
         segments = [
-            SpeechSegment(
-                start_s=float(seg.start),
-                end_s=float(seg.end),
-                text=seg.text.strip(),
-                confidence=float(seg.avg_logprob) if seg.avg_logprob is not None else None,
+            segment
+            for segment in (
+                SpeechSegment(
+                    start_s=float(seg.start),
+                    end_s=float(seg.end),
+                    text=seg.text.strip(),
+                    confidence=float(seg.avg_logprob) if seg.avg_logprob is not None else None,
+                )
+                for seg in segments_iter
+                if seg.text.strip()
+                # Low average log-probability and high no-speech probability
+                # are the two signals that a cue is invented rather than heard.
+                and (seg.avg_logprob is None or seg.avg_logprob > MIN_AVG_LOGPROB)
+                and (seg.no_speech_prob is None or seg.no_speech_prob < MAX_NO_SPEECH_PROB)
             )
-            for seg in segments_iter
-            if seg.text.strip()
+            if len(segment.text) > 1
         ]
         return TranscriptionResult(
             language=info.language,
