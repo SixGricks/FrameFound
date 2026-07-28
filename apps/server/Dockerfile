@@ -16,6 +16,11 @@ COPY migrations ./migrations
 COPY framefound ./framefound
 RUN pip install --no-cache-dir ".[db,queue,scanner,media]"
 
+# Pre-create the data mountpoint owned by the app user so Docker named
+# volumes initialize with writable ownership (found in deployment: a
+# root-owned volume + non-root user = PermissionError on first derivative).
+RUN mkdir -p /data && chown framefound:framefound /data
+
 USER framefound
 EXPOSE 8000
 CMD ["uvicorn", "framefound.main:app", "--host", "0.0.0.0", "--port", "8000"]
