@@ -2,13 +2,13 @@
 
 A file that is still being copied to the NAS must never enter the processing
 pipeline: FFmpeg would read a truncated MP4, the hash would be wrong, and the
-asset would need reprocessing. Before any file is enqueued, the scanner calls
-`is_file_stable` with two observations of the file taken `interval_seconds`
-apart.
+asset would need reprocessing. Being conservative here costs indexing latency,
+not correctness — False always means "check again next cycle".
 
-This policy is deliberately a small, pure, unit-testable function: NAS
-environments differ (SMB copy semantics, camera-offload apps, rsync temp
-files), and this is the one place that judgment lives.
+Two entry points:
+- `is_file_stable`: two observations taken some seconds apart (watcher path).
+- `looks_at_rest`: single observation for initial/reconciliation scans, where
+  almost every file has been at rest for a long time.
 """
 
 from dataclasses import dataclass
@@ -20,28 +20,40 @@ class FileObservation:
 
     size_bytes: int
     mtime_epoch: float
+    observed_at_epoch: float
     readable: bool  # a non-blocking open+read of the first block succeeded
 
 
 def is_file_stable(
     earlier: FileObservation,
     later: FileObservation,
-    interval_seconds: float,
     min_quiet_seconds: float = 10.0,
 ) -> bool:
-    """Decide whether a file has finished being written.
+    """Two-observation policy for watcher-detected files.
 
-    Returns True only when it is safe to hash and process the file.
-
-    Considerations for the implementation:
-    - size or mtime changed between observations -> definitely still copying
-    - `later.readable` False -> locked or mid-transfer on some SMB setups
-    - a file whose mtime is *very* recent may still be in a copy pause;
-      requiring `min_quiet_seconds` since `later.mtime_epoch` trades indexing
-      latency for safety
-    - zero-byte files are placeholders some tools create first; never stable
+    Stable only when: nothing changed between observations, the file is
+    readable and non-empty, and the mtime has been quiet for
+    `min_quiet_seconds` (SMB copies can pause mid-transfer; a very fresh
+    mtime means the writer may still come back).
     """
-    # TODO(user): implement the stability policy for your NAS environment.
-    # The scanner treats False as "check again next cycle" — being
-    # conservative here costs latency, not correctness.
-    raise NotImplementedError
+    if later.size_bytes == 0:
+        return False  # placeholder some tools create before writing content
+    if not later.readable:
+        return False  # locked or mid-transfer on some SMB configurations
+    if later.size_bytes != earlier.size_bytes:
+        return False
+    if later.mtime_epoch != earlier.mtime_epoch:
+        return False
+    return later.observed_at_epoch - later.mtime_epoch >= min_quiet_seconds
+
+
+def looks_at_rest(
+    size_bytes: int,
+    mtime_epoch: float,
+    now_epoch: float,
+    min_quiet_seconds: float = 60.0,
+) -> bool:
+    """Single-observation heuristic for bulk scans: non-empty and untouched
+    for `min_quiet_seconds`. Files newer than that are deferred to the next
+    pass (or to the watcher's two-observation check)."""
+    return size_bytes > 0 and (now_epoch - mtime_epoch) >= min_quiet_seconds

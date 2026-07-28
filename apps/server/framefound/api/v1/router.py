@@ -8,12 +8,16 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from framefound import __version__
+from framefound.api.v1.assets import router as assets_router
+from framefound.api.v1.libraries import router as libraries_router
 from framefound.api.v1.system import router as system_router
 from framefound.auth.router import router as auth_router
 
 api_v1 = APIRouter()
 api_v1.include_router(auth_router)
 api_v1.include_router(system_router)
+api_v1.include_router(libraries_router)
+api_v1.include_router(assets_router)
 
 
 class SystemInfo(BaseModel):
@@ -32,8 +36,7 @@ async def system_info() -> SystemInfo:
 # Planned surface (implemented milestone by milestone; kept here as the
 # contract of record — see docs/architecture.md):
 #
-# TODO(m2): CRUD /libraries · GET /libraries/{id}/scan-status · POST /libraries/{id}/scan
-# TODO(m3): GET /assets/{id} · /assets/{id}/thumbnail · /assets/{id}/proxy (signed URLs)
+# TODO(m3): /assets/{id}/thumbnail · /assets/{id}/proxy (signed URLs)
 # TODO(m4): GET /assets/{id}/transcript · /assets/{id}/subtitles
 # TODO(m5): GET /search (hybrid: q, filters, quoted-exact) · /assets/{id}/similar
 # TODO(m5): GET /assets/{id}/scenes

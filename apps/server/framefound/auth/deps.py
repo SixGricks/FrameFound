@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, params
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.auth import service
@@ -36,13 +36,14 @@ async def get_current_user(request: Request, db: DbDep, settings: SettingsDep) -
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-def require_role(*roles: str) -> object:
+def require_role(*roles: str) -> params.Depends:
     async def _check(user: CurrentUser) -> User:
         if user.role not in roles:
             raise HTTPException(403, "You do not have permission to do this")
         return user
 
-    return Depends(_check)
+    dependency: params.Depends = Depends(_check)
+    return dependency
 
 
 require_admin = require_role("admin")

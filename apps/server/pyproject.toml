@@ -59,9 +59,13 @@ module = ["celery", "celery.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# Celery's task decorator is untyped; confined to this module.
-module = "framefound.worker"
+# Celery's task decorator is untyped; confined to these modules.
+module = ["framefound.worker", "framefound.processing.tasks"]
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["watchdog", "watchdog.*", "blake3"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

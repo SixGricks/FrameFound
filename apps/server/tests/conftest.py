@@ -6,6 +6,7 @@ tables on a separate loop would break under TestClient.
 """
 
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -22,8 +23,9 @@ TEST_SETUP_TOKEN = "test-setup-token-123"
 
 
 @pytest.fixture()
-def app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
+def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[FastAPI]:
     monkeypatch.setenv("FRAMEFOUND_SETUP_TOKEN", TEST_SETUP_TOKEN)
+    monkeypatch.setenv("FRAMEFOUND_MEDIA_ROOT", str(tmp_path))
     get_settings.cache_clear()
     login_limiter._buckets.clear()  # module-level limiter persists across tests
 
