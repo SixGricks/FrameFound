@@ -42,6 +42,9 @@ VIDEO_EXTENSIONS = {
     "mpeg",
     "webm",
     "wmv",
+    # Blackmagic RAW: indexed + ExifTool metadata; FFmpeg cannot decode BRAW,
+    # so posters/proxies record a clean failure until a BRAW decoder lands.
+    "braw",
 }
 AUDIO_EXTENSIONS = {"wav", "mp3", "m4a", "aac", "flac", "ogg", "aif", "aiff"}
 
