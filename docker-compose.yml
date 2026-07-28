@@ -43,7 +43,13 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
-    command: ["uvicorn", "framefound.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # Migrations run before serving; a schema mismatch fails startup loudly.
+    command:
+      [
+        "bash",
+        "-c",
+        "alembic upgrade head && exec uvicorn framefound.main:app --host 0.0.0.0 --port 8000",
+      ]
     env_file: .env
     volumes:
       - framefound-data:/data                      # derived files: thumbs, proxies, transcripts
@@ -133,14 +139,16 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    # Valkey: BSD-3-licensed, protocol-compatible Redis fork (ADR-0016).
+    # Service keeps the name "redis" so REDIS_HOST and client code stay unchanged.
+    image: valkey/valkey:8-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis-data:/data
     networks: [internal]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

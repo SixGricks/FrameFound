@@ -19,11 +19,19 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev,db,queue]"
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy framefound
       - run: pytest -q
+      - name: Migration smoke test (up + down against SQLite)
+        run: |
+          FRAMEFOUND_DATABASE_URL=sqlite+aiosqlite:///ci-migrate.db alembic upgrade head
+          FRAMEFOUND_DATABASE_URL=sqlite+aiosqlite:///ci-migrate.db alembic downgrade base
+      - name: License report (informational)
+        run: |
+          pip install pip-licenses
+          pip-licenses --summary
 
   frontend:
     runs-on: ubuntu-latest
@@ -56,10 +64,19 @@ jobs:
         with:
           context: apps/server
           push: false
+          load: true
+          tags: framefound-server:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      # TODO(m1): build web image; Trivy vulnerability scan; license scan;
-      # TODO(m1): publish to GHCR on tags with SemVer + release manifest.
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: framefound-server:ci
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      # TODO(m6): build web image here too once the frontend has real content.
+      # GHCR publishing on tags lives in release.yml.
 
   secrets-scan:
     # Plain gitleaks container: gitleaks-action requires a license for org repos.

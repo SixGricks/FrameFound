@@ -6,11 +6,11 @@ FROM python:3.12-slim AS base
 RUN groupadd -r framefound && useradd -r -g framefound -u 1000 framefound
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md alembic.ini ./
+COPY migrations ./migrations
 COPY framefound ./framefound
-# Milestone 0 installs only the core; extras added per milestone:
-# TODO(m1): ".[db,queue]"  TODO(m2): ".[scanner]"  TODO(m3): ".[media]"
-RUN pip install --no-cache-dir .
+# Extras grow per milestone: TODO(m2): ".[scanner]"  TODO(m3): ".[media]"
+RUN pip install --no-cache-dir ".[db,queue]"
 
 USER framefound
 EXPOSE 8000

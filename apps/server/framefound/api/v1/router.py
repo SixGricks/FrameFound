@@ -8,8 +8,12 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from framefound import __version__
+from framefound.api.v1.system import router as system_router
+from framefound.auth.router import router as auth_router
 
 api_v1 = APIRouter()
+api_v1.include_router(auth_router)
+api_v1.include_router(system_router)
 
 
 class SystemInfo(BaseModel):
@@ -20,14 +24,14 @@ class SystemInfo(BaseModel):
 
 @api_v1.get("/system/info", response_model=SystemInfo, tags=["system"])
 async def system_info() -> SystemInfo:
-    return SystemInfo(name="FrameFound", version=__version__, status="milestone-0-skeleton")
+    """Unauthenticated build info (no secrets, no configuration)."""
+    return SystemInfo(name="FrameFound", version=__version__, status="milestone-1")
 
 
 # ---------------------------------------------------------------------------
 # Planned surface (implemented milestone by milestone; kept here as the
 # contract of record — see docs/architecture.md):
 #
-# TODO(m1): POST /auth/login, /auth/logout, /auth/token · GET /system/health
 # TODO(m2): CRUD /libraries · GET /libraries/{id}/scan-status · POST /libraries/{id}/scan
 # TODO(m3): GET /assets/{id} · /assets/{id}/thumbnail · /assets/{id}/proxy (signed URLs)
 # TODO(m4): GET /assets/{id}/transcript · /assets/{id}/subtitles

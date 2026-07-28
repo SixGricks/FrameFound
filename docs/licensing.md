@@ -20,7 +20,7 @@ automated license scan (M1).
 |---|---|---|---|
 | FastAPI, Pydantic, SQLAlchemy, Celery, structlog | MIT/BSD/MIT/BSD/Apache-2.0 | code | ✅ compatible |
 | PostgreSQL, pgvector | PostgreSQL, PostgreSQL | code | ✅ |
-| Redis 7.x | BSD-3 (≤7.2) / RSALv2+SSPL (7.4+) | code | ⚠️ pin to BSD build or use `valkey` image — decide in M1 |
+| Valkey 8 (Redis-compatible) | BSD-3 | code | ✅ adopted over Redis 7.4+ relicensing (ADR-0016) |
 | Next.js, React, Tailwind, shadcn/ui | MIT | code | ✅ |
 | Caddy | Apache-2.0 | code | ✅ |
 | FFmpeg | LGPL-2.1+ core; **GPL if built with x264/x265** | code (subprocess) | ⚠️ we call the binary, don't link — OK, but the *image we distribute* includes it: document GPL components in NOTICE; consider LGPL build + openh264 fallback review (M3) |
@@ -40,7 +40,7 @@ automated license scan (M1).
 ## Actions
 
 - [ ] M1: add `pip-licenses` / `license-checker` + syft SBOM to CI
-- [ ] M1: decide Redis-vs-Valkey pin (license clarity)
+- [x] M1: decide Redis-vs-Valkey pin — Valkey adopted (ADR-0016)
 - [ ] M3: document FFmpeg build flags used in our image; NOTICE file
 - [ ] M5: verify chosen CLIP checkpoint + OCR model licenses
 - [ ] M6: in-app attribution/licenses screen
