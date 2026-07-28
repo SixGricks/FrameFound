@@ -1,6 +1,6 @@
-# MediaHub reverse proxy.
+# FrameFound reverse proxy.
 #
-# Two modes, switched by MEDIAHUB_DOMAIN:
+# Two modes, switched by FRAMEFOUND_DOMAIN:
 #   - empty  -> local HTTP on :80 (behind host port mapping, default 8080)
 #   - set    -> automatic HTTPS via Let's Encrypt for that domain
 #
@@ -10,7 +10,7 @@
 #   - Only /api/* reaches the backend; everything else goes to the web app.
 
 {
-	email {$MEDIAHUB_ACME_EMAIL}
+	email {$FRAMEFOUND_ACME_EMAIL}
 	# Local mode: disable automatic HTTPS when no domain is configured.
 	# TODO(m7): template this block from the remote-access wizard instead.
 }
@@ -48,7 +48,7 @@
 	import app
 }
 
-# Public HTTPS mode (active only when MEDIAHUB_DOMAIN is set)
-{$MEDIAHUB_DOMAIN} {
+# Public HTTPS mode (active only when FRAMEFOUND_DOMAIN is set)
+{$FRAMEFOUND_DOMAIN} {
 	import app
 }

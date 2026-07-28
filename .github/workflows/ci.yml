@@ -22,7 +22,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy mediahub
+      - run: mypy framefound
       - run: pytest -q
 
   frontend:

@@ -1,4 +1,4 @@
-# Contributing to MediaHub
+# Contributing to FrameFound
 
 Thanks for your interest! This project is in early development (Milestone 0-1);
 expect churn. Please open an issue before large PRs.
@@ -8,8 +8,8 @@ expect churn. Please open an issue before large PRs.
 Prerequisites: Docker + Docker Compose, Python 3.12+, Node 20+.
 
 ```bash
-git clone <repository>
-cd mediahub
+git clone https://github.com/SixGricks/FrameFound.git
+cd FrameFound
 cp .env.example .env
 
 # Backend

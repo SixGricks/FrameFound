@@ -1,20 +1,20 @@
 """FastAPI application entrypoint.
 
-Run: uvicorn mediahub.main:app
+Run: uvicorn framefound.main:app
 """
 
 import structlog
 from fastapi import FastAPI
 
-from mediahub import __version__
-from mediahub.api.v1.router import api_v1
+from framefound import __version__
+from framefound.api.v1.router import api_v1
 
 log = structlog.get_logger()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="MediaHub API",
+        title="FrameFound API",
         version=__version__,
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",

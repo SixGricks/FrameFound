@@ -1,6 +1,6 @@
 # Threat Model (Milestone 0 outline)
 
-Scope: a MediaHub instance on a Proxmox VM, optionally exposed to the internet
+Scope: a FrameFound instance on a Proxmox VM, optionally exposed to the internet
 via Caddy/DDNS or Cloudflare Tunnel, indexing read-only NAS media. To be
 expanded into a full analysis before Milestone 7 (remote access) ships.
 

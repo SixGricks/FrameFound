@@ -1,8 +1,8 @@
-# MediaHub (working name)
+# FrameFound
 
 **Self-hosted, AI-powered media catalog and search for people with real archives.**
 
-MediaHub watches your existing NAS or local folders, indexes photos, video, and audio
+FrameFound watches your existing NAS or local folders, indexes photos, video, and audio
 *in place*, and makes everything findable from a browser:
 
 - 🔎 **Natural-language search** — "red barn at sunset", "drone footage of a white farmhouse"
@@ -25,7 +25,7 @@ drone operators, and small production companies.
 1. Deploy with Docker Compose on any Linux server (Proxmox VM, bare metal, Unraid, TrueNAS SCALE).
 2. Mount your NAS shares (SMB/NFS) into the host — **read-only recommended**.
 3. Add those folders as watched libraries in the web UI.
-4. MediaHub scans, extracts metadata, generates thumbnails and proxies, transcribes speech,
+4. FrameFound scans, extracts metadata, generates thumbnails and proxies, transcribes speech,
    and creates visual embeddings — all as *derived* files in its own data directory.
 5. Search from any browser. Click a transcript match, the video seeks to that moment.
 
@@ -35,8 +35,8 @@ rebuildable from your originals.
 ## Quick start (once released)
 
 ```bash
-git clone <repository>
-cd mediahub
+git clone https://github.com/SixGricks/FrameFound.git
+cd FrameFound
 cp .env.example .env    # edit: set data path and secrets
 docker compose up -d
 ```

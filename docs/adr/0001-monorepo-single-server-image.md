@@ -11,7 +11,7 @@ dependencies. The heavy AI dependency stack (PyTorch/CUDA) dominates image
 size either way.
 
 ## Decision
-One repository; one Python package (`mediahub`) built into **one container
+One repository; one Python package (`framefound`) built into **one container
 image** with multiple entrypoints (`api`, `worker`, `worker-ai`, `scanner`,
 `scheduler`, `ddns`). Runtime isolation comes from separate containers and
 separate Celery queues, not separate codebases. The frontend (`apps/web`) is

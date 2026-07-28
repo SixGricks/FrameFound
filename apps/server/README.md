@@ -1,15 +1,15 @@
-# mediahub server
+# framefound server
 
 One Python package, multiple entrypoints (see ADR-0001):
 
 | Entrypoint | Command | Role |
 |---|---|---|
-| API | `uvicorn mediahub.main:app` | HTTP API + auth + media serving |
-| Worker | `celery -A mediahub.worker worker -Q default,media` | metadata, thumbnails, proxies (TODO m1) |
-| AI worker | `celery -A mediahub.worker worker -Q transcribe,vision` | transcription, embeddings (TODO m4/m5) |
-| Scanner | `python -m mediahub.scanner` | watch + reconcile libraries (TODO m2) |
-| Scheduler | `celery -A mediahub.worker beat` | periodic jobs (TODO m1) |
-| DDNS | `python -m mediahub.ddns` | optional DDNS sidecar (TODO m7) |
+| API | `uvicorn framefound.main:app` | HTTP API + auth + media serving |
+| Worker | `celery -A framefound.worker worker -Q default,media` | metadata, thumbnails, proxies (TODO m1) |
+| AI worker | `celery -A framefound.worker worker -Q transcribe,vision` | transcription, embeddings (TODO m4/m5) |
+| Scanner | `python -m framefound.scanner` | watch + reconcile libraries (TODO m2) |
+| Scheduler | `celery -A framefound.worker beat` | periodic jobs (TODO m1) |
+| DDNS | `python -m framefound.ddns` | optional DDNS sidecar (TODO m7) |
 
 ## Develop
 
@@ -17,6 +17,6 @@ One Python package, multiple entrypoints (see ADR-0001):
 python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest
-ruff check . && mypy mediahub
-uvicorn mediahub.main:app --reload   # http://localhost:8000/api/docs
+ruff check . && mypy framefound
+uvicorn framefound.main:app --reload   # http://localhost:8000/api/docs
 ```

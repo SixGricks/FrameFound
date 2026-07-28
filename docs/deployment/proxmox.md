@@ -1,6 +1,6 @@
 # Proxmox Deployment Guide (outline — finalized in M8)
 
-MediaHub runs in a **VM on Proxmox**, never on the host itself.
+FrameFound runs in a **VM on Proxmox**, never on the host itself.
 
 ## VM sizing
 
@@ -21,14 +21,14 @@ App disk holds Postgres, thumbnails, proxies, caches — size it at roughly
    //nas/media  /mnt/media  cifs  credentials=/root/.smbcreds,ro,uid=1000,iocharset=utf8,vers=3.0,_netdev,nofail  0 0
    nas:/export/media  /mnt/media  nfs  ro,_netdev,nofail,soft,timeo=100  0 0
    ```
-   `nofail` + `_netdev` keep the VM booting when the NAS is down; MediaHub
+   `nofail` + `_netdev` keep the VM booting when the NAS is down; FrameFound
    flags libraries `unmounted` rather than treating files as deleted.
 3. **Docker**: official `get.docker.com` script or distro packages; add user to
    `docker` group.
 4. **GPU passthrough (optional)**: enable IOMMU on the host, pass the NVIDIA
    device through, install driver + NVIDIA Container Toolkit in the VM, verify
    with `nvidia-smi` and a CUDA container. Use `docker-compose.gpu.yml`.
-5. **Install MediaHub**: clone, `cp .env.example .env`, run
+5. **Install FrameFound**: clone, `cp .env.example .env`, run
    `infrastructure/scripts/install.sh`, open the printed URL, complete the
    first-run wizard with the printed setup token.
 6. **Backups**: Proxmox vzdump snapshots of the VM **plus** application-level

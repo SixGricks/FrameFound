@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MediaHub guided installer (Milestone 0 skeleton — expanded in M1).
+# FrameFound guided installer (Milestone 0 skeleton — expanded in M1).
 # Verifies prerequisites, generates secrets, and starts the stack.
 set -euo pipefail
 
@@ -31,23 +31,23 @@ if [ ! -f .env ]; then
   gen() { openssl rand -hex 32; }
   SETUP_TOKEN=$(openssl rand -hex 16)
   awk -v sk="$(gen)" -v pg="$(gen)" -v st="$SETUP_TOKEN" '
-    sub(/^MEDIAHUB_SECRET_KEY=.*/,   "MEDIAHUB_SECRET_KEY=" sk)   {}
+    sub(/^FRAMEFOUND_SECRET_KEY=.*/,   "FRAMEFOUND_SECRET_KEY=" sk)   {}
     sub(/^POSTGRES_PASSWORD=.*/,     "POSTGRES_PASSWORD=" pg)     {}
-    sub(/^MEDIAHUB_SETUP_TOKEN=.*/,  "MEDIAHUB_SETUP_TOKEN=" st)  {}
+    sub(/^FRAMEFOUND_SETUP_TOKEN=.*/,  "FRAMEFOUND_SETUP_TOKEN=" st)  {}
     { print }' .env > .env.tmp && mv .env.tmp .env
   chmod 600 .env
 else
   say ".env already exists — keeping it"
-  SETUP_TOKEN=$(grep '^MEDIAHUB_SETUP_TOKEN=' .env | cut -d= -f2-)
+  SETUP_TOKEN=$(grep '^FRAMEFOUND_SETUP_TOKEN=' .env | cut -d= -f2-)
 fi
 
-# TODO(m1): prompt for MEDIAHUB_DATA_DIR and first media mount; run migrations;
+# TODO(m1): prompt for FRAMEFOUND_DATA_DIR and first media mount; run migrations;
 # TODO(m1): wait for health checks and roll back on failure.
 
-say "Starting MediaHub"
+say "Starting FrameFound"
 docker compose up -d
 
-PORT=$(grep '^MEDIAHUB_HTTP_PORT=' .env | cut -d= -f2- || true)
-say "MediaHub is starting at http://localhost:${PORT:-8080}"
+PORT=$(grep '^FRAMEFOUND_HTTP_PORT=' .env | cut -d= -f2- || true)
+say "FrameFound is starting at http://localhost:${PORT:-8080}"
 say "First-run setup token: ${SETUP_TOKEN}  (expires after first use)"
 say "Remote access options: docs/remote-access.md (Tailscale recommended)"

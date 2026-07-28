@@ -11,7 +11,7 @@ labels: bug
 **Steps to reproduce**
 
 **Environment**
-- MediaHub version:
+- FrameFound version:
 - Deployment (Proxmox VM / bare metal / Unraid / TrueNAS / other):
 - CPU/GPU:
 - Storage type of the affected library (SMB / NFS / local):

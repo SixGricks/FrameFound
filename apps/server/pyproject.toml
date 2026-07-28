@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mediahub"
+name = "framefound"
 version = "0.1.0.dev0"
 description = "Self-hosted AI media catalog and search platform"
 readme = "README.md"
@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["mediahub"]
+packages = ["framefound"]
 
 [tool.ruff]
 line-length = 100

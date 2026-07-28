@@ -1,4 +1,4 @@
-# MediaHub Architecture
+# FrameFound Architecture
 
 Status: Milestone 0 draft. Decisions with lasting consequences are recorded as
 [ADRs](adr/); this document is the map.
@@ -147,8 +147,8 @@ OpenSearch can be added post-1.0 without touching callers.
 
 ```
 apps/
-  server/                 # ONE Python package: mediahub
-    mediahub/
+  server/                 # ONE Python package: framefound
+    framefound/
       main.py             # FastAPI app factory
       config.py           # pydantic-settings, env-driven
       api/v1/             # versioned routes

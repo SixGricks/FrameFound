@@ -11,7 +11,7 @@ Phone/Laptop ──(WireGuard, Tailscale)──► VM tailnet IP ──► Caddy
 ```
 
 - No open router ports, works behind CGNAT, access limited to enrolled devices.
-- MediaHub ships **documentation + detection**, not credentials: the host (or a
+- FrameFound ships **documentation + detection**, not credentials: the host (or a
   `tailscale/tailscale` sidecar the user configures) joins the tailnet; the app
   detects access via a CGNAT-range (100.64/10) client IP and shows the stable
   tailnet URL on the System Health page. Headscale documented for fully

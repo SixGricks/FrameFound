@@ -1,6 +1,6 @@
 """Filesystem scanner and watcher service.
 
-Entrypoint: python -m mediahub.scanner  (see __main__.py)
+Entrypoint: python -m framefound.scanner  (see __main__.py)
 
 Design (docs/architecture.md §pipeline):
 - watchdog events where the filesystem supports them (local, some NFS)

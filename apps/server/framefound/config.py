@@ -13,9 +13,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="MEDIAHUB_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="FRAMEFOUND_", extra="ignore")
 
-    server_name: str = "MediaHub"
+    server_name: str = "FrameFound"
     secret_key: str = ""  # required in production; validated at startup
     data_dir: Path = Path("/data")
     media_root: Path = Path("/media")

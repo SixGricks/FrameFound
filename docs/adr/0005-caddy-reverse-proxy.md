@@ -9,7 +9,7 @@ renewal, redirects, and headers with near-zero configuration.
 
 ## Decision
 Caddy 2. One Caddyfile serves both local-HTTP and public-HTTPS modes, switched
-by `MEDIAHUB_DOMAIN`. Automatic Let's Encrypt issuance/renewal, HTTP→HTTPS
+by `FRAMEFOUND_DOMAIN`. Automatic Let's Encrypt issuance/renewal, HTTP→HTTPS
 redirect, modern TLS defaults out of the box.
 
 ## Alternatives considered

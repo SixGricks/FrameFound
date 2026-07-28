@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MediaHub management CLI (skeleton — backup/restore/update implemented in M8).
+# FrameFound management CLI (skeleton — backup/restore/update implemented in M8).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

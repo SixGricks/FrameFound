@@ -7,7 +7,7 @@ panel share one stable contract. Assets are addressed by UUID, never by path.
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from mediahub import __version__
+from framefound import __version__
 
 api_v1 = APIRouter()
 
@@ -20,7 +20,7 @@ class SystemInfo(BaseModel):
 
 @api_v1.get("/system/info", response_model=SystemInfo, tags=["system"])
 async def system_info() -> SystemInfo:
-    return SystemInfo(name="MediaHub", version=__version__, status="milestone-0-skeleton")
+    return SystemInfo(name="FrameFound", version=__version__, status="milestone-0-skeleton")
 
 
 # ---------------------------------------------------------------------------

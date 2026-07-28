@@ -4,7 +4,7 @@
 services:
   worker-ai:
     environment:
-      MEDIAHUB_COMPUTE: cuda
+      FRAMEFOUND_COMPUTE: cuda
     deploy:
       resources:
         reservations:

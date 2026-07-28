@@ -1,6 +1,6 @@
 # Security Policy
 
-MediaHub is designed to be exposed to the internet by small organizations without
+FrameFound is designed to be exposed to the internet by small organizations without
 dedicated security staff. We take vulnerability reports seriously.
 
 ## Reporting a vulnerability
