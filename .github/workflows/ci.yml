@@ -39,7 +39,7 @@ jobs:
       run: { working-directory: apps/web }
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 20 }
       - run: npm install   # TODO(m1): npm ci once package-lock.json is committed
       - run: npm run lint
