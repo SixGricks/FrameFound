@@ -1,12 +1,12 @@
 # FrameFound web frontend (Next.js standalone output).
-FROM node:20-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci || npm install   # TODO(m1): commit package-lock.json, then `npm ci` only
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:26-alpine
 RUN addgroup -S framefound && adduser -S framefound -G framefound
 WORKDIR /app
 COPY --from=build --chown=framefound:framefound /app/.next/standalone ./
