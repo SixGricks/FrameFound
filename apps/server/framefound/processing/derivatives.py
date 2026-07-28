@@ -100,8 +100,10 @@ async def generate_visuals(db: AsyncSession, data_dir: Path, asset: Asset, sourc
     elif asset.media_type == "video":
         poster = await _upsert(db, asset.id, "poster", "jpeg")
         poster_path = _abs(data_dir, poster)
-        # A frame 10% in dodges black lead-ins and slates; 1s floor for shorts.
-        at = min(max((asset.duration_s or 2.0) * 0.10, 1.0), 30.0)
+        # A frame ~10% in dodges black lead-ins; the floor must never pass the
+        # end of the clip (sub-second Premiere previews exist in the wild).
+        duration = asset.duration_s or 0.0
+        at = min(max(duration * 0.10, min(1.0, duration * 0.5)), 30.0) if duration else 0.0
         try:
             await asyncio.to_thread(ffmpeg.extract_poster, source, poster_path, at)
             await _finish(db, poster, poster_path)

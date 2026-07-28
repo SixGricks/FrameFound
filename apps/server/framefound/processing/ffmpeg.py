@@ -106,6 +106,10 @@ def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 192
         ],
         POSTER_TIMEOUT_S,
     )
+    # A seek past EOF yields zero frames but exit code 0 (image2 muxer writes
+    # nothing). Success means a file exists.
+    if not dst.is_file() or dst.stat().st_size == 0:
+        raise FfmpegError("No frame could be extracted from the video")
 
 
 def transcode_proxy(src: Path, dst: Path, height: int = 1080) -> str:
