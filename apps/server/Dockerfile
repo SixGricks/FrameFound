@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai]"
 # Pre-create the data mountpoint owned by the app user so Docker named
 # volumes initialize with writable ownership (found in deployment: a
 # root-owned volume + non-root user = PermissionError on first derivative).
-RUN mkdir -p /data && chown framefound:framefound /data
+RUN mkdir -p /data /models && chown framefound:framefound /data /models
 
 USER framefound
 EXPOSE 8000
