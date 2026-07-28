@@ -96,6 +96,10 @@ def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 192
             f"scale='min({max_width},iw)':-2",
             "-c:v",
             "mjpeg",
+            # 10-bit/4:2:2 sources (ProRes) need explicit conversion to the
+            # JPEG-native full-range 4:2:0 format (found in deployment).
+            "-pix_fmt",
+            "yuvj420p",
             "-qscale:v",
             "3",
             str(dst),
