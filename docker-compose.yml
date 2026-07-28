@@ -134,7 +134,8 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
-    command: ["celery", "-A", "framefound.worker", "beat"]
+    # -s: beat's state file must land somewhere the non-root user can write.
+    command: ["celery", "-A", "framefound.worker", "beat", "-s", "/tmp/celerybeat-schedule"]
     env_file: .env
     networks: [internal]
     depends_on:
