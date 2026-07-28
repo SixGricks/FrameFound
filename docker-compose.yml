@@ -20,8 +20,10 @@ services:
       # 443 published only when FRAMEFOUND_DOMAIN is set; see docs/remote-access.md
       - "443:443"
     environment:
-      FRAMEFOUND_DOMAIN: ${FRAMEFOUND_DOMAIN:-}
-      FRAMEFOUND_ACME_EMAIL: ${FRAMEFOUND_ACME_EMAIL:-}
+      # ':-' also covers set-but-empty values from .env — Caddy's own
+      # placeholder defaults only handle fully unset variables.
+      FRAMEFOUND_DOMAIN: ${FRAMEFOUND_DOMAIN:-localhost}
+      FRAMEFOUND_ACME_EMAIL: ${FRAMEFOUND_ACME_EMAIL:-internal}
     volumes:
       - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
