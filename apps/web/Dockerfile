@@ -1,8 +1,8 @@
 # FrameFound web frontend (Next.js standalone output).
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci || npm install   # TODO(m1): commit package-lock.json, then `npm ci` only
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 
