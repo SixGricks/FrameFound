@@ -40,16 +40,36 @@ def _run(argv: list[str], timeout_s: int) -> None:
 
 @functools.cache
 def nvenc_available() -> bool:
+    """Functionally probe NVENC with a tiny test encode.
+
+    Checking `-encoders` output is NOT sufficient: builds list h264_nvenc
+    whenever it was compiled in, even with no NVIDIA GPU present, and then
+    fail at open time (found in deployment)."""
     if shutil.which("ffmpeg") is None:
         return False
     try:
         completed = subprocess.run(  # noqa: S603
-            ["ffmpeg", "-hide_banner", "-encoders"],  # noqa: S607
+            [  # noqa: S607
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "nullsrc=s=256x256:d=0.1",
+                "-c:v",
+                "h264_nvenc",
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
             capture_output=True,
-            timeout=20,
+            timeout=30,
             check=False,
         )
-        return b"h264_nvenc" in completed.stdout
+        return completed.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
