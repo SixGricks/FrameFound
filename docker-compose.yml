@@ -45,6 +45,10 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 700M
     # Migrations run before serving; a schema mismatch fails startup loudly.
     command:
       [
@@ -77,7 +81,11 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=2"]
+    deploy:
+      resources:
+        limits:
+          memory: 1300M
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=1"]
     env_file: .env
     environment:
       # Inside containers the media bind always lands at /media;
@@ -97,6 +105,10 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1100M
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media", "--concurrency=1"]
     env_file: .env
     environment:
@@ -115,6 +127,10 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1600M
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "transcribe,vision", "--concurrency=1"]
     env_file: .env
     environment:
@@ -135,6 +151,10 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 450M
     command: ["python", "-m", "framefound.scanner"]
     env_file: .env
     environment:
@@ -154,6 +174,10 @@ services:
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 300M
     # -s: beat's state file must land somewhere the non-root user can write.
     command: ["celery", "-A", "framefound.worker", "beat", "-s", "/tmp/celerybeat-schedule"]
     env_file: .env
@@ -164,6 +188,10 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 800M
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -182,6 +210,10 @@ services:
     # Service keeps the name "redis" so REDIS_HOST and client code stay unchanged.
     image: valkey/valkey:8-alpine
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 700M
     command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis-data:/data

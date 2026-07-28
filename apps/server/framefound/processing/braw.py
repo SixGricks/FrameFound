@@ -106,7 +106,9 @@ def extract_poster_braw(src: Path, dst: Path, max_width: int = 1920) -> None:
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = str(decoder.parent / "Libraries")
     producer = subprocess.Popen(  # noqa: S603
-        [str(decoder), "-c", "rgba", "-i", "0", "-o", "1", str(src)],
+        # -t 2: cap SDK decode threads — a single poster frame must not
+        # monopolize a shared host (learned when the 4 GB VM thrashed).
+        [str(decoder), "-c", "rgba", "-t", "2", "-i", "0", "-o", "1", str(src)],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         cwd=decoder.parent,
