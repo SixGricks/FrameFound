@@ -12,6 +12,8 @@ set -euo pipefail
 SDK_TAR=${1:?"Usage: build.sh <Blackmagic_RAW_*.tar.gz> [output_dir]"}
 OUT=${2:-/opt/braw}
 BRAW_DECODE_REPO="https://github.com/AkBKukU/braw-decode"
+# Pinned so the source patch below stays valid.
+BRAW_DECODE_COMMIT="ad9b5042ab99d0441e71c5520060343e7fb3bcfb"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
@@ -33,7 +35,12 @@ SDKDIR=$(find "$WORK" -type d -path '*BlackmagicRAWSDK/Linux' | head -1)
 say "SDK at: $SDKDIR"
 
 say "Building braw-decode"
-git clone -q --depth 1 "$BRAW_DECODE_REPO" "$WORK/braw-decode"
+git clone -q "$BRAW_DECODE_REPO" "$WORK/braw-decode"
+git -C "$WORK/braw-decode" checkout -q "$BRAW_DECODE_COMMIT"
+# Upstream bug: ArgParse::checkArg can fall off the end of a non-void
+# function (UB — GCC emits a trap, crashing with SIGILL on --help).
+# Insert a defensive return before the function's closing brace (line 198).
+sed -i '198i\    return false;' "$WORK/braw-decode/src/argparse.cpp"
 cp -r "$SDKDIR/Include" "$WORK/braw-decode/"
 cp -r "$SDKDIR/Libraries" "$WORK/braw-decode/"
 make -C "$WORK/braw-decode"
