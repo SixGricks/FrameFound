@@ -9,11 +9,10 @@
 #     which enforces authentication and signed URLs.
 #   - Only /api/* reaches the backend; everything else goes to the web app.
 
-{
-	email {$FRAMEFOUND_ACME_EMAIL}
-	# Local mode: disable automatic HTTPS when no domain is configured.
-	# TODO(m7): template this block from the remote-access wizard instead.
-}
+# No global options block: an empty `email` directive is a parse error in
+# local mode. ACME email lives in the site's `tls` directive instead, with
+# placeholder defaults making the unset case valid ("localhost" + internal CA).
+# TODO(m7): template this file from the remote-access wizard.
 
 (security_headers) {
 	header {
@@ -48,7 +47,10 @@
 	import app
 }
 
-# Public HTTPS mode (active only when FRAMEFOUND_DOMAIN is set)
-{$FRAMEFOUND_DOMAIN} {
+# Public HTTPS mode. With FRAMEFOUND_DOMAIN unset this resolves to
+# "localhost" with a self-signed internal certificate (harmless); with a real
+# domain + email set, Caddy obtains Let's Encrypt certificates automatically.
+{$FRAMEFOUND_DOMAIN:localhost} {
+	tls {$FRAMEFOUND_ACME_EMAIL:internal}
 	import app
 }
