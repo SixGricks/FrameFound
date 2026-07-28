@@ -14,7 +14,7 @@ WORKDIR /app
 COPY pyproject.toml README.md alembic.ini ./
 COPY migrations ./migrations
 COPY framefound ./framefound
-RUN pip install --no-cache-dir ".[db,queue,scanner,media]"
+RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai]"
 
 # Pre-create the data mountpoint owned by the app user so Docker named
 # volumes initialize with writable ownership (found in deployment: a

@@ -11,6 +11,7 @@ from framefound import __version__
 from framefound.api.v1.assets import router as assets_router
 from framefound.api.v1.libraries import router as libraries_router
 from framefound.api.v1.media import router as media_router
+from framefound.api.v1.search import router as search_router
 from framefound.api.v1.system import router as system_router
 from framefound.auth.router import router as auth_router
 
@@ -20,6 +21,7 @@ api_v1.include_router(system_router)
 api_v1.include_router(libraries_router)
 api_v1.include_router(assets_router)
 api_v1.include_router(media_router)
+api_v1.include_router(search_router)
 
 
 class SystemInfo(BaseModel):

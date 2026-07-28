@@ -115,6 +115,7 @@ class Library(Base):
     # Processing profile v1 (per-library toggles; full profiles come later).
     generate_proxies: Mapped[bool] = mapped_column(Boolean, default=True)
     proxy_resolution: Mapped[int] = mapped_column(default=1080)
+    transcribe_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -251,6 +252,51 @@ class Derivative(Base):
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
 
     asset: Mapped[Asset] = relationship()
+
+
+class Transcript(Base):
+    """One transcript per asset (versioned on regeneration). Full text lives
+    here; timestamped granularity lives in the segments."""
+
+    __tablename__ = "transcripts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), unique=True
+    )
+    language: Mapped[str] = mapped_column(String(10))
+    language_confidence: Mapped[float | None] = mapped_column(Float, default=None)
+    model_name: Mapped[str] = mapped_column(String(100))
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    full_text: Mapped[str] = mapped_column(Text, default="")
+    segment_count: Mapped[int] = mapped_column(default=0)
+    version: Mapped[int] = mapped_column(default=1)
+
+    segments: Mapped[list["TranscriptSegment"]] = relationship(
+        back_populates="transcript",
+        cascade="all, delete-orphan",
+        order_by="TranscriptSegment.start_ms",
+    )
+
+
+class TranscriptSegment(Base):
+    """The unit of 'jump to 00:02:17' search results."""
+
+    __tablename__ = "transcript_segments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="CASCADE"), index=True
+    )
+    start_ms: Mapped[int] = mapped_column(index=True)
+    end_ms: Mapped[int] = mapped_column()
+    text: Mapped[str] = mapped_column(Text)
+    speaker: Mapped[str | None] = mapped_column(String(50), default=None)  # diarization later
+    confidence: Mapped[float | None] = mapped_column(Float, default=None)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="segments")
 
 
 class Scan(Base):

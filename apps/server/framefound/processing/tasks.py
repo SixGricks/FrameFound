@@ -120,10 +120,13 @@ async def _extract(db: AsyncSession, asset: Asset, library: Library, path: Path)
     asset.processing_status = "ready"
     await db.commit()
     log.info("metadata.extracted", asset_id=str(asset.id), fields=sorted(fields.keys()))
-    # Chain the visual stages now that duration/dimensions are known.
+    # Chain the downstream stages now that duration/dimensions are known.
     generate_derivatives.delay(str(asset.id))
     if asset.media_type == "video" and library.generate_proxies:
         generate_proxy.delay(str(asset.id))
+    has_audio = asset.media_type == "audio" or asset.audio_codec is not None
+    if has_audio and library.transcribe_enabled:
+        transcribe_asset.delay(str(asset.id))
 
 
 async def _visuals(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
@@ -136,6 +139,70 @@ async def _proxy(db: AsyncSession, asset: Asset, library: Library, path: Path) -
     if asset.media_type != "video" or not library.generate_proxies:
         return
     await deriv.generate_video_proxy(db, get_settings().data_dir, asset, library, path)
+
+
+async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+    from sqlalchemy import delete, select
+
+    from framefound.ai.transcription import get_transcription_provider
+    from framefound.db.models import Transcript, TranscriptSegment
+    from framefound.media.subtitles import build_vtt
+
+    if not library.transcribe_enabled:
+        return
+    has_audio = asset.media_type == "audio" or asset.audio_codec is not None
+    if not has_audio:
+        return
+
+    provider = get_transcription_provider()
+    result = await asyncio.to_thread(provider.transcribe, path)
+
+    existing = (
+        await db.execute(select(Transcript).where(Transcript.asset_id == asset.id))
+    ).scalar_one_or_none()
+    version = 1
+    if existing is not None:
+        version = existing.version + 1
+        await db.execute(
+            delete(TranscriptSegment).where(TranscriptSegment.transcript_id == existing.id)
+        )
+        await db.delete(existing)
+        await db.flush()
+
+    transcript = Transcript(
+        asset_id=asset.id,
+        language=result.language,
+        language_confidence=result.language_probability,
+        model_name=result.model_name,
+        full_text=" ".join(seg.text for seg in result.segments),
+        segment_count=len(result.segments),
+        version=version,
+    )
+    db.add(transcript)
+    await db.flush()
+    for seg in result.segments:
+        db.add(
+            TranscriptSegment(
+                transcript_id=transcript.id,
+                start_ms=int(seg.start_s * 1000),
+                end_ms=int(seg.end_s * 1000),
+                text=seg.text,
+                confidence=seg.confidence,
+            )
+        )
+
+    # Subtitle sidecar as a derivative (served with the proxy player).
+    subtitle = await deriv._upsert(db, asset.id, "subtitle", "vtt")
+    vtt_path = deriv._abs(get_settings().data_dir, subtitle)
+    vtt_path.write_text(build_vtt(result.segments), encoding="utf-8")
+    await deriv._finish(db, subtitle, vtt_path)
+    await db.commit()
+    log.info(
+        "transcript.created",
+        asset_id=str(asset.id),
+        language=result.language,
+        segments=len(result.segments),
+    )
 
 
 @celery_app.task(
@@ -183,4 +250,20 @@ def generate_proxy(asset_id: str) -> None:
         asyncio.run(_with_asset("generate_proxy", uuid.UUID(asset_id), _proxy))
     except Exception:
         log.error("proxy.failed", asset_id=asset_id, exc_info=True)
+        raise
+
+
+@celery_app.task(
+    name="framefound.transcribe_asset",
+    queue="transcribe",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def transcribe_asset(asset_id: str) -> None:
+    """Speech-to-text with timestamped segments + VTT sidecar (idempotent)."""
+    try:
+        asyncio.run(_with_asset("transcribe_asset", uuid.UUID(asset_id), _transcribe))
+    except Exception:
+        log.error("transcribe.failed", asset_id=asset_id, exc_info=True)
         raise

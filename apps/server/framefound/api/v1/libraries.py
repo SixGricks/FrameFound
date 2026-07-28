@@ -50,6 +50,7 @@ class LibraryUpdate(BaseModel):
     enabled: bool | None = None
     generate_proxies: bool | None = None
     proxy_resolution: int | None = Field(default=None, ge=360, le=2160)
+    transcribe_enabled: bool | None = None
 
 
 class LibraryOut(BaseModel):
@@ -64,6 +65,7 @@ class LibraryOut(BaseModel):
     enabled: bool
     generate_proxies: bool
     proxy_resolution: int
+    transcribe_enabled: bool
     last_scan_at: datetime | None
     asset_count: int = 0
 

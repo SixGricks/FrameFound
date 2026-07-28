@@ -112,6 +112,50 @@ async def get_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> Asset
     return AssetDetail.model_validate(asset)
 
 
+class TranscriptSegmentOut(BaseModel):
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker: str | None
+    confidence: float | None
+
+    model_config = {"from_attributes": True}
+
+
+class TranscriptOut(BaseModel):
+    language: str
+    language_confidence: float | None
+    model_name: str
+    processed_at: datetime
+    segment_count: int
+    segments: list[TranscriptSegmentOut]
+
+
+@router.get("/{asset_id}/transcript", response_model=TranscriptOut)
+async def get_transcript(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> TranscriptOut:
+    from sqlalchemy.orm import selectinload
+
+    from framefound.db.models import Transcript
+
+    transcript = (
+        await db.execute(
+            select(Transcript)
+            .where(Transcript.asset_id == asset_id)
+            .options(selectinload(Transcript.segments))
+        )
+    ).scalar_one_or_none()
+    if transcript is None:
+        raise HTTPException(404, "No transcript is available for this item")
+    return TranscriptOut(
+        language=transcript.language,
+        language_confidence=transcript.language_confidence,
+        model_name=transcript.model_name,
+        processed_at=transcript.processed_at,
+        segment_count=transcript.segment_count,
+        segments=[TranscriptSegmentOut.model_validate(s) for s in transcript.segments],
+    )
+
+
 class MediaUrls(BaseModel):
     """Signed, short-lived URLs for each ready derivative of an asset."""
 

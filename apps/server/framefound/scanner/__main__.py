@@ -122,9 +122,31 @@ async def _drain_watch_queue(
         log.info("watcher.processed", path=candidate.relative_path, action=action)
 
 
+async def _metadata_queue_busy() -> bool:
+    """True when the metadata queue still has messages — a backlog means
+    workers are busy, not that jobs were lost, so requeueing would only
+    create duplicates (learned in deployment: 32k duplicate messages)."""
+    try:
+        import redis.asyncio as aioredis
+
+        from framefound.config import get_settings
+
+        client = aioredis.from_url(  # type: ignore[no-untyped-call]
+            get_settings().redis_url, socket_connect_timeout=2
+        )
+        try:
+            return int(await client.llen("metadata")) > 0
+        finally:
+            await client.aclose()
+    except Exception:
+        return True  # broker unknown: assume busy, never duplicate
+
+
 async def _requeue_stuck_assets(db: AsyncSession, enqueue: scan_engine.Enqueue) -> None:
-    """Assets left `pending` for >10 min (queue outage, worker crash) get
-    re-enqueued — the metadata task is idempotent, duplicates are harmless."""
+    """Assets left `pending` for >10 min with an idle queue (worker crash,
+    broker restart) get re-enqueued — the metadata task is idempotent."""
+    if await _metadata_queue_busy():
+        return
     cutoff = datetime.now(UTC) - timedelta(minutes=10)
     stuck = (
         (

@@ -28,6 +28,7 @@ _CONTENT_TYPES = {
     "jpeg": "image/jpeg",
     "png": "image/png",
     "mp4": "video/mp4",
+    "vtt": "text/vtt",
 }
 
 
