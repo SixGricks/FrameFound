@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mediahub"
+version = "0.1.0.dev0"
+description = "Self-hosted AI media catalog and search platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+# Kept separate so CI and the API container stay slim until each milestone
+# actually needs the dependency. TODO(m1): db, queue. TODO(m2): scanner.
+# TODO(m3): media. TODO(m4/m5): ai.
+db = ["sqlalchemy[asyncio]>=2.0", "asyncpg>=0.29", "alembic>=1.13", "pgvector>=0.3"]
+queue = ["celery[redis]>=5.4", "redis>=5.0"]
+scanner = ["watchdog>=4.0", "blake3>=0.4"]
+media = ["pillow>=10.4"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mediahub"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]  # S = bandit security rules
+ignore = ["S101"]  # assert in tests is fine
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

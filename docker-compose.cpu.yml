@@ -1,0 +1,12 @@
+# Overlay: explicit CPU-only tuning for low-resource hosts.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+services:
+  worker-ai:
+    environment:
+      MEDIAHUB_COMPUTE: cpu
+      # Smaller default model on CPU-only hosts; override in .env if desired.
+      MEDIAHUB_WHISPER_MODEL: ${MEDIAHUB_WHISPER_MODEL:-base}
+    deploy:
+      resources:
+        limits:
+          memory: 6g

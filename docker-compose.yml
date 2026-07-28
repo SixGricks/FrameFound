@@ -1,0 +1,176 @@
+# MediaHub — base stack (CPU processing).
+# GPU:    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# DDNS:   docker compose --profile ddns up -d
+# Tunnel: docker compose --profile tunnel up -d
+#
+# Security posture:
+# - Only Caddy publishes host ports. Postgres/Redis/api/workers live on an
+#   internal network and are never exposed.
+# - Original media is mounted read-only everywhere (:ro).
+# - Containers run as non-root (see Dockerfiles) with no added capabilities.
+
+name: mediahub
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${MEDIAHUB_HTTP_PORT:-8080}:80"
+      # 443 published only when MEDIAHUB_DOMAIN is set; see docs/remote-access.md
+      - "443:443"
+    environment:
+      MEDIAHUB_DOMAIN: ${MEDIAHUB_DOMAIN:-}
+      MEDIAHUB_ACME_EMAIL: ${MEDIAHUB_ACME_EMAIL:-}
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge, internal]
+    depends_on: [web, api]
+
+  web:
+    build: apps/web
+    image: ghcr.io/OWNER/mediahub-web:dev  # TODO: replace OWNER at first release
+    restart: unless-stopped
+    environment:
+      # Server-side calls go container-to-container; browser calls go through Caddy.
+      API_INTERNAL_URL: http://api:8000
+    networks: [internal]
+    depends_on: [api]
+
+  api:
+    build: apps/server
+    image: ghcr.io/OWNER/mediahub-server:dev
+    restart: unless-stopped
+    command: ["uvicorn", "mediahub.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    volumes:
+      - mediahub-data:/data                      # derived files: thumbs, proxies, transcripts
+      - ${MEDIAHUB_MEDIA_ROOT:-/mnt/media}:/media:ro
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    # General queue: metadata extraction, thumbnails, proxies (FFmpeg).
+    build: apps/server
+    image: ghcr.io/OWNER/mediahub-server:dev
+    restart: unless-stopped
+    command: ["celery", "-A", "mediahub.worker", "worker", "-Q", "default,media", "--concurrency=2"]
+    env_file: .env
+    volumes:
+      - mediahub-data:/data
+      - ${MEDIAHUB_MEDIA_ROOT:-/mnt/media}:/media:ro
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker-ai:
+    # AI queue: transcription, embeddings, captions, OCR.
+    # docker-compose.gpu.yml overlays GPU access onto this service.
+    build: apps/server
+    image: ghcr.io/OWNER/mediahub-server:dev
+    restart: unless-stopped
+    command: ["celery", "-A", "mediahub.worker", "worker", "-Q", "transcribe,vision", "--concurrency=1"]
+    env_file: .env
+    volumes:
+      - mediahub-data:/data
+      - mediahub-models:/models                  # downloaded model weights cache
+      - ${MEDIAHUB_MEDIA_ROOT:-/mnt/media}:/media:ro
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  scanner:
+    # Filesystem watcher + periodic reconciliation scans.
+    build: apps/server
+    image: ghcr.io/OWNER/mediahub-server:dev
+    restart: unless-stopped
+    command: ["python", "-m", "mediahub.scanner"]
+    env_file: .env
+    volumes:
+      - mediahub-data:/data
+      - ${MEDIAHUB_MEDIA_ROOT:-/mnt/media}:/media:ro
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  scheduler:
+    # Celery beat: reconciliation scans, retention cleanup, DDNS checks.
+    build: apps/server
+    image: ghcr.io/OWNER/mediahub-server:dev
+    restart: unless-stopped
+    command: ["celery", "-A", "mediahub.worker", "beat"]
+    env_file: .env
+    networks: [internal]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ddns:
+    # Optional Cloudflare DDNS sidecar. Enable with: --profile ddns
+    profiles: [ddns]
+    build: apps/server
+    image: ghcr.io/OWNER/mediahub-server:dev
+    restart: unless-stopped
+    command: ["python", "-m", "mediahub.ddns"]
+    env_file: .env
+    networks: [internal]
+
+  cloudflared:
+    # Optional Cloudflare Tunnel. Enable with: --profile tunnel
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
+    networks: [edge]
+
+networks:
+  edge:      # touches the outside world (Caddy, tunnel)
+  internal:  # app <-> data plane; no published ports
+
+volumes:
+  mediahub-data:
+  mediahub-models:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

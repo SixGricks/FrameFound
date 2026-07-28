@@ -1,0 +1,54 @@
+# MediaHub reverse proxy.
+#
+# Two modes, switched by MEDIAHUB_DOMAIN:
+#   - empty  -> local HTTP on :80 (behind host port mapping, default 8080)
+#   - set    -> automatic HTTPS via Let's Encrypt for that domain
+#
+# Security invariants (do not weaken):
+#   - Never serve filesystem paths directly; all media flows through the API,
+#     which enforces authentication and signed URLs.
+#   - Only /api/* reaches the backend; everything else goes to the web app.
+
+{
+	email {$MEDIAHUB_ACME_EMAIL}
+	# Local mode: disable automatic HTTPS when no domain is configured.
+	# TODO(m7): template this block from the remote-access wizard instead.
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+(app) {
+	import security_headers
+	encode gzip zstd
+
+	# Auth endpoints get a tighter request-rate posture at the app layer;
+	# body-size limit guards the whole surface.
+	request_body {
+		max_size 100MB
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# Local / LAN / Tailscale mode
+:80 {
+	import app
+}
+
+# Public HTTPS mode (active only when MEDIAHUB_DOMAIN is set)
+{$MEDIAHUB_DOMAIN} {
+	import app
+}

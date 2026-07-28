@@ -1,0 +1,25 @@
+# Overlay: NVIDIA GPU acceleration for AI workers and FFmpeg (NVENC).
+# Requires: NVIDIA driver on host + NVIDIA Container Toolkit.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  worker-ai:
+    environment:
+      MEDIAHUB_COMPUTE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  worker:
+    # NVENC hardware transcode for proxy generation (falls back to CPU x264
+    # automatically if unavailable).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
