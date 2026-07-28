@@ -48,6 +48,8 @@ class LibraryUpdate(BaseModel):
     scan_interval_minutes: int | None = Field(default=None, ge=5)
     watcher_enabled: bool | None = None
     enabled: bool | None = None
+    generate_proxies: bool | None = None
+    proxy_resolution: int | None = Field(default=None, ge=360, le=2160)
 
 
 class LibraryOut(BaseModel):
@@ -60,6 +62,8 @@ class LibraryOut(BaseModel):
     scan_interval_minutes: int | None
     watcher_enabled: bool
     enabled: bool
+    generate_proxies: bool
+    proxy_resolution: int
     last_scan_at: datetime | None
     asset_count: int = 0
 

@@ -103,7 +103,9 @@ async def _visuals(db: AsyncSession, asset: Asset, library: Library, path: Path)
 
 
 async def _proxy(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
-    if asset.media_type != "video":
+    # Re-checked at run time so disabling proxies on a library immediately
+    # no-ops any jobs already sitting in the queue.
+    if asset.media_type != "video" or not library.generate_proxies:
         return
     await deriv.generate_video_proxy(db, get_settings().data_dir, asset, library, path)
 

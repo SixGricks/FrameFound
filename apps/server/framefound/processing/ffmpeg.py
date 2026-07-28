@@ -75,7 +75,11 @@ def nvenc_available() -> bool:
 
 
 def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 1920) -> None:
-    """Grab one representative frame as a WebP poster."""
+    """Grab one representative frame as a JPEG poster.
+
+    JPEG via the built-in mjpeg encoder: ffmpeg routes .webp through
+    libwebp_anim, which fails deterministically on some high-resolution
+    sources (found in deployment)."""
     _run(
         [
             "ffmpeg",
@@ -90,8 +94,10 @@ def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 192
             "1",
             "-vf",
             f"scale='min({max_width},iw)':-2",
+            "-c:v",
+            "mjpeg",
             "-qscale:v",
-            "80",
+            "3",
             str(dst),
         ],
         POSTER_TIMEOUT_S,

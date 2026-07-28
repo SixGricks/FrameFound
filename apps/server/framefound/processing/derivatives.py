@@ -44,6 +44,11 @@ async def _upsert(db: AsyncSession, asset_id: uuid.UUID, kind: str, ext: str) ->
         )
         db.add(derivative)
         await db.flush()
+    else:
+        # Format may change between releases (e.g. poster webp -> jpeg);
+        # regeneration adopts the current target.
+        derivative.relative_path = derivative_relpath(asset_id, kind, ext)
+        derivative.media_format = ext
     derivative.status = "pending"
     derivative.error = None
     return derivative
@@ -93,7 +98,7 @@ async def generate_visuals(db: AsyncSession, data_dir: Path, asset: Asset, sourc
                 await _fail(db, derivative, str(err))
 
     elif asset.media_type == "video":
-        poster = await _upsert(db, asset.id, "poster", "webp")
+        poster = await _upsert(db, asset.id, "poster", "jpeg")
         poster_path = _abs(data_dir, poster)
         # A frame 10% in dodges black lead-ins and slates; 1s floor for shorts.
         at = min(max((asset.duration_s or 2.0) * 0.10, 1.0), 30.0)
