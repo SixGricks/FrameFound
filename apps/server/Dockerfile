@@ -8,7 +8,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as non-root (threat model: container compromise != root on host mounts).
-RUN groupadd -r framefound && useradd -r -g framefound -u 1000 framefound
+# A real home directory matters: HuggingFace's Xet downloader writes a chunk
+# cache under $HOME and fails opaquely without one (found in deployment).
+RUN groupadd -r framefound \
+    && useradd -r -g framefound -u 1000 -m -d /home/framefound framefound
 
 WORKDIR /app
 COPY pyproject.toml README.md alembic.ini ./
@@ -20,6 +23,12 @@ RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai]"
 # volumes initialize with writable ownership (found in deployment: a
 # root-owned volume + non-root user = PermissionError on first derivative).
 RUN mkdir -p /data /models && chown framefound:framefound /data /models
+
+# Keep every model artifact (weights + Xet chunk cache) on the models volume
+# so it survives container rebuilds instead of re-downloading each time.
+ENV HOME=/home/framefound \
+    HF_HOME=/models/huggingface \
+    XDG_CACHE_HOME=/models/cache
 
 USER framefound
 EXPOSE 8000
