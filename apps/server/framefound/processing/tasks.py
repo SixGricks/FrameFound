@@ -146,7 +146,7 @@ async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Pa
 
     from framefound.ai.transcription import get_transcription_provider
     from framefound.db.models import Transcript, TranscriptSegment
-    from framefound.media.subtitles import build_vtt
+    from framefound.media.subtitles import build_vtt, find_sidecar, import_sidecar
 
     if not library.transcribe_enabled:
         return
@@ -154,8 +154,16 @@ async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Pa
     if not has_audio:
         return
 
-    provider = get_transcription_provider()
-    result = await asyncio.to_thread(provider.transcribe, path)
+    # A hand-authored sidecar beats ASR: import it and skip transcription.
+    result = None
+    sidecar = await asyncio.to_thread(find_sidecar, path)
+    if sidecar is not None:
+        result = await asyncio.to_thread(import_sidecar, sidecar)
+        if result is not None:
+            log.info("transcript.sidecar_imported", asset_id=str(asset.id), file=sidecar.name)
+    if result is None:
+        provider = get_transcription_provider()
+        result = await asyncio.to_thread(provider.transcribe, path)
 
     existing = (
         await db.execute(select(Transcript).where(Transcript.asset_id == asset.id))
