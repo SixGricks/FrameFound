@@ -1,0 +1,14 @@
+# This project deploys to Linux; keep LF everywhere regardless of the
+# contributor's OS. CRLF in shell scripts or Caddyfiles breaks containers.
+* text=auto eol=lf
+*.sh text eol=lf
+Caddyfile text eol=lf
+Dockerfile text eol=lf
+
+# Binary fixtures
+*.jpg binary
+*.png binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
