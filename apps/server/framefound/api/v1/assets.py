@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.sql.elements import UnaryExpression
 
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.db.models import Asset, Derivative
@@ -77,6 +78,11 @@ async def list_assets(
     library_id: uuid.UUID | None = None,
     media_type: str | None = Query(default=None, pattern="^(image|video|audio)$"),
     availability: str | None = Query(default=None, pattern="^(online|missing|unmounted)$"),
+    status: str | None = Query(default=None, max_length=30),
+    previewable: bool = Query(
+        default=False, description="Only assets that already have a thumbnail"
+    ),
+    sort: str = Query(default="recent", pattern="^(recent|captured|name|size)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> AssetPage:
@@ -87,14 +93,25 @@ async def list_assets(
         query = query.where(Asset.media_type == media_type)
     if availability is not None:
         query = query.where(Asset.availability == availability)
+    if status is not None:
+        query = query.where(Asset.processing_status == status)
+    if previewable:
+        ready_thumbs = select(Derivative.asset_id).where(
+            Derivative.kind == "thumbnail", Derivative.status == "ready"
+        )
+        query = query.where(Asset.id.in_(ready_thumbs))
+
+    orders: dict[str, UnaryExpression[Any]] = {
+        "recent": Asset.first_indexed_at.desc(),
+        "captured": Asset.captured_at.desc().nullslast(),
+        "name": Asset.filename.asc(),
+        "size": Asset.size_bytes.desc(),
+    }
+    order = orders[sort]
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     rows = (
-        await db.execute(
-            query.order_by(Asset.first_indexed_at.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
+        await db.execute(query.order_by(order).offset((page - 1) * page_size).limit(page_size))
     ).scalars()
     return AssetPage(
         items=[AssetSummary.model_validate(a) for a in rows],
