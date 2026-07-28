@@ -208,6 +208,27 @@ class Asset(Base):
 DERIVATIVE_KINDS = ("thumbnail", "preview", "poster", "proxy", "waveform")
 
 
+class Job(Base):
+    """Execution history for processing tasks (the dashboard's data source).
+
+    Rows are written by the worker task shell — one per execution attempt.
+    Live queue depths come from the broker, not this table."""
+
+    __tablename__ = "jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    task_name: Mapped[str] = mapped_column(String(100), index=True)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), default=None, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    error: Mapped[str | None] = mapped_column(String(500), default=None)
+
+
 class Derivative(Base):
     """A generated file for an asset (thumbnail/preview/poster/proxy/waveform).
     `relative_path` is relative to the app data volume — relocatable by design.

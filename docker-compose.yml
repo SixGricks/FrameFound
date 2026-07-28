@@ -71,15 +71,35 @@ services:
       retries: 3
 
   worker:
-    # General queue: metadata extraction, thumbnails, proxies (FFmpeg).
+    # Fast + bulk lanes: visuals (thumbnails/posters) round-robins with
+    # metadata so user-visible work is never starved by a bulk sweep.
+    # "default" drains jobs queued before the queue rename.
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "default,media", "--concurrency=2"]
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=2"]
     env_file: .env
     environment:
       # Inside containers the media bind always lands at /media;
       # FRAMEFOUND_MEDIA_ROOT in .env is the HOST path for the bind source.
+      FRAMEFOUND_MEDIA_ROOT: /media
+    volumes:
+      - framefound-data:/data
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker-media:
+    # Heavy lane: proxy transcodes only, isolated so a long FFmpeg run
+    # never blocks thumbnails or metadata.
+    build: apps/server
+    image: ghcr.io/sixgricks/framefound-server:dev
+    restart: unless-stopped
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media", "--concurrency=1"]
+    env_file: .env
+    environment:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - framefound-data:/data
