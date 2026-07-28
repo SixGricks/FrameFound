@@ -86,6 +86,26 @@ Face recognition (privacy-gated), OIDC/SSO, multi-tenant permissions, mobile
 apps, OpenSearch backend, Kubernetes, DaVinci/Lightroom integrations,
 generative summaries, cloud storage drivers.
 
+## Hardware path — 2012 Mac Pro (5,1) as the primary host
+
+Decision 2026-07-28: the production host is the owner's 2012 Mac Pro running
+Proxmox (2× Westmere Xeon, no AVX; upgradeable RAM and GPU). Strategy: prove
+each milestone on this box, upgrading components only when a milestone needs
+them. Any GPU purchased carries over to a future host — no stranded spend.
+
+| Phase | Hardware change | Unlocks | Risk |
+|---|---|---|---|
+| A (now) | none — 4 GB VM | M2 verified at scale; M3 thumbnails + CPU (x264) proxies, slow but correct | low |
+| B | +RAM (DDR3 ECC is cheap; target 48–64 GB host → 16–24 GB VM, restore HA to 8 GB) | full-archive scans, real proxy concurrency, M3 done at production scale | low |
+| C | +GPU (NVIDIA ≤225 W for the dual 6-pin aux budget; RTX 3060 12 GB is the reference pick) + VT-d passthrough | **NVENC proxy transcoding** (M3 gets fast with zero software fight — NVENC needs no AVX) | low-medium (MP5,1 passthrough is well-trodden but firmware-quirky) |
+| D | same GPU, custom AI builds | M4 transcription: faster-whisper/CTranslate2 has runtime CPU dispatch and CUDA execution — expected to work without AVX, must be proven on-box | medium |
+| E | same GPU, custom AI builds | M5 visual search: official PyTorch wheels **require AVX and will not load**; path is ONNX-exported CLIP on onnxruntime-gpu or a from-source AVX-free torch build | **high** — timebox it; if it stalls, M5 waits for a CPU-era upgrade and everything else still ships |
+
+Standing caveats: PCIe 2.0 bandwidth (minor for inference), Westmere
+single-thread speed (scans/transcodes are parallel, so throughput is fine),
+and the AVX ceiling is permanent — a future platform swap is migration-by-
+design (`manage.sh backup` → restore; GPU moves over).
+
 ## Major technical risks
 
 | Risk | Exposure | Mitigation |
