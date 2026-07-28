@@ -15,7 +15,7 @@ jobs:
       run: { working-directory: apps/server }
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -39,7 +39,7 @@ jobs:
       run: { working-directory: apps/web }
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 20 }
       - run: npm install   # TODO(m1): npm ci once package-lock.json is committed
       - run: npm run lint
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build server image
         uses: docker/build-push-action@v6
         with:
