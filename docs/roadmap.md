@@ -3,7 +3,14 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
-## M0 — Product & architecture definition ← current
+> **Status 2026-07-28**: M0–M3 complete and running on the production VM
+> against a real 18 TB archive. M4 core shipped (local transcription, sidecar
+> import, timestamped search); M5 groundwork shipped (scene detection, frame
+> sampling, perceptual hashing); M6 alpha UI shipped; M8 backup/restore
+> shipped early because the deployment needed it. Remaining M4/M5 work is
+> tracked in GitHub issues.
+
+## M0 — Product & architecture definition ✅
 
 - [x] Architecture doc + diagrams · data model · ADR seed set (0001-0005)
 - [x] Threat-model outline · license inventory · repo scaffolding · compose definition
