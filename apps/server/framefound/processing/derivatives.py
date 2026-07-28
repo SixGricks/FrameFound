@@ -97,6 +97,30 @@ async def generate_visuals(db: AsyncSession, data_dir: Path, asset: Asset, sourc
             except ThumbnailError as err:
                 await _fail(db, derivative, str(err))
 
+    elif asset.media_type == "video" and asset.extension == "braw":
+        from framefound.processing.braw import braw_decoder, extract_poster_braw
+
+        poster = await _upsert(db, asset.id, "poster", "jpeg")
+        poster_path = _abs(data_dir, poster)
+        if braw_decoder() is None:
+            await _fail(db, poster, "BRAW decoder is not installed on this server")
+            return
+        try:
+            await asyncio.to_thread(extract_poster_braw, source, poster_path)
+            await _finish(db, poster, poster_path)
+        except ffmpeg.FfmpegError as err:
+            await _fail(db, poster, str(err))
+            return
+        thumb = await _upsert(db, asset.id, "thumbnail", "webp")
+        thumb_path = _abs(data_dir, thumb)
+        try:
+            size = await asyncio.to_thread(
+                make_image_derivative, poster_path, thumb_path, THUMBNAIL_EDGE
+            )
+            await _finish(db, thumb, thumb_path, size_hint=size)
+        except ThumbnailError as err:
+            await _fail(db, thumb, str(err))
+
     elif asset.media_type == "video":
         poster = await _upsert(db, asset.id, "poster", "jpeg")
         poster_path = _abs(data_dir, poster)
@@ -143,6 +167,10 @@ async def generate_video_proxy(
 
     derivative = await _upsert(db, asset.id, "proxy", "mp4")
     target = _abs(data_dir, derivative)
+    if asset.extension == "braw":
+        # Full-clip BRAW decode on CPU is impractical; revisit in the GPU phase.
+        await _fail(db, derivative, "BRAW proxies arrive with the GPU upgrade")
+        return
     try:
         codec = await asyncio.to_thread(
             ffmpeg.transcode_proxy, source, target, library.proxy_resolution

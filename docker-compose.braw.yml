@@ -1,0 +1,11 @@
+# Overlay: Blackmagic RAW decode support (opt-in, locally built).
+# Build /opt/braw first with infrastructure/braw/build.sh — the Blackmagic
+# SDK is EULA-licensed and never ships in this repo or published images.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.braw.yml up -d
+services:
+  worker:
+    volumes:
+      - ${FRAMEFOUND_BRAW_DIR:-/opt/braw}:/opt/braw:ro
+  worker-media:
+    volumes:
+      - ${FRAMEFOUND_BRAW_DIR:-/opt/braw}:/opt/braw:ro

@@ -34,6 +34,8 @@ automated license scan (M1).
 | PaddleOCR / Tesseract (OCR candidates) | Apache-2.0 / Apache-2.0 | code+model | ✅ verify Paddle model files at M5 |
 | Face models (post-MVP) | varies — many are **non-commercial** | model | 🚫 gate hard; external download only |
 | Adobe UXP/CEP SDK | Adobe ToS | code | review at M9; panel may need separate licensing terms |
+| Blackmagic RAW SDK | Blackmagic EULA (no redistribution) | code (dynamic, opt-in) | 🚫 never in repo/images — user builds locally via infrastructure/braw/build.sh |
+| braw-decode (AkBKukU) | no license declared upstream | code (built locally) | ⚠️ build-from-source only, nothing redistributed; ask upstream for a license grant before any bundling |
 | Icon set (Lucide), fonts (Inter) | ISC / OFL-1.1 | assets | ✅ OFL requires attribution — include in NOTICE |
 | Base Docker images (python-slim, node-alpine, caddy, pgvector, redis) | various permissive + OS packages | distribution | generate SBOM per image in CI (syft) from M1 |
 

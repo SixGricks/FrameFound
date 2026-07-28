@@ -151,7 +151,11 @@ def probe_media(path: Path, media_type: str) -> dict[str, Any]:
     """Merged metadata for one file. Later sources win only for keys the
     earlier ones didn't fill; EXIF beats container tags for capture fields."""
     fields: dict[str, Any] = {}
-    if media_type in ("video", "audio"):
+    if path.suffix.lower() == ".braw":
+        from framefound.processing.braw import probe_braw
+
+        fields.update(probe_braw(path))  # {} when the decoder isn't installed
+    elif media_type in ("video", "audio"):
         fields.update(probe_ffprobe(path))
     else:
         fields.update(probe_pillow(path))
