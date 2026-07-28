@@ -105,7 +105,13 @@ async def generate_visuals(db: AsyncSession, data_dir: Path, asset: Asset, sourc
         duration = asset.duration_s or 0.0
         at = min(max(duration * 0.10, min(1.0, duration * 0.5)), 30.0) if duration else 0.0
         try:
-            await asyncio.to_thread(ffmpeg.extract_poster, source, poster_path, at)
+            try:
+                await asyncio.to_thread(ffmpeg.extract_poster, source, poster_path, at)
+            except ffmpeg.FfmpegError:
+                if at <= 0:
+                    raise
+                # Seek overshot (1-2 frame clips): take the first frame instead.
+                await asyncio.to_thread(ffmpeg.extract_poster, source, poster_path, 0.0)
             await _finish(db, poster, poster_path)
         except ffmpeg.FfmpegError as err:
             await _fail(db, poster, str(err))
