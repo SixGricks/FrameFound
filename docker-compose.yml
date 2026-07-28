@@ -22,7 +22,7 @@ services:
     environment:
       # ':-' also covers set-but-empty values from .env — Caddy's own
       # placeholder defaults only handle fully unset variables.
-      FRAMEFOUND_DOMAIN: ${FRAMEFOUND_DOMAIN:-localhost}
+      FRAMEFOUND_DOMAIN: ${FRAMEFOUND_DOMAIN:-framefound.internal}
       FRAMEFOUND_ACME_EMAIL: ${FRAMEFOUND_ACME_EMAIL:-internal}
     volumes:
       - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro

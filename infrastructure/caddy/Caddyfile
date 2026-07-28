@@ -50,7 +50,7 @@
 # Public HTTPS mode. With FRAMEFOUND_DOMAIN unset this resolves to
 # "localhost" with a self-signed internal certificate (harmless); with a real
 # domain + email set, Caddy obtains Let's Encrypt certificates automatically.
-{$FRAMEFOUND_DOMAIN:localhost} {
+{$FRAMEFOUND_DOMAIN:framefound.internal} {
 	tls {$FRAMEFOUND_ACME_EMAIL:internal}
 	import app
 }
