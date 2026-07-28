@@ -1,4 +1,4 @@
-"""Asset browsing endpoints (read-only in M2; media serving arrives in M3)."""
+"""Asset browsing endpoints + signed media URLs + admin reprocessing."""
 
 import uuid
 from datetime import datetime
@@ -8,8 +8,9 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from framefound.auth.deps import CurrentUser, DbDep
-from framefound.db.models import Asset
+from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
+from framefound.db.models import Asset, Derivative
+from framefound.media.signing import SigningError, sign_media_url
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -109,3 +110,56 @@ async def get_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> Asset
     if asset is None:
         raise HTTPException(404, "Asset not found")
     return AssetDetail.model_validate(asset)
+
+
+class MediaUrls(BaseModel):
+    """Signed, short-lived URLs for each ready derivative of an asset."""
+
+    urls: dict[str, str]
+    expires_in_seconds: int
+
+
+@router.get("/{asset_id}/urls", response_model=MediaUrls)
+async def signed_media_urls(
+    asset_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    settings: SettingsDep,
+    ttl: int = Query(default=3600, ge=60, le=86400),
+) -> MediaUrls:
+    if await db.get(Asset, asset_id) is None:
+        raise HTTPException(404, "Asset not found")
+    kinds = (
+        (
+            await db.execute(
+                select(Derivative.kind).where(
+                    Derivative.asset_id == asset_id, Derivative.status == "ready"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    urls: dict[str, str] = {}
+    for kind in kinds:
+        try:
+            expires, sig = sign_media_url(settings.secret_key, asset_id, kind, ttl)
+        except SigningError as err:
+            raise HTTPException(503, "Media links are not configured on this server") from err
+        urls[kind] = f"/api/v1/media/{asset_id}/{kind}?exp={expires}&sig={sig}"
+    return MediaUrls(urls=urls, expires_in_seconds=ttl)
+
+
+@router.post("/{asset_id}/reprocess", status_code=202, dependencies=[require_admin])
+async def reprocess_asset(asset_id: uuid.UUID, db: DbDep, _user: CurrentUser) -> dict[str, str]:
+    """Re-run derivative generation for one asset (admin)."""
+    asset = await db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "Asset not found")
+    try:
+        from framefound.processing.tasks import generate_derivatives
+
+        generate_derivatives.delay(str(asset_id))
+    except Exception as err:  # queue down
+        raise HTTPException(503, "Processing queue is not available right now") from err
+    return {"status": "queued"}

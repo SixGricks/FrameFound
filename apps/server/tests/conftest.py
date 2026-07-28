@@ -26,6 +26,8 @@ TEST_SETUP_TOKEN = "test-setup-token-123"
 def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[FastAPI]:
     monkeypatch.setenv("FRAMEFOUND_SETUP_TOKEN", TEST_SETUP_TOKEN)
     monkeypatch.setenv("FRAMEFOUND_MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setenv("FRAMEFOUND_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("FRAMEFOUND_SECRET_KEY", "test-secret-key-for-signing")
     get_settings.cache_clear()
     login_limiter._buckets.clear()  # module-level limiter persists across tests
 
