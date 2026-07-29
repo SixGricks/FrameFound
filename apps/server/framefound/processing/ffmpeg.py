@@ -20,6 +20,13 @@ POSTER_TIMEOUT_S = 120
 WAVEFORM_TIMEOUT_S = 300
 PROXY_TIMEOUT_S = 4 * 3600  # long-form sermons/auctions at CPU speed
 
+# Stills are read end to end, and library storage is usually a network
+# share. Deliberately pessimistic: a floor of 2 MB/s leaves headroom under
+# the 5.2 MB/s measured on the reference SMB mount, so a slow evening on
+# the network does not turn into a failed thumbnail.
+SLOW_STORAGE_BPS = 2 * 1024 * 1024
+MAX_STILL_TIMEOUT_S = 30 * 60
+
 
 class FfmpegError(RuntimeError):
     pass
@@ -138,7 +145,19 @@ def downscale_still(src: Path, dst: Path, max_edge: int) -> None:
     JPEG rather than WebP for the same reason as `extract_poster`: ffmpeg
     routes .webp through libwebp_anim, which fails on some high-resolution
     sources. The caller re-encodes this much smaller intermediate.
+
+    The timeout scales with file size. A video poster seeks and reads a few
+    megabytes, so a flat two minutes is generous; a still has to be read end
+    to end, and library storage is a network share. Measured throughput on the
+    reference deployment was 5.2 MB/s over SMB, which puts a 1 GB TIFF at
+    three minutes of reading before decoding starts.
     """
+    try:
+        size_bytes = src.stat().st_size
+    except OSError:
+        size_bytes = 0
+    timeout_s = min(MAX_STILL_TIMEOUT_S, POSTER_TIMEOUT_S + int(size_bytes / SLOW_STORAGE_BPS))
+
     _run(
         [
             "ffmpeg",
@@ -159,7 +178,7 @@ def downscale_still(src: Path, dst: Path, max_edge: int) -> None:
             "2",
             str(dst),
         ],
-        POSTER_TIMEOUT_S,
+        timeout_s,
     )
     if not dst.is_file() or dst.stat().st_size == 0:
         raise FfmpegError("The image could not be decoded")

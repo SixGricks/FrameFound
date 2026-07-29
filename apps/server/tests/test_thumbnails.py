@@ -76,3 +76,33 @@ def test_ffmpeg_failure_surfaces_as_thumbnail_error(
 
     with pytest.raises(ThumbnailError):
         make_image_derivative(src, tmp_path / "out.webp", max_edge=512)
+
+
+def test_still_timeout_scales_with_file_size(tmp_path: Path) -> None:
+    """A flat two-minute timeout is what failed the 1 GB TIFFs: at the
+    5.2 MB/s measured over SMB, reading one takes over three minutes."""
+    from framefound.processing import ffmpeg
+
+    captured: list[int] = []
+    src = tmp_path / "big.tif"
+    src.write_bytes(b"\x00" * 4096)
+
+    def fake_run(argv: list[str], timeout_s: int) -> None:
+        captured.append(timeout_s)
+        Path(argv[-1]).write_bytes(b"jpeg")
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(ffmpeg, "_run", fake_run):
+        ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
+        small = captured[-1]
+
+        # A gigabyte at the assumed 2 MB/s floor is over eight minutes.
+        with unittest.mock.patch.object(Path, "stat") as stat:
+            stat.return_value = unittest.mock.Mock(st_size=1024 * 1024 * 1024)
+            ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
+        large = captured[-1]
+
+    assert small == ffmpeg.POSTER_TIMEOUT_S
+    assert large > 8 * 60
+    assert large <= ffmpeg.MAX_STILL_TIMEOUT_S
