@@ -6,10 +6,11 @@ websearch-style full-text queries against the GIN index from migration 0005;
 the SQLite test dialect falls back to LIKE.
 """
 
+import asyncio
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
@@ -17,6 +18,13 @@ from framefound.auth.deps import CurrentUser, DbDep
 from framefound.db.models import Asset, Transcript, TranscriptSegment
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+def _dot(a: list[float] | None, b: list[float] | None) -> float:
+    """Cosine similarity for L2-normalised vectors (SQLite fallback)."""
+    if not a or not b:
+        return 0.0
+    return float(sum(x * y for x, y in zip(a, b, strict=False)))
 
 
 class TranscriptHit(BaseModel):
@@ -37,10 +45,83 @@ class FilenameHit(BaseModel):
     captured_at: datetime | None
 
 
+class VisualHit(BaseModel):
+    asset_id: uuid.UUID
+    filename: str
+    library_id: uuid.UUID
+    media_type: str
+    ts_ms: int
+    similarity: float
+
+
 class SearchResponse(BaseModel):
     query: str
     transcript_hits: list[TranscriptHit]
     filename_hits: list[FilenameHit]
+    visual_hits: list[VisualHit] = []
+    visual_available: bool = True  # false when nothing has been indexed yet
+
+
+async def _visual_search(
+    db: DbDep, query: str, library_id: uuid.UUID | None, limit: int
+) -> tuple[list[VisualHit], bool]:
+    """Nearest frames to the query in CLIP space.
+
+    Postgres uses the HNSW index via pgvector's cosine operator. SQLite (the
+    test dialect) has no vector type, so similarity is computed in Python over
+    the small fixture set — same results, different scale.
+    """
+    from framefound.ai.embeddings import EmbeddingUnavailable, get_embedding_provider
+    from framefound.db.models import Frame
+
+    indexed = (
+        await db.execute(
+            select(func.count()).select_from(Frame).where(Frame.embedding.is_not(None))
+        )
+    ).scalar_one()
+    if not indexed:
+        return [], False
+
+    try:
+        vector = (await asyncio.to_thread(get_embedding_provider().embed_text, query)).vector
+    except (EmbeddingUnavailable, Exception):
+        return [], False
+
+    if db.get_bind().dialect.name == "postgresql":
+        stmt = (
+            select(Frame, Asset, Frame.embedding.cosine_distance(vector).label("distance"))
+            .join(Asset, Asset.id == Frame.asset_id)
+            .where(Frame.embedding.is_not(None))
+        )
+        if library_id is not None:
+            stmt = stmt.where(Asset.library_id == library_id)
+        rows = (await db.execute(stmt.order_by("distance").limit(limit))).all()
+        scored = [(frame, asset, 1.0 - float(distance)) for frame, asset, distance in rows]
+    else:
+        stmt = (
+            select(Frame, Asset)
+            .join(Asset, Asset.id == Frame.asset_id)
+            .where(Frame.embedding.is_not(None))
+        )
+        if library_id is not None:
+            stmt = stmt.where(Asset.library_id == library_id)
+        candidates = (await db.execute(stmt)).all()
+        scored = sorted(
+            ((frame, asset, _dot(vector, frame.embedding)) for frame, asset in candidates),
+            key=lambda row: -row[2],
+        )[:limit]
+
+    return [
+        VisualHit(
+            asset_id=asset.id,
+            filename=asset.filename,
+            library_id=asset.library_id,
+            media_type=asset.media_type,
+            ts_ms=frame.ts_ms,
+            similarity=round(similarity, 4),
+        )
+        for frame, asset, similarity in scored
+    ], True
 
 
 @router.get("", response_model=SearchResponse)
@@ -77,8 +158,12 @@ async def search(
         name_query = name_query.where(Asset.library_id == library_id)
     name_rows = (await db.execute(name_query.limit(limit))).scalars().all()
 
+    visual_hits, visual_available = await _visual_search(db, q, library_id, limit)
+
     return SearchResponse(
         query=q,
+        visual_hits=visual_hits,
+        visual_available=visual_available,
         transcript_hits=[
             TranscriptHit(
                 asset_id=asset.id,
@@ -102,3 +187,68 @@ async def search(
             for a in name_rows
         ],
     )
+
+
+@router.get("/similar/{asset_id}", response_model=list[VisualHit])
+async def similar_assets(
+    asset_id: uuid.UUID, _user: CurrentUser, db: DbDep, limit: int = Query(default=12, ge=1, le=50)
+) -> list[VisualHit]:
+    """Visually closest frames from *other* assets — 'more like this'."""
+    from framefound.db.models import Frame
+
+    reference = (
+        await db.execute(
+            select(Frame)
+            .where(Frame.asset_id == asset_id, Frame.embedding.is_not(None))
+            .order_by(Frame.ts_ms)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if reference is None:
+        raise HTTPException(404, "This item has not been visually indexed yet")
+
+    stmt = (
+        select(Frame, Asset)
+        .join(Asset, Asset.id == Frame.asset_id)
+        .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        distance = Frame.embedding.cosine_distance(reference.embedding).label("distance")
+        rows = (
+            await db.execute(
+                select(Frame, Asset, distance)
+                .join(Asset, Asset.id == Frame.asset_id)
+                .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
+                .order_by("distance")
+                .limit(limit)
+            )
+        ).all()
+        scored = [(f, a, 1.0 - float(d)) for f, a, d in rows]
+    else:
+        candidates = (await db.execute(stmt)).all()
+        scored = sorted(
+            (
+                (frame, asset, _dot(reference.embedding, frame.embedding))
+                for frame, asset in candidates
+            ),
+            key=lambda row: -row[2],
+        )[:limit]
+
+    # One hit per asset: twenty frames of the same clip is not "similar media".
+    seen: set[uuid.UUID] = set()
+    results: list[VisualHit] = []
+    for frame, asset, similarity in scored:
+        if asset.id in seen:
+            continue
+        seen.add(asset.id)
+        results.append(
+            VisualHit(
+                asset_id=asset.id,
+                filename=asset.filename,
+                library_id=asset.library_id,
+                media_type=asset.media_type,
+                ts_ms=frame.ts_ms,
+                similarity=round(similarity, 4),
+            )
+        )
+    return results

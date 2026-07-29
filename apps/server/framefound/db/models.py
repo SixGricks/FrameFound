@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from framefound.db.base import Base
+from framefound.db.vector_type import Embedding
 
 Role = String(20)  # admin | user | readonly — validated in the service layer
 ROLES = ("admin", "user", "readonly")
@@ -328,6 +329,8 @@ class Frame(Base):
     caption: Mapped[str | None] = mapped_column(Text, default=None)
     ocr_text: Mapped[str | None] = mapped_column(Text, default=None)
     embedding_model: Mapped[str | None] = mapped_column(String(100), default=None)
+    # L2-normalised, so cosine distance and dot product agree.
+    embedding: Mapped[list[float] | None] = mapped_column(Embedding(), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

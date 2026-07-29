@@ -127,8 +127,9 @@ async def _extract(db: AsyncSession, asset: Asset, library: Library, path: Path)
     has_audio = asset.media_type == "audio" or asset.audio_codec is not None
     if has_audio and library.transcribe_enabled:
         transcribe_asset.delay(str(asset.id))
-    if asset.media_type == "video":
-        sample_frames.delay(str(asset.id))
+    # Images are sampled too (one frame at ts=0) so stills and motion share
+    # one vector table — see docs/data-model.md §frames.
+    sample_frames.delay(str(asset.id))
 
 
 async def _visuals(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
@@ -337,6 +338,8 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
         written += 1
     await db.commit()
     log.info("frames.sampled", asset_id=str(asset.id), frames=written, scenes=scene_counter)
+    if written:
+        embed_frames.delay(str(asset.id))
 
 
 @celery_app.task(
@@ -352,6 +355,60 @@ def sample_frames(asset_id: str) -> None:
         asyncio.run(_with_asset("sample_frames", uuid.UUID(asset_id), _sample_frames))
     except Exception:
         log.error("frames.failed", asset_id=asset_id, exc_info=True)
+        raise
+
+
+async def _embed_frames(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+    from sqlalchemy import select
+
+    from framefound.ai.embeddings import EmbeddingUnavailable, get_embedding_provider
+    from framefound.db.models import Frame
+
+    provider = get_embedding_provider()
+    data_dir = get_settings().data_dir
+    frames = (
+        (
+            await db.execute(
+                select(Frame).where(Frame.asset_id == asset.id, Frame.embedding.is_(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    embedded = 0
+    for frame in frames:
+        image = data_dir / frame.relative_path
+        if not image.is_file():
+            continue
+        try:
+            result = await asyncio.to_thread(provider.embed_image, image)
+        except EmbeddingUnavailable as exc:
+            # A single unreadable frame must not fail the asset; a missing
+            # runtime should stop the task so it can be retried after a fix.
+            if "not installed" in str(exc):
+                raise
+            continue
+        frame.embedding = result.vector
+        frame.embedding_model = result.model_name
+        embedded += 1
+    await db.commit()
+    if embedded:
+        log.info("embeddings.created", asset_id=str(asset.id), frames=embedded)
+
+
+@celery_app.task(
+    name="framefound.embed_frames",
+    queue="vision",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def embed_frames(asset_id: str) -> None:
+    """Compute CLIP vectors for an asset's sampled frames (idempotent)."""
+    try:
+        asyncio.run(_with_asset("embed_frames", uuid.UUID(asset_id), _embed_frames))
+    except Exception:
+        log.error("embeddings.failed", asset_id=asset_id, exc_info=True)
         raise
 
 

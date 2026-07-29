@@ -67,7 +67,12 @@ function SearchPage() {
   const hasResults = results !== null;
   const transcriptHits = results?.transcript_hits ?? [];
   const filenameHits = results?.filename_hits ?? [];
-  const nothing = hasResults && transcriptHits.length === 0 && filenameHits.length === 0;
+  const visualHits = results?.visual_hits ?? [];
+  const nothing =
+    hasResults &&
+    transcriptHits.length === 0 &&
+    filenameHits.length === 0 &&
+    visualHits.length === 0;
 
   return (
     <>
@@ -137,6 +142,44 @@ function SearchPage() {
           Nothing matched <strong>{results?.query}</strong>. Transcripts only cover media that
           has finished processing.
         </div>
+      )}
+
+      {visualHits.length > 0 && (
+        <section>
+          <div className="sectionhead">
+            <h2>Looks like this</h2>
+            <span className="faint mono">matched by image, not by name</span>
+          </div>
+          <div className="grid">
+            {visualHits.map((hit, index) => (
+              <Link
+                key={`${hit.asset_id}-${hit.ts_ms}`}
+                href={`/assets/${hit.asset_id}${hit.ts_ms ? `?t=${Math.floor(hit.ts_ms / 1000)}` : ""}`}
+                className="tile"
+                style={{ animationDelay: `${Math.min(index, 16) * 22}ms` }}
+                title={hit.filename}
+              >
+                <div className="tile-frame">
+                  <Thumb assetId={hit.asset_id} mediaType={hit.media_type} status="ready" />
+                  <span className="tile-badge">{Math.round(hit.similarity * 100)}%</span>
+                </div>
+                <div className="tile-meta">
+                  <div className="tile-name">{hit.filename}</div>
+                  <div className="tile-sub">
+                    <span>{hit.media_type}</span>
+                    {hit.ts_ms > 0 && <span>{timecode(hit.ts_ms)}</span>}
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {hasResults && !results?.visual_available && (
+        <p className="faint" style={{ marginTop: 26, fontSize: "0.84rem" }}>
+          Visual search is still indexing your library — results will improve as it completes.
+        </p>
       )}
 
       {transcriptHits.length > 0 && (

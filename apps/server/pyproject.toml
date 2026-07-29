@@ -28,7 +28,7 @@ db = ["sqlalchemy[asyncio]>=2.0", "asyncpg>=0.29", "alembic>=1.13", "pgvector>=0
 queue = ["celery[redis]>=5.4", "redis>=5.0"]
 scanner = ["watchdog>=4.0", "blake3>=0.4"]
 media = ["pillow>=10.4"]
-ai = ["faster-whisper>=1.0"]
+ai = ["faster-whisper>=1.0", "onnxruntime>=1.19", "numpy>=1.26"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -68,7 +68,12 @@ module = ["framefound.worker", "framefound.processing.tasks"]
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-module = ["watchdog", "watchdog.*", "blake3", "faster_whisper", "faster_whisper.*"]
+module = [
+    "watchdog", "watchdog.*", "blake3",
+    "faster_whisper", "faster_whisper.*",
+    "onnxruntime", "onnxruntime.*",
+    "huggingface_hub", "tokenizers", "pgvector.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

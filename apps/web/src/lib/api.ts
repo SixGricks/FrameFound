@@ -117,6 +117,15 @@ export interface Transcript {
   segments: TranscriptSegment[];
 }
 
+export interface VisualHit {
+  asset_id: string;
+  filename: string;
+  library_id: string;
+  media_type: MediaType;
+  ts_ms: number;
+  similarity: number;
+}
+
 export interface SearchResponse {
   query: string;
   transcript_hits: Array<{
@@ -135,6 +144,8 @@ export interface SearchResponse {
     media_type: MediaType;
     captured_at: string | null;
   }>;
+  visual_hits: VisualHit[];
+  visual_available: boolean;
 }
 
 export interface ProcessingReport {
@@ -253,6 +264,7 @@ export const api = {
 
   search: (q: string, libraryId?: string) =>
     request<SearchResponse>(`/search${query({ q, library_id: libraryId, limit: 40 })}`),
+  similar: (assetId: string) => request<VisualHit[]>(`/search/similar/${assetId}`),
 
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),

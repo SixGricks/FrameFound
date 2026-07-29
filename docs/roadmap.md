@@ -3,12 +3,100 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
-> **Status 2026-07-28**: M0–M3 complete and running on the production VM
-> against a real 18 TB archive. M4 core shipped (local transcription, sidecar
-> import, timestamped search); M5 groundwork shipped (scene detection, frame
-> sampling, perceptual hashing); M6 alpha UI shipped; M8 backup/restore
-> shipped early because the deployment needed it. Remaining M4/M5 work is
-> tracked in GitHub issues.
+## Where things stand — 2026-07-29
+
+Milestones were not completed strictly in order: deployment happened early
+(which surfaced eleven real bugs), and backup/restore was pulled forward
+because a production install without it is negligent. What follows reflects
+reality rather than the original sequence.
+
+### Done and running in production
+
+| Milestone | State | Notes |
+|---|---|---|
+| **M0** Architecture | ✅ | 10 accepted ADRs, threat model, licence inventory |
+| **M1** Foundation | ✅ | auth, migrations, queues, CI/release, health checks |
+| **M2** Indexing | ✅ | 8,954 assets indexed from an 18 TB SMB archive |
+| **M3** Proxies & previews | ✅ | thumbnails, posters, H.264 proxies, signed URLs |
+| **M4** Transcription | ✅ | faster-whisper + VAD, SRT sidecar import, timestamped search |
+| **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
+| **M6** Web UI alpha | ✅ | search, browse, asset detail, dashboards, security page |
+| **M7** Remote access | ✅ core | 2FA, sealed secrets, DDNS, kill switch, sessions |
+| **M8** Hardening | 🔶 partial | backup/restore/verify/update done; benchmarks pending |
+
+### In progress
+
+- **Library-wide visual indexing** — embedding ~9k assets (~70 min of
+  background work at 288 ms/image on current hardware).
+- **Transcription backfill** across the promo/auction footage.
+- **Trusted-proxy client IP handling** (issue #31) — **must land before
+  public exposure**, or a client could spoof a LAN address past the gate.
+
+### Next up
+
+1. **Storage management from the UI** (see "Storage management" below).
+2. **Cross-library move detection** (see "Media that moves" below).
+3. M8 proper: large-library benchmarks, failure drills, security review.
+4. M9: Adobe Premiere panel research (UXP vs CEP).
+
+### Deliberately deferred
+
+Face recognition (privacy-gated), OIDC/SSO, multi-tenant permissions, mobile
+apps, OpenSearch backend, Kubernetes, DaVinci/Lightroom integrations,
+generative summaries, cloud storage drivers.
+
+## Storage management from the UI (planned)
+
+Today, adding storage means editing `/etc/fstab` on the host and setting
+`FRAMEFOUND_DATA_STORE`. The goal is to do it from **Settings → Storage**:
+discover a NAS share, mount it, and choose its role — **media library**
+(read-only, gets scanned) or **cache storage** (read-write, holds thumbnails
+and proxies).
+
+**Why this is not built yet:** mounting a filesystem needs `CAP_SYS_ADMIN`.
+Granting that to the web application would mean a container that can mount
+arbitrary network paths as root — squarely against the threat model's "no
+privileged containers unless unavoidable", and a serious escalation surface
+for an app that is designed to be internet-facing. That decision deserves an
+ADR, not a quick patch.
+
+Planned in three stages, each independently useful:
+
+1. **Read-only storage view** (safe, next) — list mounted filesystems visible
+   to the containers with free space and role, let an admin assign an
+   already-mounted path as a library or as the derivative store, and for
+   anything not yet mounted, *generate the exact fstab line to paste*. No new
+   privileges at all.
+2. **Guided mount via a scoped helper** (needs ADR-0018) — a tiny sidecar
+   holding only `CAP_SYS_ADMIN`, accepting mount requests over a private
+   socket, constrained to an allowlist of mount types and target directories,
+   with every mount audited. The web app itself stays unprivileged.
+3. **Health-aware storage** — surface disconnected mounts, capacity warnings,
+   and per-library storage attribution on the System page.
+
+## Media that moves (planned)
+
+Move detection works **within** a library today: a file that reappears at a
+new path with the same size and partial hash re-binds to the existing asset,
+keeping its UUID, transcripts, thumbnails, and embeddings (ADR-0010). What is
+missing is the rest of a real storage ecosystem:
+
+- **Across libraries** — a clip moved from `Intel 2026` to `Archive 2026` is
+  currently a delete plus a re-add, which discards its derived data. Needs a
+  global content-hash index consulted before any asset is created.
+- **Across mounts and drives** — same content on a new NAS or a new share
+  should be recognised, including when a library root itself changes.
+- **Whole-folder reorganisation** — detect that a directory moved as a unit
+  and re-bind its assets in one operation rather than thousands of individual
+  matches.
+- **Re-linking after restore** — after `manage.sh restore` onto new hardware,
+  reconcile the catalog against storage by content rather than by path.
+- **Verification pass** — full BLAKE3 hashing on demand to confirm that
+  re-bound assets really are the same bytes, and to catch silent corruption.
+
+Design note: all of this hangs off the existing `partial_hash` / `content_hash`
+columns, so no schema change is expected — the work is a global lookup path
+plus a smarter reconciliation step, not new data.
 
 ## M0 — Product & architecture definition ✅
 

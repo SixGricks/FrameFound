@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <!-- Home-screen icon: same mark, more breathing room for iOS masking. -->
+  <rect width="180" height="180" fill="#12100E"/>
+  <rect x="56" y="34" width="68" height="112" rx="12"
+        fill="none" stroke="#F0A22E" stroke-width="11"/>
+  <rect x="74" y="56" width="32" height="22" rx="6" fill="#F0A22E"/>
+  <rect x="74" y="102" width="32" height="22" rx="6" fill="#F0A22E"/>
+</svg>
