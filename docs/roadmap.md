@@ -22,22 +22,34 @@ reality rather than the original sequence.
 | **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
 | **M6** Web UI alpha | ✅ | search, browse, asset detail, dashboards, security page |
 | **M7** Remote access | ✅ core | 2FA, sealed secrets, DDNS, kill switch, sessions |
-| **M8** Hardening | 🔶 partial | backup/restore/verify/update done; benchmarks pending |
+| **M8** Hardening | 🔶 partial | backup/restore/verify/update, image scanning + SBOMs done; benchmarks pending |
 
 ### In progress
 
 - **Library-wide visual indexing** — embedding ~9k assets (~70 min of
-  background work at 288 ms/image on current hardware).
+  background work at 288 ms/image on current hardware). Location inference
+  is queued behind it, since it needs embeddings on both the located and the
+  unlocated side of every comparison.
 - **Transcription backfill** across the promo/auction footage.
-- **Trusted-proxy client IP handling** (issue #31) — **must land before
-  public exposure**, or a client could spoof a LAN address past the gate.
 
 ### Next up
 
-1. **Storage management from the UI** (see "Storage management" below).
-2. **Cross-library move detection** (see "Media that moves" below).
+1. **Storage management from the UI** — stage 2 and 3 (see below); stage 1,
+   the read-only view and fstab generator, has shipped.
+2. **Location** (issue #34): map view, reverse geocoding, inference tuning
+   once the first inferred locations can be judged against known ground truth.
 3. M8 proper: large-library benchmarks, failure drills, security review.
 4. M9: Adobe Premiere panel research (UXP vs CEP).
+
+### Recently landed
+
+- **Cross-library move detection** and the watcher departure lane — see
+  "Media that moves" below.
+- **Duplicate detection** with on-demand full-BLAKE3 verification.
+- **Trusted-proxy client IP handling** — a client can no longer spoof a LAN
+  address past the public-access gate.
+- **Supply chain**: both images scanned and SBOM'd on every push; releases
+  scan before publishing and pin by digest.
 
 ### Deliberately deferred
 
