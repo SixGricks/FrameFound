@@ -83,6 +83,10 @@ def _read_mounts() -> list[tuple[str, str]]:
         mountpoint, fstype = parts[1].replace("\\040", " "), parts[2]
         if fstype in IGNORED_FSTYPES or mountpoint.startswith(("/proc", "/sys", "/dev")):
             continue
+        # Docker bind-mounts individual files (/etc/hosts, /etc/resolv.conf).
+        # They are real mounts but never storage anyone would assign a role to.
+        if not Path(mountpoint).is_dir():
+            continue
         seen.setdefault(mountpoint, fstype)
     return sorted(seen.items())
 
