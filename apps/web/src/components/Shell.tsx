@@ -13,6 +13,7 @@ const LINKS = [
   { href: "/", label: "Search" },
   { href: "/browse", label: "Browse" },
   { href: "/libraries", label: "Libraries" },
+  { href: "/duplicates", label: "Duplicates" },
   { href: "/processing", label: "Processing" },
   { href: "/health", label: "System" },
   { href: "/security", label: "Security" },

@@ -117,6 +117,32 @@ export interface Transcript {
   segments: TranscriptSegment[];
 }
 
+export interface DuplicateMember {
+  asset_id: string;
+  library_id: string;
+  relative_path: string;
+  filename: string;
+  size_bytes: number;
+  mtime: string;
+  content_hash_verified: boolean;
+}
+
+export interface DuplicateGroup {
+  key: string;
+  kind: "identical" | "similar";
+  count: number;
+  size_bytes: number;
+  reclaimable_bytes: number;
+  members: DuplicateMember[];
+}
+
+export interface DuplicateReport {
+  groups: DuplicateGroup[];
+  total_groups: number;
+  total_reclaimable_bytes: number;
+  note: string;
+}
+
 export interface SceneFrame {
   ts_ms: number;
   is_scene_change: boolean;
@@ -273,6 +299,15 @@ export const api = {
     request<SearchResponse>(`/search${query({ q, library_id: libraryId, limit: 40 })}`),
   similar: (assetId: string) => request<VisualHit[]>(`/search/similar/${assetId}`),
   scenes: (assetId: string) => request<SceneFrame[]>(`/assets/${assetId}/scenes`),
+
+  duplicates: (kind: string, minSizeMb: number) =>
+    request<DuplicateReport>(`/duplicates${query({ kind, min_size_mb: minSizeMb })}`),
+  verifyDuplicates: (assetIds: string[]) =>
+    request<{ status: string; queued: number }>("/duplicates/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
 
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),

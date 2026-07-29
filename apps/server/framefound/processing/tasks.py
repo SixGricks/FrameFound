@@ -435,6 +435,35 @@ def embed_frames(asset_id: str) -> None:
         raise
 
 
+async def _verify_hash(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+    from framefound.scanner.identity import full_hash
+
+    asset.content_hash = await asyncio.to_thread(full_hash, path)
+    await db.commit()
+    log.info("verify.content_hash", asset_id=str(asset.id))
+
+
+@celery_app.task(
+    name="framefound.verify_content_hash",
+    queue="metadata",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def verify_content_hash(asset_id: str) -> None:
+    """Full BLAKE3 of the whole file.
+
+    Deliberately on demand rather than during scans: reading every byte of a
+    multi-terabyte archive over SMB is not something to do routinely, but it
+    is exactly what you want before deleting a suspected duplicate.
+    """
+    try:
+        asyncio.run(_with_asset("verify_content_hash", uuid.UUID(asset_id), _verify_hash))
+    except Exception:
+        log.error("verify.failed", asset_id=asset_id, exc_info=True)
+        raise
+
+
 @celery_app.task(
     name="framefound.infer_locations",
     queue="vision",
