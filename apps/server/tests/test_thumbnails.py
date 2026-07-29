@@ -115,3 +115,23 @@ def test_still_timeout_scales_with_file_size(
     monkeypatch.setattr(ffmpeg, "SLOW_STORAGE_BPS", 1)
     ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
     assert captured[-1] == ffmpeg.MAX_STILL_TIMEOUT_S
+
+
+def test_a_signal_kill_is_reported_as_running_out_of_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found in deployment on 1-2 GB TIFF panoramas: ffmpeg is SIGKILLed by
+    the OOM killer, so it exits negative with nothing on stderr. Calling that
+    "could not be processed" sends the operator looking for a corrupt file."""
+    import subprocess
+
+    from framefound.processing import ffmpeg
+
+    def killed(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, returncode=-9, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(ffmpeg.subprocess, "run", killed)
+    monkeypatch.setattr(ffmpeg.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+    with pytest.raises(ffmpeg.FfmpegError, match="memory"):
+        ffmpeg.downscale_still(tmp_path / "huge.tif", tmp_path / "out.jpg", 512)

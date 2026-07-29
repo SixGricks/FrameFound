@@ -57,7 +57,18 @@ def _run(argv: list[str], timeout_s: int) -> None:
         raise FfmpegError("Processing took too long and was stopped") from err
     if completed.returncode != 0:
         tail = completed.stderr.decode("utf-8", errors="replace")[-400:]
-        log.warning("ffmpeg.failed", argv0=argv[:6], stderr_tail=tail)
+        log.warning(
+            "ffmpeg.failed", argv0=argv[:6], returncode=completed.returncode, stderr_tail=tail
+        )
+        # A negative return code means a signal. Empty stderr alongside it is
+        # the OOM killer: ffmpeg never got to say anything. Reporting that as
+        # "could not be processed" sends the operator hunting for a corrupt
+        # file when the answer is that the frame did not fit in the container.
+        if completed.returncode < 0 and not tail.strip():
+            raise FfmpegError(
+                "Ran out of memory. This file is too large to process within "
+                "the worker's memory limit."
+            )
         raise FfmpegError("The file could not be processed")
 
 
