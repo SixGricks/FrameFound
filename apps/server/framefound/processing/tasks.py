@@ -17,6 +17,7 @@ fresh loop. TODO(perf): persistent-loop workers if task volume demands it.
 """
 
 import asyncio
+import bisect
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -60,11 +61,16 @@ _ASSET_FIELDS = (
 LoadedHandler = Callable[[AsyncSession, Asset, Library, Path], Awaitable[None]]
 
 
-def _cosine(a: list[float] | None, b: list[float] | None) -> float:
-    """Cosine similarity for the L2-normalised vectors we store."""
-    if not a or not b:
+def _as_epoch(when: datetime | None) -> float:
+    """Seconds since the epoch, treating a naive timestamp as UTC.
+
+    Capture times arrive from EXIF, which is frequently naive. Sorting and
+    bisecting need one comparable scale, and guessing local time would shift
+    every window by the offset.
+    """
+    if when is None:
         return 0.0
-    return float(sum(x * y for x, y in zip(a, b, strict=False)))
+    return (when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp()
 
 
 async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandler) -> None:
@@ -476,11 +482,27 @@ def infer_locations(library_id: str) -> None:
 
     Only fills gaps: an asset that already has coordinates — from EXIF or a
     person — is never touched.
+
+    Shape matters here. The naive form (compare every unlocated asset against
+    every located one) is 4k x 5k x 512 float operations on a library this
+    size, which does not finish and does not fit in memory. Two things make it
+    tractable, both falling out of constraints `geo` already imposes:
+
+    - `confidence_for` scores anything beyond a two-hour gap at zero, so
+      anchors are sorted by capture time and only the slice inside that window
+      is ever considered. On real footage that is a handful, not thousands.
+    - Embeddings are L2-normalised at write time, so cosine similarity is a
+      plain dot product — one matrix multiply against the slice.
     """
-    from sqlalchemy import select
+    import numpy as np
+    from sqlalchemy import func, select
 
     from framefound.db.models import Frame
-    from framefound.media.geo import LocationCandidate, best_candidate
+    from framefound.media.geo import (
+        MAX_TIME_GAP_S,
+        LocationCandidate,
+        best_candidate,
+    )
 
     async def run() -> None:
         engine = create_async_engine(get_settings().db_url)
@@ -488,14 +510,47 @@ def infer_locations(library_id: str) -> None:
             factory = async_sessionmaker(engine, expire_on_commit=False)
             async with factory() as db:
                 lib = uuid.UUID(library_id)
+
+                # One pass for every asset's earliest embedded frame, rather
+                # than a query per asset. Expressed as a min(ts_ms) join rather
+                # than DISTINCT ON so it runs on SQLite too and the logic stays
+                # testable without a Postgres fixture.
+                earliest = (
+                    select(Frame.asset_id.label("asset_id"), func.min(Frame.ts_ms).label("ts_ms"))
+                    .join(Asset, Asset.id == Frame.asset_id)
+                    .where(
+                        Asset.library_id == lib,
+                        Frame.embedding.is_not(None),
+                        Asset.captured_at.is_not(None),
+                    )
+                    .group_by(Frame.asset_id)
+                    .subquery()
+                )
+                vector_rows = (
+                    await db.execute(
+                        select(Frame.asset_id, Frame.embedding).join(
+                            earliest,
+                            (Frame.asset_id == earliest.c.asset_id)
+                            & (Frame.ts_ms == earliest.c.ts_ms),
+                        )
+                    )
+                ).all()
+                vectors = {row[0]: row[1] for row in vector_rows if row[1]}
+                if not vectors:
+                    log.info("locations.no_embeddings", library=library_id)
+                    return
+
                 located = (
                     (
                         await db.execute(
-                            select(Asset).where(
+                            select(Asset)
+                            .where(
                                 Asset.library_id == lib,
                                 Asset.gps_lat.is_not(None),
                                 Asset.captured_at.is_not(None),
+                                Asset.id.in_(vectors.keys()),
                             )
+                            .order_by(Asset.captured_at)
                         )
                     )
                     .scalars()
@@ -508,6 +563,7 @@ def infer_locations(library_id: str) -> None:
                                 Asset.library_id == lib,
                                 Asset.gps_lat.is_(None),
                                 Asset.captured_at.is_not(None),
+                                Asset.id.in_(vectors.keys()),
                             )
                         )
                     )
@@ -522,35 +578,37 @@ def infer_locations(library_id: str) -> None:
                     )
                     return
 
-                async def first_vector(asset_id: uuid.UUID) -> list[float] | None:
-                    frame = (
-                        await db.execute(
-                            select(Frame)
-                            .where(Frame.asset_id == asset_id, Frame.embedding.is_not(None))
-                            .order_by(Frame.ts_ms)
-                            .limit(1)
-                        )
-                    ).scalar_one_or_none()
-                    return frame.embedding if frame else None
+                # Anchors as one float32 matrix, ordered by capture time so a
+                # bisect gives the time window directly.
+                anchor_matrix = np.asarray([vectors[a.id] for a in located], dtype=np.float32)
+                anchor_times = [_as_epoch(a.captured_at) for a in located]
 
-                anchors = [(a, await first_vector(a.id)) for a in located]
-                anchors = [(a, v) for a, v in anchors if v]
                 filled = 0
                 for subject in unlocated:
-                    subject_vector = await first_vector(subject.id)
-                    if not subject_vector:
-                        continue
-                    candidates = [
-                        LocationCandidate(
-                            asset_id=str(anchor.id),
-                            lat=anchor.gps_lat or 0.0,
-                            lon=anchor.gps_lon or 0.0,
-                            captured_at=anchor.captured_at,  # type: ignore[arg-type]
-                            similarity=_cosine(subject_vector, vector),
-                        )
-                        for anchor, vector in anchors
-                    ]
-                    chosen = best_candidate(subject.captured_at, candidates)  # type: ignore[arg-type]
+                    when = _as_epoch(subject.captured_at)
+                    lo = bisect.bisect_left(anchor_times, when - MAX_TIME_GAP_S)
+                    hi = bisect.bisect_right(anchor_times, when + MAX_TIME_GAP_S)
+                    if lo >= hi:
+                        continue  # nothing shot near this in time
+
+                    window = anchor_matrix[lo:hi]
+                    subject_vector = np.asarray(vectors[subject.id], dtype=np.float32)
+                    # Vectors are unit length, so the dot product is cosine.
+                    similarities = window @ subject_vector
+
+                    chosen = best_candidate(
+                        subject.captured_at,  # type: ignore[arg-type]
+                        [
+                            LocationCandidate(
+                                asset_id=str(located[lo + i].id),
+                                lat=located[lo + i].gps_lat or 0.0,
+                                lon=located[lo + i].gps_lon or 0.0,
+                                captured_at=located[lo + i].captured_at,  # type: ignore[arg-type]
+                                similarity=float(similarity),
+                            )
+                            for i, similarity in enumerate(similarities)
+                        ],
+                    )
                     if chosen is None:
                         continue
                     source, confidence = chosen
@@ -560,8 +618,15 @@ def infer_locations(library_id: str) -> None:
                     subject.gps_confidence = confidence
                     subject.gps_inferred_from = uuid.UUID(source.asset_id)
                     filled += 1
+
                 await db.commit()
-                log.info("locations.inferred", library=library_id, filled=filled)
+                log.info(
+                    "locations.inferred",
+                    library=library_id,
+                    anchors=len(located),
+                    considered=len(unlocated),
+                    filled=filled,
+                )
         finally:
             await engine.dispose()
 
