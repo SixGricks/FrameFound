@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request, params
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.auth import service
+from framefound.auth.client_address import resolve_client_ip
 from framefound.config import Settings, get_settings
 from framefound.db.engine import get_session
 from framefound.db.models import User
@@ -17,9 +18,8 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 def client_ip(request: Request) -> str | None:
-    # TODO(m7): honor X-Forwarded-For only from configured trusted proxies
-    # (threat model: correct client IP handling). Direct peer until then.
-    return request.client.host if request.client else None
+    """Client address, spoof-resistant (see auth/client_address.py)."""
+    return resolve_client_ip(request, get_settings().trusted_proxies)
 
 
 async def get_current_user(request: Request, db: DbDep, settings: SettingsDep) -> User:

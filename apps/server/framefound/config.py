@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # Derivative generation pauses below this much free space on data_dir,
     # so a full disk can never take the database down with it.
     min_free_gb: float = 5.0
+    # Comma-separated CIDRs whose X-Forwarded-For headers may be believed.
+    # Defaults to the Docker bridge range, where our own Caddy container runs.
+    # Anything not listed is treated as a direct client and cannot spoof its
+    # address past the public-access gate or the rate limiter.
+    trusted_proxies: str = "172.16.0.0/12"
 
     # Sessions: sliding idle expiry with an absolute cap.
     session_idle_minutes: int = 720  # 12 h without activity logs you out

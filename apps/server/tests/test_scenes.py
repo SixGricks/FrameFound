@@ -5,7 +5,23 @@ from pathlib import Path
 import pytest
 
 from framefound.media.phash import dhash, hamming_distance
-from framefound.processing.scenes import interval_for, plan_samples
+from framefound.processing.scenes import interval_for, plan_samples, should_scene_detect
+
+
+def test_scene_detection_skipped_for_long_sources_without_a_proxy() -> None:
+    # Full decode of a 40-minute original over SMB costs more than the scene
+    # boundaries are worth; interval sampling covers it with cheap seeks.
+    assert not should_scene_detect(2400.0, has_proxy=False)
+    assert should_scene_detect(2400.0, has_proxy=True)
+
+
+def test_short_clips_are_scene_detected_either_way() -> None:
+    assert should_scene_detect(45.0, has_proxy=False)
+    assert should_scene_detect(45.0, has_proxy=True)
+
+
+def test_unknown_duration_without_proxy_is_not_detected() -> None:
+    assert not should_scene_detect(0.0, has_proxy=False)
 
 
 def test_interval_scales_with_duration() -> None:

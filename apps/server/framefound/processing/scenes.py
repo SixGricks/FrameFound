@@ -19,8 +19,21 @@ log = structlog.get_logger()
 SCENE_THRESHOLD = 0.4
 DETECT_TIMEOUT_S = 1800
 MAX_FRAMES_PER_ASSET = 240
+# Scene detection decodes every frame of the source. On a local 1080p proxy
+# that is cheap; on an original 4K/BRAW file pulled over SMB it can take
+# longer than the rest of the pipeline combined. Above this duration we only
+# scene-detect when a proxy is available, and otherwise fall back to
+# interval sampling — seeks are near-instant even on network storage.
+SCENE_DETECT_MAX_DURATION_S = 120.0
 
 _SHOWINFO_TS = re.compile(rb"pts_time:([0-9.]+)")
+
+
+def should_scene_detect(duration_s: float, has_proxy: bool) -> bool:
+    """Whether full-decode scene detection is worth its cost for this source."""
+    if has_proxy:
+        return True  # proxy is local and small; always worth it
+    return 0 < duration_s <= SCENE_DETECT_MAX_DURATION_S
 
 
 def interval_for(duration_s: float) -> float:

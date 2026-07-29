@@ -299,9 +299,25 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
         if asset.media_type != "video":
             return
         duration = asset.duration_s or 0.0
-        scene_times = await asyncio.to_thread(scenes.detect_scene_timestamps, path)
+        # Prefer the proxy as the decode source: it is local, 1080p, and
+        # H.264, where the original may be 4K on a network share.
+        proxy_rel = deriv.derivative_relpath(asset.id, "proxy", "mp4")
+        proxy = data_dir / proxy_rel
+        has_proxy = proxy.is_file()
+        decode_from = proxy if has_proxy else path
+
+        scene_times: list[float] = []
+        if scenes.should_scene_detect(duration, has_proxy):
+            scene_times = await asyncio.to_thread(scenes.detect_scene_timestamps, decode_from)
+        else:
+            log.info(
+                "frames.interval_only",
+                asset_id=str(asset.id),
+                reason="no proxy and full decode would be slower than it is worth",
+            )
         plan = scenes.plan_samples(duration, scene_times)
         sources = {}
+        path = decode_from  # extract frames from the same source we planned on
 
     await db.execute(delete(Frame).where(Frame.asset_id == asset.id))
     await db.flush()
