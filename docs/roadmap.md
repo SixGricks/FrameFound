@@ -69,6 +69,15 @@ reality rather than the original sequence.
 
 ### Recently landed
 
+- **Storage management from the UI** (ADR-0018) — add and remove media and
+  cache drives from a form, via a scoped mount helper that is off unless
+  enabled.
+- **UI/UX audit fixes** — keyboard focus was invisible app-wide (no
+  `:focus-visible` anywhere, and `a { text-decoration: none }`); `--paper-faint`
+  measured ~3.3:1 against the background, under WCAG AA for text that carries
+  real information; the only layout breakpoint was for asset detail, so the
+  8-item nav had no mobile behaviour. All three fixed, plus a skip link, touch
+  targets, and `aria-current` on the active nav item.
 - **Transcription retry sweep** — 555 jobs had failed on a models-directory
   permission fault, exhausted their Celery retries, and were never looked at
   again; the fault was fixed long before anyone noticed the backlog. The
@@ -114,34 +123,36 @@ Face recognition (privacy-gated), OIDC/SSO, multi-tenant permissions, mobile
 apps, OpenSearch backend, Kubernetes, DaVinci/Lightroom integrations,
 generative summaries, cloud storage drivers.
 
-## Storage management from the UI (planned)
+## Storage management from the UI (shipped)
 
-Today, adding storage means editing `/etc/fstab` on the host and setting
-`FRAMEFOUND_DATA_STORE`. The goal is to do it from **Settings → Storage**:
-discover a NAS share, mount it, and choose its role — **media library**
-(read-only, gets scanned) or **cache storage** (read-write, holds thumbnails
-and proxies).
+Drives are added and removed from **Storage** in the UI. A media drive is
+mounted read-only and can register a library and start a scan in one step; a
+cache drive is writable and holds thumbnails and proxies, keeping generated
+files off the system disk.
 
-**Why this is not built yet:** mounting a filesystem needs `CAP_SYS_ADMIN`.
-Granting that to the web application would mean a container that can mount
-arbitrary network paths as root — squarely against the threat model's "no
-privileged containers unless unavoidable", and a serious escalation surface
-for an app that is designed to be internet-facing. That decision deserves an
-ADR, not a quick patch.
+Mounting needs `CAP_SYS_ADMIN`, so it lives in a `mounter` sidecar that holds
+that capability and drops every other one — never in the API, which terminates
+untrusted requests. It sits behind a compose profile and is **off by default**:
 
-Planned in three stages, each independently useful:
+```bash
+docker compose --profile storage up -d
+```
 
-1. **Read-only storage view** (safe, next) — list mounted filesystems visible
-   to the containers with free space and role, let an admin assign an
-   already-mounted path as a library or as the derivative store, and for
-   anything not yet mounted, *generate the exact fstab line to paste*. No new
-   privileges at all.
-2. **Guided mount via a scoped helper** (needs ADR-0018) — a tiny sidecar
-   holding only `CAP_SYS_ADMIN`, accepting mount requests over a private
-   socket, constrained to an allowlist of mount types and target directories,
-   with every mount audited. The web app itself stays unprivileged.
-3. **Health-aware storage** — surface disconnected mounts, capacity warnings,
-   and per-library storage attribution on the System page.
+An install that never adds a drive from the UI never runs a privileged
+container at all. Constraints and the reasoning behind each are in
+[ADR-0018](adr/0018-mount-helper.md); the short version is cifs/nfs only,
+targets confined under `/mnt/media` or `/mnt/cache`, options constructed
+rather than accepted, argv with no shell, credentials via a 0600 file, media
+always read-only, and validation repeated inside the helper because that is
+the side holding the capability.
+
+Mounts made this way are live immediately but do not survive a host reboot.
+The UI returns the exact fstab line and says so, rather than silently writing
+to the host's `/etc/fstab` — a larger privilege that was deliberately not
+taken.
+
+**Still open:** health-aware storage — disconnected-mount alerts, capacity
+warnings, and per-library storage attribution on the System page.
 
 ## Maps provider — revisit
 

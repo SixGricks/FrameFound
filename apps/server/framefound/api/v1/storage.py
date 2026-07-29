@@ -12,12 +12,13 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, Library
+from framefound.db.models import Asset, Library, Scan
+from framefound.storage.spec import MountSpec, MountSpecError, parse_mount_spec
 
 router = APIRouter(prefix="/storage", tags=["storage"])
 
@@ -213,4 +214,188 @@ async def generate_fstab_line(body: FstabRequest, _user: CurrentUser) -> FstabRe
         fstab_line=f"{source}  {target}  {body.protocol}  {options}  0 0",
         commands=commands,
         notes=notes,
+    )
+
+
+class AddDriveRequest(BaseModel):
+    """A network share to mount and, optionally, start using immediately."""
+
+    protocol: str = Field(default="cifs", pattern="^(cifs|nfs)$")
+    server: str = Field(min_length=1, max_length=253)
+    share: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=120, description="Folder name under the root")
+    purpose: str = Field(default="media", pattern="^(media|cache)$")
+    username: str = Field(default="", max_length=200)
+    password: str = Field(default="", max_length=400)
+    # Media shares usually want a library straight away; a cache share does not.
+    create_library: bool = True
+    library_name: str = Field(default="", max_length=120)
+
+
+class DriveResult(BaseModel):
+    ok: bool
+    target: str
+    detail: str = ""
+    library_id: uuid.UUID | None = None
+    fstab_line: str = ""
+    persist_hint: str = ""
+
+
+class UnmountDriveRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=1024)
+
+
+def _mounter_base() -> str:
+    import os
+
+    return os.environ.get("FRAMEFOUND_MOUNTER_URL", "http://mounter:8000")
+
+
+def _mounter_token() -> str:
+    import os
+
+    return os.environ.get("FRAMEFOUND_MOUNTER_TOKEN", "")
+
+
+async def _call_mounter(path: str, payload: dict[str, object]) -> dict[str, object]:
+    import httpx
+
+    token = _mounter_token()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The mount helper is not configured. Set FRAMEFOUND_MOUNTER_TOKEN "
+                "and start the `mounter` service, or add the drive from the host "
+                "using the generated fstab line."
+            ),
+        )
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{_mounter_base()}{path}",
+                json=payload,
+                headers={"X-FrameFound-Token": token},
+            )
+    except Exception as err:
+        raise HTTPException(status_code=503, detail="The mount helper is not reachable.") from err
+    if response.status_code >= 400:
+        detail = response.json().get("detail", "The mount was refused.")
+        raise HTTPException(status_code=response.status_code, detail=str(detail))
+    return dict(response.json())
+
+
+@router.post("/drives", response_model=DriveResult, dependencies=[require_admin])
+async def add_drive(body: AddDriveRequest, _user: CurrentUser, db: DbDep) -> DriveResult:
+    """Mount a network share and optionally register it as a library.
+
+    The request is validated here *and* again inside the helper. This side
+    validating is a courtesy that produces a good error message; the helper
+    validating is the control that matters, because it is the process holding
+    the capability.
+    """
+    try:
+        spec = parse_mount_spec(
+            protocol=body.protocol,
+            server=body.server,
+            share=body.share,
+            name=body.name,
+            purpose=body.purpose,
+        )
+    except MountSpecError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+
+    result = await _call_mounter(
+        "/mount",
+        {
+            "protocol": spec.protocol,
+            "server": spec.server,
+            "share": spec.share,
+            "name": spec.name,
+            "purpose": spec.purpose,
+            "username": body.username,
+            "password": body.password,
+        },
+    )
+    if not result.get("ok"):
+        return DriveResult(ok=False, target=str(spec.target), detail=str(result.get("detail", "")))
+
+    # Containers see the shared roots at /media and /cache; the helper mounts
+    # at /mnt/... on the host side of the same bind.
+    container_path = _container_path(spec)
+
+    library_id: uuid.UUID | None = None
+    if body.purpose == "media" and body.create_library:
+        existing = (
+            await db.execute(select(Library).where(Library.root_path == container_path))
+        ).scalar_one_or_none()
+        if existing is None:
+            library = Library(
+                name=(body.library_name or body.name).strip(),
+                root_path=container_path,
+                read_only=True,
+                enabled=True,
+                watcher_enabled=True,
+                # Off by default: proxies are the fastest way to fill a disk,
+                # and a new share's size is unknown until it is scanned.
+                generate_proxies=False,
+                transcribe_enabled=True,
+                scan_interval_minutes=1440,
+            )
+            db.add(library)
+            await db.flush()
+            db.add(Scan(library_id=library.id, status="pending"))
+            await db.commit()
+            library_id = library.id
+        else:
+            library_id = existing.id
+
+    return DriveResult(
+        ok=True,
+        target=str(spec.target),
+        library_id=library_id,
+        fstab_line=spec.fstab_line(),
+        persist_hint=(
+            "This mount is live now but will not survive a host reboot. Add the "
+            "fstab line above on the host to make it permanent."
+        ),
+    )
+
+
+def _container_path(spec: "MountSpec") -> str:
+    """Where the containers will see this mount.
+
+    The helper mounts under /mnt/media or /mnt/cache on the host; the app
+    containers bind those same roots at /media and /cache.
+    """
+    return f"/media/{spec.name}" if spec.purpose == "media" else f"/cache/{spec.name}"
+
+
+@router.post("/drives/unmount", response_model=DriveResult, dependencies=[require_admin])
+async def unmount_drive(body: UnmountDriveRequest, _user: CurrentUser, db: DbDep) -> DriveResult:
+    """Unmount a share. Refuses while a library still points at it.
+
+    Unmounting under a live library would flip every one of its assets to
+    `missing` on the next scan, which reads like data loss even though the
+    catalogue is intact.
+    """
+    name = body.target.rstrip("/").rsplit("/", 1)[-1]
+    for candidate in (f"/media/{name}", f"/cache/{name}"):
+        library = (
+            await db.execute(select(Library).where(Library.root_path == candidate))
+        ).scalar_one_or_none()
+        if library is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"The library '{library.name}' still uses this drive. "
+                    "Remove or disable the library first."
+                ),
+            )
+
+    result = await _call_mounter("/unmount", {"target": body.target})
+    return DriveResult(
+        ok=bool(result.get("ok")),
+        target=body.target,
+        detail=str(result.get("detail", "")),
     )

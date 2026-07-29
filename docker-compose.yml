@@ -63,7 +63,8 @@ services:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data                      # derived files: thumbs, proxies, transcripts
-      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
@@ -94,7 +95,8 @@ services:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
-      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
@@ -117,7 +119,8 @@ services:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
-      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
@@ -143,11 +146,56 @@ services:
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
       - framefound-models:/models                  # downloaded model weights cache
-      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+
+  mounter:
+    # The ONLY container with CAP_SYS_ADMIN. It mounts network shares on
+    # request and does nothing else — see docs/adr/0018-mount-helper.md.
+    #
+    # Enable with:  docker compose --profile storage up -d
+    # It stays off by default so an install that never adds a drive from the
+    # UI never runs a privileged container at all.
+    profiles: ["storage"]
+    build: apps/server
+    image: ghcr.io/sixgricks/framefound-server:dev
+    restart: unless-stopped
+    command:
+      ["uvicorn", "framefound.storage.mounter:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      # No compose-level default on purpose: the helper refuses to start
+      # without a token, so an empty value fails closed rather than running
+      # a privileged container that accepts anything reaching it.
+      FRAMEFOUND_MOUNTER_TOKEN: ${FRAMEFOUND_MOUNTER_TOKEN:-}
+    # Root because mount(8) requires it; the capability set is otherwise
+    # trimmed to exactly what mounting a network filesystem needs.
+    user: root
+    cap_drop: [ALL]
+    cap_add: [SYS_ADMIN, DAC_READ_SEARCH]
+    security_opt: ["apparmor:unconfined"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+    volumes:
+      # rshared so a mount made in here propagates back to the host and into
+      # every other container. Without this the mount would exist only in this
+      # container's namespace and nothing else would see it.
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/mnt/media:rshared
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/mnt/cache:rshared
+    # No published ports: reachable only from the internal compose network.
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   scanner:
     # Filesystem watcher + periodic reconciliation scans.
@@ -167,7 +215,8 @@ services:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
-      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }

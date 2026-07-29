@@ -13,6 +13,7 @@ const LINKS = [
   { href: "/", label: "Search" },
   { href: "/browse", label: "Browse" },
   { href: "/libraries", label: "Libraries" },
+  { href: "/storage", label: "Storage" },
   { href: "/places", label: "Places" },
   { href: "/duplicates", label: "Duplicates" },
   { href: "/processing", label: "Processing" },
@@ -44,11 +45,14 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="shell">
+      <a className="skiplink" href="#main">
+        Skip to content
+      </a>
       <header className="topbar">
         <Link href="/" className="brand">
           FrameFound
         </Link>
-        <nav className="navlinks">
+        <nav className="navlinks" aria-label="Sections">
           {LINKS.map((link) => (
             <Link
               key={link.href}
@@ -56,6 +60,11 @@ export default function Shell({ children }: { children: ReactNode }) {
               className="navlink"
               data-active={
                 link.href === "/" ? pathname === "/" : pathname.startsWith(link.href)
+              }
+              aria-current={
+                (link.href === "/" ? pathname === "/" : pathname.startsWith(link.href))
+                  ? "page"
+                  : undefined
               }
             >
               {link.label}
@@ -69,7 +78,9 @@ export default function Shell({ children }: { children: ReactNode }) {
           </button>
         </div>
       </header>
-      <main className="page">{children}</main>
+      <main className="page" id="main" tabIndex={-1}>
+        {children}
+      </main>
     </div>
   );
 }

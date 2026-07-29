@@ -144,7 +144,7 @@ export default function MapsSettingsCard() {
           )}
         </div>
 
-        <label className="field" style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+        <label className="field" data-layout="row">
           <input
             type="checkbox"
             checked={settings.basemap_enabled}
@@ -164,7 +164,7 @@ export default function MapsSettingsCard() {
           </span>
         </label>
 
-        <label className="field" style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+        <label className="field" data-layout="row">
           <input
             type="checkbox"
             checked={settings.geocode_unnamed_places}

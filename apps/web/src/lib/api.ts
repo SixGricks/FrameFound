@@ -143,6 +143,34 @@ export interface DuplicateReport {
   note: string;
 }
 
+export interface Mount {
+  path: string;
+  fstype: string;
+  is_network: boolean;
+  total_gb: number | null;
+  free_gb: number | null;
+  writable: boolean;
+  role: string;
+  library_name: string | null;
+  asset_count: number | null;
+}
+
+export interface StorageReport {
+  media_root: string;
+  data_store: string;
+  mounts: Mount[];
+  hint: string;
+}
+
+export interface DriveResult {
+  ok: boolean;
+  target: string;
+  detail: string;
+  library_id: string | null;
+  fstab_line: string;
+  persist_hint: string;
+}
+
 export interface Place {
   name: string;
   named_from: "folder" | "geocode" | "unknown";
@@ -346,6 +374,20 @@ export const api = {
     request<NearbyAsset[]>(
       `/assets/near${query({ lat, lon, radius_km: radiusKm, limit: 120 })}`,
     ),
+
+  storage: () => request<StorageReport>("/storage"),
+  addDrive: (body: Record<string, unknown>) =>
+    request<DriveResult>("/storage/drives", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  unmountDrive: (target: string) =>
+    request<DriveResult>("/storage/drives/unmount", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    }),
 
   mapConfig: () => request<MapConfig>("/places/map-config"),
   mapsSettings: () => request<MapsSettings>("/places/maps-settings"),

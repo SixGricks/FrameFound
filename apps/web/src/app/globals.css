@@ -13,9 +13,12 @@
 
   --paper: #f3eee5;
   --paper-dim: #a89c8c;
-  --paper-faint: #6f6558;
+  /* Was #6f6558, which measured ~3.3:1 against --ink — under WCAG AA for
+     body text, and .faint is used for real information, not decoration. */
+  --paper-faint: #9a8f80;
 
   --amber: #f0a22e;
+  --amber-dim: #b9791f;
   --amber-soft: rgba(240, 162, 46, 0.14);
   --amber-line: rgba(240, 162, 46, 0.35);
   --ember: #e4572e;
@@ -179,6 +182,37 @@ h2 {
   max-width: 1560px;
   margin: 0 auto;
   padding: 30px 24px 72px;
+}
+
+/* Keyboard focus. Previously only .input and .select showed focus at all,
+   which with `a { text-decoration: none }` left keyboard users with nothing
+   to follow. :focus-visible so pointer users never see a ring they did not
+   ask for. */
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.tile:focus-visible,
+.strip-cell:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Skip link: the nav is 8 items and growing, and tabbing past it on every
+   page is a real cost for keyboard and screen-reader users. */
+.skiplink {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 60;
+  padding: 10px 16px;
+  background: var(--amber);
+  color: #241a08;
+  font-weight: 600;
+  border-radius: 0 0 9px 0;
+}
+.skiplink:focus {
+  left: 0;
 }
 
 /* ---------- primitives ---------- */
@@ -703,7 +737,7 @@ h2 {
 .bar > i {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--amber-dim, #b9791f), var(--amber));
+  background: linear-gradient(90deg, var(--amber-dim), var(--amber));
   border-radius: inherit;
   transition: width 0.5s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
@@ -756,6 +790,104 @@ h2 {
   margin-top: 16px;
   font-size: 0.84rem;
   color: var(--paper-dim);
+}
+/* Checkbox rows. Setting flex-direction on a grid does nothing, which is how
+   these ended up stacked when they were meant to sit inline. */
+.field[data-layout="row"] {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 9px;
+}
+.field[data-layout="row"] input[type="checkbox"] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--amber);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 900px) {
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    padding: 10px 16px;
+  }
+  /* Nav drops to its own full-width row and scrolls, rather than crushing
+     the brand and the sign-out control. */
+  .navlinks {
+    order: 3;
+    width: 100%;
+    margin: 0 -16px;
+    padding: 0 16px 2px;
+  }
+  .topbar-end {
+    gap: 8px;
+  }
+  /* The signed-in address is the first thing worth dropping on a phone. */
+  .topbar-end .mono {
+    display: none;
+  }
+  .page {
+    padding: 20px 16px 56px;
+  }
+  .sectionhead {
+    margin-top: 28px;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .searchwrap {
+    margin-top: 2vh;
+  }
+  .searchbar {
+    flex-wrap: wrap;
+  }
+  .searchbar .input {
+    font-size: 1rem;
+    padding: 13px 15px;
+  }
+  .kv {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  .kv dd {
+    margin-bottom: 8px;
+  }
+  .hit {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .hit-thumb {
+    width: 100%;
+  }
+  .empty {
+    padding: 40px 18px;
+  }
+}
+
+/* Touch: 31px controls are below every platform's minimum target. */
+@media (pointer: coarse) {
+  .navlink,
+  .hint {
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+  .btn {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+}
+
+/* Wide tables (processing, sessions) must scroll in their own container
+   rather than pushing the page sideways. */
+.tablewrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 @keyframes rise {
