@@ -27,8 +27,11 @@ dependencies = [
 db = ["sqlalchemy[asyncio]>=2.0", "asyncpg>=0.29", "alembic>=1.13", "pgvector>=0.3"]
 queue = ["celery[redis]>=5.4", "redis>=5.0"]
 scanner = ["watchdog>=4.0", "blake3>=0.4"]
-media = ["pillow>=10.4"]
-ai = ["faster-whisper>=1.0", "onnxruntime>=1.19", "numpy>=1.26"]
+# numpy sits with media, not ai: location inference is core catalogue
+# behaviour and must run (and be tested) without the heavy ONNX/Whisper
+# stack installed.
+media = ["pillow>=10.4", "numpy>=1.26"]
+ai = ["faster-whisper>=1.0", "onnxruntime>=1.19"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
