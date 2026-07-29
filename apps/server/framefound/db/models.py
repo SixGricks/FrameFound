@@ -194,8 +194,14 @@ class Asset(Base):
     aperture_f: Mapped[float | None] = mapped_column(Float, default=None)
     shutter_speed: Mapped[str | None] = mapped_column(String(20), default=None)
     iso: Mapped[int | None] = mapped_column(default=None)
-    gps_lat: Mapped[float | None] = mapped_column(Float, default=None)
-    gps_lon: Mapped[float | None] = mapped_column(Float, default=None)
+    gps_lat: Mapped[float | None] = mapped_column(Float, default=None, index=True)
+    gps_lon: Mapped[float | None] = mapped_column(Float, default=None, index=True)
+    # exif | inferred | manual. Inference borrows a position from a located
+    # asset shot at the same time and place (framefound/media/geo.py); it is
+    # always labelled so it can never masquerade as camera-recorded truth.
+    gps_source: Mapped[str | None] = mapped_column(String(20), default=None)
+    gps_confidence: Mapped[float | None] = mapped_column(Float, default=None)
+    gps_inferred_from: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
     captured_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None, index=True
     )

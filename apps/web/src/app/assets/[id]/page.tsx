@@ -4,14 +4,18 @@
 // Arriving from a search hit deep-links to the moment via ?t=<seconds>.
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
+import Thumb from "@/components/Thumb";
 import {
   api,
   mediaUrl,
   type AssetDetail,
+  type SceneFrame,
   type Transcript,
+  type VisualHit,
 } from "@/lib/api";
 import { bytes, duration, resolution, shortDate, timecode } from "@/lib/format";
 
@@ -25,6 +29,9 @@ function DetailPage() {
   const cueRefs = useRef<Record<number, HTMLButtonElement | null>>({});
   const [asset, setAsset] = useState<AssetDetail | null>(null);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [scenes, setScenes] = useState<SceneFrame[]>([]);
+  const [similar, setSimilar] = useState<VisualHit[]>([]);
+  const [playhead, setPlayhead] = useState(0);
   const [activeCue, setActiveCue] = useState(-1);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +45,8 @@ function DetailPage() {
       .transcript(assetId)
       .then(setTranscript)
       .catch(() => setTranscript(null)); // no transcript is a normal state
+    api.scenes(assetId).then(setScenes).catch(() => setScenes([]));
+    api.similar(assetId).then(setSimilar).catch(() => setSimilar([]));
   }, [assetId]);
 
   const seek = useCallback((seconds: number) => {
@@ -53,7 +62,9 @@ function DetailPage() {
 
   function onTimeUpdate() {
     const video = videoRef.current;
-    if (!video || !transcript) return;
+    if (!video) return;
+    setPlayhead(video.currentTime * 1000);
+    if (!transcript) return;
     const ms = video.currentTime * 1000;
     const index = transcript.segments.findIndex(
       (seg) => ms >= seg.start_ms && ms < seg.end_ms,
@@ -130,6 +141,31 @@ function DetailPage() {
           {!isVideo && !isAudio && (
             // eslint-disable-next-line @next/next/no-img-element
             <img className="stillframe" src={mediaUrl(assetId, "preview")} alt={asset.filename} />
+          )}
+
+          {scenes.length > 1 && (
+            <div className="strip" aria-label="Scene thumbnails">
+              {scenes.map((frame) => (
+                <button
+                  key={frame.ts_ms}
+                  className="strip-cell"
+                  data-scene={frame.is_scene_change}
+                  data-active={
+                    playhead >= frame.ts_ms && playhead < frame.ts_ms + 5000
+                  }
+                  onClick={() => seek(frame.ts_ms / 1000)}
+                  title={
+                    frame.is_scene_change
+                      ? `Scene ${frame.scene_number} · ${timecode(frame.ts_ms)}`
+                      : timecode(frame.ts_ms)
+                  }
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={frame.url} alt="" loading="lazy" decoding="async" />
+                  <time>{timecode(frame.ts_ms)}</time>
+                </button>
+              ))}
+            </div>
           )}
 
           {transcript && (
@@ -288,6 +324,32 @@ function DetailPage() {
                   </>
                 )}
               </dl>
+            </div>
+          )}
+
+          {similar.length > 0 && (
+            <div className="card">
+              <p className="eyebrow" style={{ marginBottom: 12 }}>
+                Visually similar
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {similar.slice(0, 6).map((hit) => (
+                  <Link
+                    key={hit.asset_id}
+                    href={`/assets/${hit.asset_id}`}
+                    className="tile"
+                    title={hit.filename}
+                  >
+                    <div className="tile-frame">
+                      <Thumb
+                        assetId={hit.asset_id}
+                        mediaType={hit.media_type}
+                        status="ready"
+                      />
+                    </div>
+                  </Link>
+                ))}
+              </div>
             </div>
           )}
 

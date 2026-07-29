@@ -117,6 +117,13 @@ export interface Transcript {
   segments: TranscriptSegment[];
 }
 
+export interface SceneFrame {
+  ts_ms: number;
+  is_scene_change: boolean;
+  scene_number: number | null;
+  url: string;
+}
+
 export interface VisualHit {
   asset_id: string;
   filename: string;
@@ -265,6 +272,7 @@ export const api = {
   search: (q: string, libraryId?: string) =>
     request<SearchResponse>(`/search${query({ q, library_id: libraryId, limit: 40 })}`),
   similar: (assetId: string) => request<VisualHit[]>(`/search/similar/${assetId}`),
+  scenes: (assetId: string) => request<SceneFrame[]>(`/assets/${assetId}/scenes`),
 
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),

@@ -579,6 +579,55 @@ h2 {
   padding-top: 2px;
 }
 
+/* Scene filmstrip under the player */
+.strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 10px 2px 4px;
+  scrollbar-width: thin;
+}
+.strip-cell {
+  flex: none;
+  width: 108px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--ink-deep);
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+  transition: border-color 0.14s, transform 0.14s;
+}
+.strip-cell:hover {
+  border-color: var(--amber-line);
+  transform: translateY(-2px);
+}
+.strip-cell[data-scene="true"] {
+  border-color: var(--amber-line);
+  box-shadow: inset 0 2px 0 var(--amber);
+}
+.strip-cell[data-active="true"] {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
+.strip-cell img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+}
+.strip-cell time {
+  position: absolute;
+  bottom: 3px;
+  right: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  background: rgba(11, 10, 9, 0.82);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 .kv {
   display: grid;
   grid-template-columns: 118px 1fr;

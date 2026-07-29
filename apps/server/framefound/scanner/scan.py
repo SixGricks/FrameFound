@@ -33,7 +33,7 @@ from framefound.media.detect import (
     media_type_for,
 )
 from framefound.scanner.identity import partial_hash
-from framefound.scanner.paths import safe_join
+from framefound.scanner.paths import PathValidationError, safe_join
 from framefound.scanner.stability import looks_at_rest
 
 log = structlog.get_logger()
@@ -116,24 +116,52 @@ async def _index_new_file(
     except OSError:
         return None, "deferred"
 
-    candidates = (
-        await db.execute(
-            select(Asset).where(
-                Asset.library_id == library.id,
-                Asset.size_bytes == st.st_size,
-                Asset.partial_hash == phash,
+    # Move detection is global, not per-library (ADR-0010). Media reorganised
+    # across libraries, onto a different share, or restored onto new hardware
+    # keeps its UUID — and therefore its transcripts, thumbnails, embeddings
+    # and tags — instead of being discarded and rebuilt from scratch.
+    matches = (
+        (
+            await db.execute(
+                select(Asset).where(Asset.size_bytes == st.st_size, Asset.partial_hash == phash)
             )
         )
-    ).scalars()
+        .scalars()
+        .all()
+    )
+    # Prefer a candidate from this library: within one library the same bytes
+    # at a vanished path is almost certainly the very same file.
+    candidates = sorted(matches, key=lambda c: c.library_id != library.id)
+
     for candidate in candidates:
-        old_abs = root / candidate.relative_path
-        if not old_abs.exists():
-            candidate.relative_path = rel
-            candidate.filename = Path(rel).name
-            candidate.mtime = datetime.fromtimestamp(st.st_mtime, tz=UTC)
-            candidate.availability = "online"
-            candidate.last_verified_at = scan_time
-            return None, "moved"
+        old_root = root if candidate.library_id == library.id else None
+        if old_root is None:
+            source_library = await db.get(Library, candidate.library_id)
+            if source_library is None:
+                continue
+            old_root = Path(source_library.root_path)
+        try:
+            old_abs = safe_join(old_root, candidate.relative_path)
+        except PathValidationError:
+            continue
+        if old_abs.exists():
+            continue  # still there — this is a genuine duplicate, not a move
+
+        moved_libraries = candidate.library_id != library.id
+        candidate.library_id = library.id
+        candidate.relative_path = rel
+        candidate.filename = Path(rel).name
+        candidate.mtime = datetime.fromtimestamp(st.st_mtime, tz=UTC)
+        candidate.availability = "online"
+        candidate.last_verified_at = scan_time
+        if moved_libraries:
+            log.info(
+                "scan.moved_across_libraries",
+                asset_id=str(candidate.id),
+                into=library.name,
+                path=rel,
+            )
+        return None, "moved"
 
     media_type = media_type_for(rel)
     if media_type is None:  # pragma: no cover - filtered by the walk already

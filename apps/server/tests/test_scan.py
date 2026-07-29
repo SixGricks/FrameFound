@@ -189,3 +189,52 @@ async def test_include_extensions_filter(db: AsyncSession, tmp_path: Path) -> No
 
     assert scan.files_new == 1
     assert (await db.execute(select(Asset))).scalar_one().relative_path == "b.mp4"
+
+
+async def test_move_between_libraries_keeps_identity(db: AsyncSession, tmp_path: Path) -> None:
+    """Media reorganised into a DIFFERENT library must keep its asset — and
+    therefore its transcripts, thumbnails and embeddings — not be rebuilt."""
+    source_root = tmp_path / "archive-a"
+    dest_root = tmp_path / "archive-b"
+    write_old(source_root / "clip.mp4", b"identical-bytes-for-move")
+    dest_root.mkdir(parents=True)
+
+    source = await make_library(db, source_root)
+    dest = await make_library(db, dest_root)
+    enqueued: list[uuid.UUID] = []
+    await scan_once(db, source, enqueued)
+    original_id = (await db.execute(select(Asset))).scalar_one().id
+
+    # The editor drags the file from one library's folder to the other's.
+    moved_to = dest_root / "2026" / "clip.mp4"
+    moved_to.parent.mkdir(parents=True)
+    (source_root / "clip.mp4").rename(moved_to)
+    os.utime(moved_to, (OLD, OLD))
+
+    scan = await scan_once(db, dest, enqueued)
+
+    assert scan.files_moved == 1
+    assert scan.files_new == 0
+    asset = (await db.execute(select(Asset))).scalar_one()
+    assert asset.id == original_id  # same asset, all derived data intact
+    assert asset.library_id == dest.id
+    assert asset.relative_path == "2026/clip.mp4"
+    assert len(enqueued) == 1  # a move needs no reprocessing
+
+
+async def test_duplicate_in_another_library_is_not_a_move(db: AsyncSession, tmp_path: Path) -> None:
+    """Identical bytes that still exist in BOTH places are two real assets."""
+    root_a = tmp_path / "lib-a"
+    root_b = tmp_path / "lib-b"
+    write_old(root_a / "copy.jpg", b"same-content-both-places")
+    write_old(root_b / "copy.jpg", b"same-content-both-places")
+
+    lib_a = await make_library(db, root_a)
+    lib_b = await make_library(db, root_b)
+    enqueued: list[uuid.UUID] = []
+    await scan_once(db, lib_a, enqueued)
+    scan = await scan_once(db, lib_b, enqueued)
+
+    assert scan.files_new == 1
+    assert scan.files_moved == 0
+    assert len((await db.execute(select(Asset))).scalars().all()) == 2

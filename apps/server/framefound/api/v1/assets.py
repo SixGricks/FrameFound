@@ -55,6 +55,8 @@ class AssetDetail(AssetSummary):
     iso: int | None
     gps_lat: float | None
     gps_lon: float | None
+    gps_source: str | None
+    gps_confidence: float | None
     rating: int | None
     favorite: bool
     archived: bool
@@ -171,6 +173,87 @@ async def get_transcript(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> 
         segment_count=transcript.segment_count,
         segments=[TranscriptSegmentOut.model_validate(s) for s in transcript.segments],
     )
+
+
+class NearbyAsset(BaseModel):
+    asset_id: uuid.UUID
+    filename: str
+    media_type: str
+    distance_km: float
+    gps_lat: float
+    gps_lon: float
+    gps_source: str | None
+    gps_confidence: float | None
+    captured_at: datetime | None
+
+
+@router.get("/near", response_model=list[NearbyAsset])
+async def assets_near(
+    _user: CurrentUser,
+    db: DbDep,
+    lat: float = Query(ge=-90, le=90),
+    lon: float = Query(ge=-180, le=180),
+    radius_km: float = Query(default=1.0, gt=0, le=500),
+    library_id: uuid.UUID | None = None,
+    limit: int = Query(default=60, ge=1, le=200),
+) -> list[NearbyAsset]:
+    """Everything shot within a radius, closest first.
+
+    A bounding box narrows the candidates using the lat/lon indexes, then an
+    exact haversine check trims the corners the box included.
+    """
+    from framefound.media.geo import bounding_box, haversine_km
+
+    min_lat, max_lat, min_lon, max_lon = bounding_box(lat, lon, radius_km)
+    query = select(Asset).where(
+        Asset.gps_lat.is_not(None),
+        Asset.gps_lat.between(min_lat, max_lat),
+        Asset.gps_lon.between(min_lon, max_lon),
+    )
+    if library_id is not None:
+        query = query.where(Asset.library_id == library_id)
+
+    scored = []
+    for asset in (await db.execute(query.limit(limit * 4))).scalars():
+        distance = haversine_km(lat, lon, asset.gps_lat or 0.0, asset.gps_lon or 0.0)
+        if distance <= radius_km:
+            scored.append((distance, asset))
+    scored.sort(key=lambda row: row[0])
+
+    return [
+        NearbyAsset(
+            asset_id=asset.id,
+            filename=asset.filename,
+            media_type=asset.media_type,
+            distance_km=round(distance, 3),
+            gps_lat=asset.gps_lat or 0.0,
+            gps_lon=asset.gps_lon or 0.0,
+            gps_source=asset.gps_source,
+            gps_confidence=asset.gps_confidence,
+            captured_at=asset.captured_at,
+        )
+        for distance, asset in scored[:limit]
+    ]
+
+
+@router.get("/{asset_id}/nearby", response_model=list[NearbyAsset])
+async def assets_near_asset(
+    asset_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    radius_km: float = Query(default=1.0, gt=0, le=500),
+    limit: int = Query(default=60, ge=1, le=200),
+) -> list[NearbyAsset]:
+    """Everything shot near this asset — 'what else did we get here?'"""
+    asset = await db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "Asset not found")
+    if asset.gps_lat is None or asset.gps_lon is None:
+        raise HTTPException(404, "This item has no location")
+    nearby = await assets_near(
+        _user, db, lat=asset.gps_lat, lon=asset.gps_lon, radius_km=radius_km, limit=limit + 1
+    )
+    return [hit for hit in nearby if hit.asset_id != asset_id][:limit]
 
 
 class FrameOut(BaseModel):

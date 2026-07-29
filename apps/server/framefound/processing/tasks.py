@@ -60,6 +60,13 @@ _ASSET_FIELDS = (
 LoadedHandler = Callable[[AsyncSession, Asset, Library, Path], Awaitable[None]]
 
 
+def _cosine(a: list[float] | None, b: list[float] | None) -> float:
+    """Cosine similarity for the L2-normalised vectors we store."""
+    if not a or not b:
+        return 0.0
+    return float(sum(x * y for x, y in zip(a, b, strict=False)))
+
+
 async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandler) -> None:
     """Common shell: fresh engine, job-history row, load asset+library,
     resolve+validate the source path, run the handler."""
@@ -426,6 +433,110 @@ def embed_frames(asset_id: str) -> None:
     except Exception:
         log.error("embeddings.failed", asset_id=asset_id, exc_info=True)
         raise
+
+
+@celery_app.task(
+    name="framefound.infer_locations",
+    queue="vision",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 1},
+)
+def infer_locations(library_id: str) -> None:
+    """Lend GPS positions from located assets to unlocated neighbours.
+
+    Only fills gaps: an asset that already has coordinates — from EXIF or a
+    person — is never touched.
+    """
+    from sqlalchemy import select
+
+    from framefound.db.models import Frame
+    from framefound.media.geo import LocationCandidate, best_candidate
+
+    async def run() -> None:
+        engine = create_async_engine(get_settings().db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                lib = uuid.UUID(library_id)
+                located = (
+                    (
+                        await db.execute(
+                            select(Asset).where(
+                                Asset.library_id == lib,
+                                Asset.gps_lat.is_not(None),
+                                Asset.captured_at.is_not(None),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                unlocated = (
+                    (
+                        await db.execute(
+                            select(Asset).where(
+                                Asset.library_id == lib,
+                                Asset.gps_lat.is_(None),
+                                Asset.captured_at.is_not(None),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not located or not unlocated:
+                    log.info(
+                        "locations.nothing_to_infer",
+                        located=len(located),
+                        unlocated=len(unlocated),
+                    )
+                    return
+
+                async def first_vector(asset_id: uuid.UUID) -> list[float] | None:
+                    frame = (
+                        await db.execute(
+                            select(Frame)
+                            .where(Frame.asset_id == asset_id, Frame.embedding.is_not(None))
+                            .order_by(Frame.ts_ms)
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    return frame.embedding if frame else None
+
+                anchors = [(a, await first_vector(a.id)) for a in located]
+                anchors = [(a, v) for a, v in anchors if v]
+                filled = 0
+                for subject in unlocated:
+                    subject_vector = await first_vector(subject.id)
+                    if not subject_vector:
+                        continue
+                    candidates = [
+                        LocationCandidate(
+                            asset_id=str(anchor.id),
+                            lat=anchor.gps_lat or 0.0,
+                            lon=anchor.gps_lon or 0.0,
+                            captured_at=anchor.captured_at,  # type: ignore[arg-type]
+                            similarity=_cosine(subject_vector, vector),
+                        )
+                        for anchor, vector in anchors
+                    ]
+                    chosen = best_candidate(subject.captured_at, candidates)  # type: ignore[arg-type]
+                    if chosen is None:
+                        continue
+                    source, confidence = chosen
+                    subject.gps_lat = source.lat
+                    subject.gps_lon = source.lon
+                    subject.gps_source = "inferred"
+                    subject.gps_confidence = confidence
+                    subject.gps_inferred_from = uuid.UUID(source.asset_id)
+                    filled += 1
+                await db.commit()
+                log.info("locations.inferred", library=library_id, filled=filled)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 @celery_app.task(
