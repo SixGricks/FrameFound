@@ -2,6 +2,7 @@
 
 import ipaddress
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,10 @@ from framefound.auth import service as auth_service
 from framefound.auth.crypto import SecretUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, client_ip, require_admin
 from framefound.ddns import settings_store as store
+from framefound.ddns import tailnet
 from framefound.ddns.providers import DnsError, build_provider, detect_public_ip
+
+log = structlog.get_logger()
 
 router = APIRouter(prefix="/remote-access", tags=["remote-access"])
 
@@ -52,6 +56,12 @@ class RemoteAccessOut(BaseModel):
     last_checked_at: str
     last_updated_at: str
     last_error: str
+    # Tailnet: learned from a request that actually arrived over it, so an
+    # address is only ever shown once it has been proven to work.
+    tailnet_host: str
+    tailnet_url: str
+    tailnet_seen_at: str
+    on_tailnet_now: bool
 
 
 class RemoteAccessUpdate(BaseModel):
@@ -71,6 +81,8 @@ class RemoteAccessUpdate(BaseModel):
 async def _render(db: DbDep, request: Request) -> RemoteAccessOut:
     config = await store.load_config(db)
     state = await store.load_state(db)
+    ip = client_ip(request)
+    on_tailnet = tailnet.is_tailnet_address(ip)
     return RemoteAccessOut(
         mode=config.mode,
         public_access_enabled=config.public_access_enabled,
@@ -83,16 +95,38 @@ async def _render(db: DbDep, request: Request) -> RemoteAccessOut:
         ddns_ipv6=config.ddns_ipv6,
         ddns_proxied=config.ddns_proxied,
         ddns_interval_minutes=config.ddns_interval_minutes,
-        your_connection=classify_client(client_ip(request)),
+        your_connection=classify_client(ip),
         last_ipv4=state.last_ipv4,
         last_checked_at=state.last_checked_at,
         last_updated_at=state.last_updated_at,
         last_error=state.last_error,
+        tailnet_host=config.tailnet_host,
+        tailnet_url=(
+            tailnet.tailnet_url(config.tailnet_host, https=request.url.scheme == "https")
+            if config.tailnet_host
+            else ""
+        ),
+        tailnet_seen_at=config.tailnet_seen_at,
+        on_tailnet_now=on_tailnet,
     )
 
 
 @router.get("", response_model=RemoteAccessOut)
 async def get_remote_access(request: Request, db: DbDep, _user: CurrentUser) -> RemoteAccessOut:
+    # Learn the tailnet address opportunistically. Only from a request whose
+    # *source* is already inside the tailnet range, so a forged Host header on
+    # a public request cannot plant one.
+    sighting = tailnet.sighting_from_request(client_ip(request), request.headers.get("host"))
+    if sighting is not None:
+        config = await store.load_config(db)
+        if config.tailnet_host != sighting.host:
+            config.tailnet_host = sighting.host
+            config.tailnet_seen_at = sighting.seen_at
+            await store.save_config(db, config)
+            log.info("tailnet.address_learned", host=sighting.host)
+        elif not config.tailnet_seen_at:
+            config.tailnet_seen_at = sighting.seen_at
+            await store.save_config(db, config)
     return await _render(db, request)
 
 

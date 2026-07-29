@@ -36,6 +36,10 @@ export interface RemoteAccess {
   last_checked_at: string;
   last_updated_at: string;
   last_error: string;
+  tailnet_host: string;
+  tailnet_url: string;
+  tailnet_seen_at: string;
+  on_tailnet_now: boolean;
 }
 
 export interface Library {

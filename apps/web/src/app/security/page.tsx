@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import MapsSettingsCard from "@/components/MapsSettingsCard";
+import TailnetCard from "@/components/TailnetCard";
 import Shell from "@/components/Shell";
 import { api, type AuthSession, type RemoteAccess, type User } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
@@ -392,6 +393,8 @@ export default function SecurityPage() {
       )}
 
       {/* ---- sessions ---- */}
+      <TailnetCard />
+
       <MapsSettingsCard />
 
       <div className="sectionhead">

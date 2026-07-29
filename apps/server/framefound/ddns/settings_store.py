@@ -31,6 +31,10 @@ class RemoteAccessConfig:
     ddns_ipv6: bool = False
     ddns_proxied: bool = False
     ddns_interval_minutes: int = 5
+    # Learned, never configured: the address someone actually reached us
+    # on over the tailnet. See ddns/tailnet.py.
+    tailnet_host: str = ""
+    tailnet_seen_at: str = ""
 
     @property
     def ddns_configured(self) -> bool:

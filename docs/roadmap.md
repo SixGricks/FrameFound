@@ -21,7 +21,7 @@ reality rather than the original sequence.
 | **M4** Transcription | ✅ | faster-whisper + VAD, sidecar import; a retry sweep now catches work that fails and is forgotten |
 | **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
 | **M6** Web UI alpha | ✅ | search, browse, asset detail, dashboards, security page |
-| **M7** Remote access | ✅ core | 2FA, sealed secrets, DDNS, kill switch, sessions |
+| **M7** Remote access | ✅ | 2FA, sealed secrets, DDNS, kill switch, sessions, Tailscale enrolment |
 | **M8** Hardening | 🔶 partial | backup/restore/verify/update, image scanning + SBOMs done; benchmarks pending |
 
 ### Measured state of the production install — 2026-07-29 17:45 UTC
@@ -69,6 +69,10 @@ reality rather than the original sequence.
 
 ### Recently landed
 
+- **Tailscale enrolment** (#30) — guided setup on the Security page, an
+  optional sidecar behind the `tailnet` profile, and a tailnet address that is
+  *learned* from a request that actually arrived over it rather than assembled
+  from configuration, so it cannot be shown wrong.
 - **Storage management from the UI** (ADR-0018) — add and remove media and
   cache drives from a form, via a scoped mount helper that is off unless
   enabled.

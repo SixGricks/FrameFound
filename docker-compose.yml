@@ -293,6 +293,30 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
 
+  tailscale:
+    # Optional. Most installs run Tailscale on the host instead, which is
+    # simpler and survives the stack being down — see docs/remote-access.md.
+    # This sidecar exists for hosts where installing it is awkward.
+    #   docker compose --profile tailnet up -d
+    profiles: [tailnet]
+    image: tailscale/tailscale:stable
+    restart: unless-stopped
+    hostname: ${FRAMEFOUND_TAILNET_NAME:-framefound}
+    environment:
+      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      # Userspace networking avoids needing /dev/net/tun and NET_ADMIN on the
+      # host; the trade is slightly lower throughput, which does not matter
+      # for a UI and is bypassed anyway when serving media over the LAN.
+      TS_USERSPACE: "true"
+      # Publish the stack to the tailnet, so nothing else needs exposing.
+      TS_EXTRA_ARGS: --advertise-tags=tag:framefound
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./infrastructure/tailscale:/config:ro
+    networks: [edge, internal]
+
   cloudflared:
     # Optional Cloudflare Tunnel. Enable with: --profile tunnel
     profiles: [tunnel]
@@ -306,6 +330,7 @@ networks:
   internal:  # app <-> data plane; no published ports
 
 volumes:
+  tailscale-state:
   framefound-data:
   framefound-models:
   postgres-data:
