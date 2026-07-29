@@ -74,29 +74,38 @@ Planned in three stages, each independently useful:
 3. **Health-aware storage** — surface disconnected mounts, capacity warnings,
    and per-library storage attribution on the System page.
 
-## Media that moves (planned)
+## Media that moves (mostly shipped)
 
-Move detection works **within** a library today: a file that reappears at a
-new path with the same size and partial hash re-binds to the existing asset,
-keeping its UUID, transcripts, thumbnails, and embeddings (ADR-0010). What is
-missing is the rest of a real storage ecosystem:
+A file that reappears at a new path with the same size and partial hash
+re-binds to the existing asset, keeping its UUID, transcripts, thumbnails, and
+embeddings (ADR-0010).
 
-- **Across libraries** — a clip moved from `Intel 2026` to `Archive 2026` is
-  currently a delete plus a re-add, which discards its derived data. Needs a
-  global content-hash index consulted before any asset is created.
-- **Across mounts and drives** — same content on a new NAS or a new share
-  should be recognised, including when a library root itself changes.
-- **Whole-folder reorganisation** — detect that a directory moved as a unit
-  and re-bind its assets in one operation rather than thousands of individual
-  matches.
+**Working now:**
+
+- **Across libraries** — the lookup is global, not per-library. A clip dragged
+  from `Intel 2026` to `Archive 2026` keeps its derived data and simply
+  changes `library_id`. Before re-binding, the old path is stat'd: if the file
+  is still there, this is a genuine duplicate, not a move.
+- **Whole-folder reorganisation** — the watcher walks a moved directory's
+  subtree, since watchdog reports the folder and says nothing about its
+  contents. Each file then re-binds through the same content lookup.
+- **Departures** — deletes and moves out of a watched tree flag their assets
+  `missing` after a 60-second grace period and a confirming stat, instead of
+  waiting for the next reconciliation scan. Nothing is deleted from the
+  catalogue; a NAS that blinks must not take the catalogue with it.
+- **Verification pass** — `POST /api/v1/duplicates/verify` runs full BLAKE3
+  hashing on demand to confirm that files really are the same bytes.
+
+**Still open:**
+
+- **Across mounts and drives** — same content on a new NAS or a new share,
+  including when a library root itself changes.
 - **Re-linking after restore** — after `manage.sh restore` onto new hardware,
   reconcile the catalog against storage by content rather than by path.
-- **Verification pass** — full BLAKE3 hashing on demand to confirm that
-  re-bound assets really are the same bytes, and to catch silent corruption.
 
-Design note: all of this hangs off the existing `partial_hash` / `content_hash`
-columns, so no schema change is expected — the work is a global lookup path
-plus a smarter reconciliation step, not new data.
+Design note: all of this hangs off the existing `partial_hash` /
+`content_hash` columns — no schema change was needed, and none is expected for
+what remains.
 
 ## M0 — Product & architecture definition ✅
 

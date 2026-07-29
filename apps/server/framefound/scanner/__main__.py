@@ -5,6 +5,8 @@ Loop responsibilities:
 2. Create scheduled scans when a library's interval has elapsed.
 3. Maintain watchdog observers for watcher-enabled libraries and process
    stability-gated candidates they surface.
+4. Confirm departures — paths a watchdog event claims are gone — and flag the
+   assets behind them `missing` once a stat agrees.
 """
 
 import asyncio
@@ -13,9 +15,11 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.db.engine import session_factory
@@ -29,6 +33,11 @@ log = structlog.get_logger()
 
 POLL_SECONDS = 5.0
 WATCH_MIN_AGE_SECONDS = 10.0
+# Departures wait far longer than arrivals. Applications that save by
+# replacing a file emit delete-then-create within a second or two, and a
+# network mount can blink; a minute of patience costs nothing and avoids
+# flapping assets between `online` and `missing`.
+DEPART_MIN_AGE_SECONDS = 60.0
 
 
 def _make_enqueue() -> scan_engine.Enqueue:
@@ -122,6 +131,41 @@ async def _drain_watch_queue(
         log.info("watcher.processed", path=candidate.relative_path, action=action)
 
 
+async def _drain_departures(db: AsyncSession, queue: WatchQueue) -> None:
+    """Flag assets whose files are confirmed gone.
+
+    The watchdog event is only the prompt to look; the stat is what decides.
+    Assets are flagged `missing`, never deleted — a NAS that unmounts mid-edit
+    would otherwise take the catalogue with it, and the metadata is worth
+    keeping even when the file is genuinely gone for good.
+    """
+    for departure in queue.departures_due(DEPART_MIN_AGE_SECONDS):
+        library = await db.get(Library, departure.library_id)
+        if library is None or not library.enabled:
+            continue
+        abs_path = Path(library.root_path) / departure.relative_path
+        if abs_path.exists():
+            continue  # spurious event, or it came back before we looked
+
+        where = [Asset.library_id == library.id, Asset.availability == "online"]
+        if departure.is_directory:
+            prefix = departure.relative_path.rstrip("/")
+            where.append(Asset.relative_path.startswith(f"{prefix}/"))
+        else:
+            where.append(Asset.relative_path == departure.relative_path)
+
+        result = await db.execute(update(Asset).where(*where).values(availability="missing"))
+        await db.commit()
+        flagged = cast("CursorResult[Any]", result).rowcount
+        if flagged:
+            log.info(
+                "watcher.departed",
+                path=departure.relative_path,
+                directory=departure.is_directory,
+                assets_flagged=flagged,
+            )
+
+
 async def _metadata_queue_busy() -> bool:
     """True when the metadata queue still has messages — a backlog means
     workers are busy, not that jobs were lost, so requeueing would only
@@ -198,6 +242,7 @@ async def main() -> None:
                             observers[library.id] = started
 
                 await _drain_watch_queue(db, queue, enqueue)
+                await _drain_departures(db, queue)
 
                 if time.time() - last_requeue > 300:
                     await _requeue_stuck_assets(db, enqueue)
