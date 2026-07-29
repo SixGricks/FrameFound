@@ -42,6 +42,14 @@ export default function MapsSettingsCard() {
     <>
       <div className="sectionhead">
         <h2>Maps &amp; geocoding</h2>
+        <a
+          className="navlink"
+          href="https://github.com/SixGricks/FrameFound/blob/main/docs/maps.md"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          Setup guide ↗
+        </a>
         {note && <span className="faint">{note}</span>}
       </div>
 
@@ -51,6 +59,20 @@ export default function MapsSettingsCard() {
           Google: map tiles reveal roughly where you are looking, and an address
           lookup sends an exact coordinate. Places works without either — it
           draws positions locally and names shoots from your folder names.
+        </p>
+        <p className="faint" style={{ fontSize: "0.86rem" }}>
+          You need <strong>two</strong> keys from the Google Cloud console, not
+          one: a browser key restricted by HTTP referrer, and a geocoding key
+          restricted by IP. One key cannot carry both restrictions — a referrer
+          rule breaks server-side lookups. The{" "}
+          <a
+            href="https://github.com/SixGricks/FrameFound/blob/main/docs/maps.md"
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            setup guide
+          </a>{" "}
+          walks through it, including cost and how to switch providers later.
         </p>
 
         <label className="field">

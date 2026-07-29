@@ -16,9 +16,9 @@ reality rather than the original sequence.
 |---|---|---|
 | **M0** Architecture | ✅ | 10 accepted ADRs, threat model, licence inventory |
 | **M1** Foundation | ✅ | auth, migrations, queues, CI/release, health checks |
-| **M2** Indexing | ✅ | 8,954 assets / 290 GB indexed from the SMB archive |
+| **M2** Indexing | ✅ | 15,774 assets across 4 libraries incl. the 18 TB GELCO share |
 | **M3** Proxies & previews | ✅ | thumbnails, posters, H.264 proxies, signed URLs |
-| **M4** Transcription | 🔶 built, stalled | pipeline works; only 12/52 audio assets transcribed |
+| **M4** Transcription | ✅ | faster-whisper + VAD, sidecar import; a retry sweep now catches work that fails and is forgotten |
 | **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
 | **M6** Web UI alpha | ✅ | search, browse, asset detail, dashboards, security page |
 | **M7** Remote access | ✅ core | 2FA, sealed secrets, DDNS, kill switch, sessions |
@@ -33,20 +33,20 @@ reality rather than the original sequence.
 | Frames embedded | 8,987 / 8,995 (99.9%) |
 | Located — EXIF | 3,913 |
 | Located — inferred | 264, across 67 places |
-| Transcripts | **12 / 52 assets with audio (23%)** |
+| Transcripts | 12 / 52 before the retry sweep; backlog now re-queuing |
 | Derivatives failed | 80 |
 | All queues | empty |
 
 ### In progress
 
-Nothing is running. Every queue is empty, which for transcription means
-stalled rather than finished — see below.
+- **GELCO processing** — 6,820 newly indexed assets working through metadata,
+  thumbnails, embeddings, then location inference. First library at real
+  scale, and the honest benchmark for everything that follows.
+- **Transcript backlog** — the retry sweep is feeding the 40 assets that
+  failed on the old permission fault back through, 25 at a time.
 
 ### Needs attention
 
-- **Transcription has stalled at 12 of 52 audio-bearing assets** with an
-  empty queue. Nothing is retrying them. Cause not yet diagnosed; this is
-  the top open question about the running system.
 - **80 failed derivatives.** Four are the 1–2 GB TIFF panoramas that exceed
   the worker's 1.27 GB memory limit (waiting on the RAM upgrade, and now
   reported honestly as running out of memory). The rest are mostly DJI MP4
@@ -68,6 +68,13 @@ stalled rather than finished — see below.
 
 ### Recently landed
 
+- **Transcription retry sweep** — 555 jobs had failed on a models-directory
+  permission fault, exhausted their Celery retries, and were never looked at
+  again; the fault was fixed long before anyone noticed the backlog. The
+  scanner now re-queues audio that never got a successful attempt, bounded
+  and skipping files that have failed repeatedly.
+- **Maps and location documentation** — [maps.md](maps.md) and
+  [location.md](location.md), linked from the settings card itself.
 - **GELCO library** — the 18 TB share added read-only, with Premiere scratch
   folders (previews, auto-save, captured-and-generated, #recycle) excluded so
   regenerable intermediates never enter the catalogue. Proxies off, matching
@@ -134,6 +141,32 @@ Planned in three stages, each independently useful:
    with every mount audited. The web app itself stays unprivileged.
 3. **Health-aware storage** — surface disconnected mounts, capacity warnings,
    and per-library storage attribution on the System page.
+
+## Maps provider — revisit
+
+Google Maps is wired in as an **opt-in** basemap and address-lookup layer, off
+by default. It is the only outbound dependency in normal operation, and worth
+revisiting once real usage shows what is actually needed.
+
+The seams are deliberately narrow — `media/geocoding.py` is the only file that
+speaks Google's protocol, `media/maps_store.py` holds the keys and toggles,
+and `PlaceMap.tsx` already renders two ways. `geocode_cache` is keyed on
+coordinates, not on a provider, so cached addresses survive a switch.
+
+Worth weighing when the time comes:
+
+- **Self-hosted tiles** (OpenMapTiles / Protomaps + MapLibre) — nothing leaves
+  the network; real setup cost and disk. Most consistent with a self-hosted
+  catalogue.
+- **Nominatim, self-hosted, regional extract** — offline reverse geocoding,
+  no per-lookup cost. Folder-name naming already does most of this work, so
+  the marginal value is small.
+- **Mapbox / MapTiler / Esri** — commercial like Google; Esri's aerial imagery
+  is arguably better for property work.
+
+Decision deferred deliberately: the current setup costs nothing until enabled,
+and the folder-name naming means geocoding may barely be used. Full comparison
+in [maps.md](maps.md#switching-to-a-different-map-provider).
 
 ## Media that moves (mostly shipped)
 

@@ -54,6 +54,8 @@ GPU acceleration (NVIDIA): `docker compose -f docker-compose.yml -f docker-compo
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [docs/threat-model.md](docs/threat-model.md) | Security threat model |
 | [docs/remote-access.md](docs/remote-access.md) | Tailscale / DDNS / Cloudflare Tunnel design |
+| [docs/location.md](docs/location.md) | GPS, location inference, and places |
+| [docs/maps.md](docs/maps.md) | Optional Google Maps basemap and address lookup |
 | [docs/roadmap.md](docs/roadmap.md) | Milestones and MVP backlog |
 | [docs/licensing.md](docs/licensing.md) | Dependency and model license inventory |
 | [docs/deployment/proxmox.md](docs/deployment/proxmox.md) | Proxmox VM deployment guide |

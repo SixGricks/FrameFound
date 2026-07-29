@@ -7,6 +7,7 @@ Loop responsibilities:
    stability-gated candidates they surface.
 4. Confirm departures — paths a watchdog event claims are gone — and flag the
    assets behind them `missing` once a stat agrees.
+5. Re-queue work that failed and was never looked at again.
 """
 
 import asyncio
@@ -18,12 +19,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.db.engine import session_factory
-from framefound.db.models import Asset, Library, Scan
+from framefound.db.models import Asset, Job, Library, Scan
 from framefound.logging import configure_logging
 from framefound.scanner import scan as scan_engine
 from framefound.scanner.stability import is_file_stable
@@ -38,6 +39,13 @@ WATCH_MIN_AGE_SECONDS = 10.0
 # network mount can blink; a minute of patience costs nothing and avoids
 # flapping assets between `online` and `missing`.
 DEPART_MIN_AGE_SECONDS = 60.0
+# Transcription is the slowest stage by far, so the sweep hands over a
+# small batch and lets the next pass carry on rather than filling the
+# queue with hours of work at once.
+TRANSCRIBE_BATCH = 25
+# After this many failures an asset is left alone. A file ffmpeg cannot
+# open will never succeed, and retrying it forever starves everything else.
+MAX_TRANSCRIBE_ATTEMPTS = 3
 
 
 def _make_enqueue() -> scan_engine.Enqueue:
@@ -166,10 +174,10 @@ async def _drain_departures(db: AsyncSession, queue: WatchQueue) -> None:
             )
 
 
-async def _metadata_queue_busy() -> bool:
-    """True when the metadata queue still has messages — a backlog means
-    workers are busy, not that jobs were lost, so requeueing would only
-    create duplicates (learned in deployment: 32k duplicate messages)."""
+async def _queue_busy(name: str) -> bool:
+    """True when a queue still has messages — a backlog means workers are
+    busy, not that jobs were lost, so requeueing would only create duplicates
+    (learned in deployment: 32k duplicate messages)."""
     try:
         import redis.asyncio as aioredis
 
@@ -179,11 +187,15 @@ async def _metadata_queue_busy() -> bool:
             get_settings().redis_url, socket_connect_timeout=2
         )
         try:
-            return int(await client.llen("metadata")) > 0
+            return int(await client.llen(name)) > 0
         finally:
             await client.aclose()
     except Exception:
         return True  # broker unknown: assume busy, never duplicate
+
+
+async def _metadata_queue_busy() -> bool:
+    return await _queue_busy("metadata")
 
 
 async def _requeue_stuck_assets(db: AsyncSession, enqueue: scan_engine.Enqueue) -> None:
@@ -207,6 +219,66 @@ async def _requeue_stuck_assets(db: AsyncSession, enqueue: scan_engine.Enqueue) 
     )
     for asset_id in stuck:
         enqueue(asset_id)
+
+
+async def _requeue_missing_transcripts(db: AsyncSession) -> None:
+    """Re-queue audio that should have been transcribed and was not.
+
+    Found in deployment: 555 transcription jobs failed on a models-directory
+    permission problem, the retries were exhausted inside Celery, and nothing
+    ever looked again. The permission issue was fixed weeks of wall-clock
+    earlier and the backlog simply sat there — the catalogue reported 12 of 52
+    audio assets transcribed and nothing was wrong enough to notice.
+
+    Absence of a transcript is not enough to act on: a music bed legitimately
+    produces none, and re-queueing on that basis would loop forever. A
+    *succeeded* job is the real signal that an asset has had its turn,
+    whatever the outcome. Assets that have failed repeatedly are left alone so
+    one broken file cannot occupy the queue.
+    """
+    if await _queue_busy("transcribe"):
+        return
+
+    had_a_turn = select(Job.asset_id).where(
+        Job.task_name == "transcribe_asset", Job.status == "succeeded"
+    )
+    failed_often = (
+        select(Job.asset_id)
+        .where(Job.task_name == "transcribe_asset", Job.status == "failed")
+        .group_by(Job.asset_id)
+        .having(func.count() >= MAX_TRANSCRIBE_ATTEMPTS)
+    )
+    candidates = (
+        (
+            await db.execute(
+                select(Asset.id)
+                .join(Library, Library.id == Asset.library_id)
+                .where(
+                    Library.enabled.is_(True),
+                    Library.transcribe_enabled.is_(True),
+                    Asset.availability == "online",
+                    Asset.processing_status == "ready",
+                    or_(Asset.media_type == "audio", Asset.audio_codec.is_not(None)),
+                    Asset.id.not_in(had_a_turn),
+                    Asset.id.not_in(failed_often),
+                )
+                .limit(TRANSCRIBE_BATCH)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not candidates:
+        return
+
+    try:
+        from framefound.processing.tasks import transcribe_asset
+    except Exception:
+        log.warning("scanner.transcribe_unavailable")
+        return
+    for asset_id in candidates:
+        transcribe_asset.delay(str(asset_id))
+    log.info("scanner.transcripts_requeued", count=len(candidates))
 
 
 async def main() -> None:
@@ -246,6 +318,7 @@ async def main() -> None:
 
                 if time.time() - last_requeue > 300:
                     await _requeue_stuck_assets(db, enqueue)
+                    await _requeue_missing_transcripts(db)
                     last_requeue = time.time()
         except Exception:
             log.error("scanner.loop_error", exc_info=True)
