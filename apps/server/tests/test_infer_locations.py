@@ -219,3 +219,29 @@ def test_running_twice_changes_nothing_the_second_time(db: Session, tmp_path: Pa
     second = {a.id: (a.gps_lat, a.gps_confidence) for a in db.execute(select(Asset)).scalars()}
 
     assert first == second
+
+
+def test_an_inferred_position_never_anchors_another_inference(db: Session, tmp_path: Path) -> None:
+    """Found in deployment: a second run kept filling more assets, because
+    everything filled by the first run had become an anchor. Chaining a guess
+    off a guess carries no confidence penalty, so drift compounds silently.
+
+    The hops are 70 minutes apart: close enough to clear the confidence floor
+    against the link before, while the far one sits outside the two-hour
+    window from the only real GPS in the library.
+    """
+    library = Library(name="L", root_path=str(tmp_path))
+    db.add(library)
+    db.commit()
+    _add(db, library, "drone.jpg", minutes=0, tilt=0.0, gps=BARN)
+    middle = _add(db, library, "hop1.jpg", minutes=70, tilt=0.02, gps=None)
+    far = _add(db, library, "hop2.jpg", minutes=140, tilt=0.02, gps=None)
+
+    _run(library.id)
+    _run(library.id)  # a second pass must not extend the chain
+
+    db.expire_all()
+    assert db.get(Asset, middle.id).gps_lat == pytest.approx(BARN[0])  # type: ignore[union-attr]
+    assert db.get(Asset, far.id).gps_lat is None, (  # type: ignore[union-attr]
+        "an inferred position was used as an anchor"
+    )

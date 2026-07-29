@@ -540,6 +540,11 @@ def infer_locations(library_id: str) -> None:
                     log.info("locations.no_embeddings", library=library_id)
                     return
 
+                # Anchors are EXIF-positioned assets only. Letting an inferred
+                # position anchor another inference would chain guess onto
+                # guess with no decay in confidence — a second-generation
+                # result could score as highly as one standing on real data.
+                # Every inference stays exactly one hop from ground truth.
                 located = (
                     (
                         await db.execute(
@@ -547,6 +552,7 @@ def infer_locations(library_id: str) -> None:
                             .where(
                                 Asset.library_id == lib,
                                 Asset.gps_lat.is_not(None),
+                                Asset.gps_source.is_distinct_from("inferred"),
                                 Asset.captured_at.is_not(None),
                                 Asset.id.in_(vectors.keys()),
                             )
