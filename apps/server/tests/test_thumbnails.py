@@ -78,9 +78,17 @@ def test_ffmpeg_failure_surfaces_as_thumbnail_error(
         make_image_derivative(src, tmp_path / "out.webp", max_edge=512)
 
 
-def test_still_timeout_scales_with_file_size(tmp_path: Path) -> None:
+def test_still_timeout_scales_with_file_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A flat two-minute timeout is what failed the 1 GB TIFFs: at the
-    5.2 MB/s measured over SMB, reading one takes over three minutes."""
+    5.2 MB/s measured over SMB, reading one takes over three minutes.
+
+    The assumed throughput is varied rather than the file size, so the test
+    reads a real file and never has to fake `stat` — which pathlib itself
+    calls, and which broke on a different Python than the one it was written
+    on.
+    """
     from framefound.processing import ffmpeg
 
     captured: list[int] = []
@@ -91,18 +99,19 @@ def test_still_timeout_scales_with_file_size(tmp_path: Path) -> None:
         captured.append(timeout_s)
         Path(argv[-1]).write_bytes(b"jpeg")
 
-    import unittest.mock
+    monkeypatch.setattr(ffmpeg, "_run", fake_run)
 
-    with unittest.mock.patch.object(ffmpeg, "_run", fake_run):
-        ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
-        small = captured[-1]
+    # Fast storage: reading the file is free, so the flat floor applies.
+    monkeypatch.setattr(ffmpeg, "SLOW_STORAGE_BPS", 1024 * 1024 * 1024)
+    ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
+    assert captured[-1] == ffmpeg.POSTER_TIMEOUT_S
 
-        # A gigabyte at the assumed 2 MB/s floor is over eight minutes.
-        with unittest.mock.patch.object(Path, "stat") as stat:
-            stat.return_value = unittest.mock.Mock(st_size=1024 * 1024 * 1024)
-            ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
-        large = captured[-1]
+    # Storage 128x slower makes the same file cost 32 seconds of reading.
+    monkeypatch.setattr(ffmpeg, "SLOW_STORAGE_BPS", 128)
+    ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
+    assert captured[-1] == ffmpeg.POSTER_TIMEOUT_S + 32
 
-    assert small == ffmpeg.POSTER_TIMEOUT_S
-    assert large > 8 * 60
-    assert large <= ffmpeg.MAX_STILL_TIMEOUT_S
+    # However slow the storage is claimed to be, the wait stays bounded.
+    monkeypatch.setattr(ffmpeg, "SLOW_STORAGE_BPS", 1)
+    ffmpeg.downscale_still(src, tmp_path / "out.jpg", 512)
+    assert captured[-1] == ffmpeg.MAX_STILL_TIMEOUT_S
