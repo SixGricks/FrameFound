@@ -24,24 +24,25 @@ reality rather than the original sequence.
 | **M7** Remote access | ✅ core | 2FA, sealed secrets, DDNS, kill switch, sessions |
 | **M8** Hardening | 🔶 partial | backup/restore/verify/update, image scanning + SBOMs done; benchmarks pending |
 
-### Measured state of the production install — 2026-07-29 15:40 UTC
+### Measured state of the production install — 2026-07-29 17:45 UTC
 
 | | |
 |---|---|
-| Assets indexed | 8,954 + GELCO still scanning (18 TB share) |
-| Thumbnails ready | 8,935 / 8,954 (99.8%) |
-| Frames embedded | 8,987 / 8,995 (99.9%) |
-| Located — EXIF | 3,913 |
+| Assets indexed | **15,774** across 4 libraries |
+| — GELCO (18 TB share) | 6,820, scan complete |
+| — Intel 2026 / Promo / Breeze | 8,954 |
+| Thumbnails ready | 10,694 and climbing |
+| Located — EXIF | 4,510 (up ~600 as GELCO metadata lands) |
 | Located — inferred | 264, across 67 places |
-| Transcripts | 12 / 52 before the retry sweep; backlog now re-queuing |
-| Derivatives failed | 80 |
-| All queues | empty |
+| Transcripts | 29, backlog re-queuing after the retry-sweep fix |
+| Geocode cache | 0 rows — no Google keys configured, by choice |
+| Queues | metadata 5,042 · vision 1,749 · transcribe 18 — all draining |
 
 ### In progress
 
-- **GELCO processing** — 6,820 newly indexed assets working through metadata,
-  thumbnails, embeddings, then location inference. First library at real
-  scale, and the honest benchmark for everything that follows.
+- **GELCO processing** — scan complete at 6,820 assets; metadata, thumbnails
+  and embeddings are draining now, with location inference to follow. First
+  library at real scale, and the honest benchmark for everything after.
 - **Transcript backlog** — the retry sweep is feeding the 40 assets that
   failed on the old permission fault back through, 25 at a time.
 
