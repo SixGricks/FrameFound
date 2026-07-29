@@ -68,11 +68,14 @@ module = ["framefound.worker", "framefound.processing.tasks"]
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
+# Optional extras. CI type-checks against the core install, so anything only
+# present with [scanner]/[media]/[ai] is resolved leniently.
 module = [
     "watchdog", "watchdog.*", "blake3",
     "faster_whisper", "faster_whisper.*",
     "onnxruntime", "onnxruntime.*",
     "huggingface_hub", "tokenizers", "pgvector.*",
+    "numpy", "numpy.*",
 ]
 ignore_missing_imports = true
 
