@@ -12,6 +12,8 @@ from pathlib import Path
 
 import structlog
 
+from framefound.config import get_settings
+
 log = structlog.get_logger()
 
 POSTER_TIMEOUT_S = 120
@@ -23,9 +25,23 @@ class FfmpegError(RuntimeError):
     pass
 
 
+def _with_thread_cap(argv: list[str]) -> list[str]:
+    """Insert -threads after the binary unless the caller already set it.
+
+    FFmpeg defaults to every core, which starves the API and the database on a
+    shared host. FRAMEFOUND_FFMPEG_THREADS=0 restores the default for machines
+    with cores to spare.
+    """
+    threads = get_settings().ffmpeg_threads
+    if threads <= 0 or "-threads" in argv:
+        return argv
+    return [argv[0], "-threads", str(threads), *argv[1:]]
+
+
 def _run(argv: list[str], timeout_s: int) -> None:
     if shutil.which("ffmpeg") is None:
         raise FfmpegError("ffmpeg is not installed")
+    argv = _with_thread_cap(argv)
     try:
         completed = subprocess.run(  # noqa: S603 - fixed binary, argv form, no shell
             argv, capture_output=True, timeout=timeout_s, check=False

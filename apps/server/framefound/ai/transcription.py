@@ -71,7 +71,7 @@ class FasterWhisperProvider:
                 compute_type=compute,
                 download_root=self._download_root,
                 # Leave cores for the API/UI on shared hosts; raise with hardware.
-                cpu_threads=3,
+                cpu_threads=get_settings().whisper_threads,
                 num_workers=1,
             )
         return self._model

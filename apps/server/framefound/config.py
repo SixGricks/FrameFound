@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     proxy_resolution: int = 1080
     # Optional locally-built Blackmagic RAW decoder (docker-compose.braw.yml).
     braw_decoder: Path = Path("/opt/braw/braw-decode")
+    # Per-invocation CPU budget for media tools. Small hosts must leave cores
+    # for the API and database; 0 means "use the FFmpeg default (all cores)".
+    ffmpeg_threads: int = 2
+    whisper_threads: int = 3
 
     # Sessions: sliding idle expiry with an absolute cap.
     session_idle_minutes: int = 720  # 12 h without activity logs you out
