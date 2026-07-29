@@ -16,40 +16,73 @@ reality rather than the original sequence.
 |---|---|---|
 | **M0** Architecture | ✅ | 10 accepted ADRs, threat model, licence inventory |
 | **M1** Foundation | ✅ | auth, migrations, queues, CI/release, health checks |
-| **M2** Indexing | ✅ | 8,954 assets indexed from an 18 TB SMB archive |
+| **M2** Indexing | ✅ | 8,954 assets / 290 GB indexed from the SMB archive |
 | **M3** Proxies & previews | ✅ | thumbnails, posters, H.264 proxies, signed URLs |
-| **M4** Transcription | ✅ | faster-whisper + VAD, SRT sidecar import, timestamped search |
+| **M4** Transcription | 🔶 built, stalled | pipeline works; only 12/52 audio assets transcribed |
 | **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
 | **M6** Web UI alpha | ✅ | search, browse, asset detail, dashboards, security page |
 | **M7** Remote access | ✅ core | 2FA, sealed secrets, DDNS, kill switch, sessions |
 | **M8** Hardening | 🔶 partial | backup/restore/verify/update, image scanning + SBOMs done; benchmarks pending |
 
+### Measured state of the production install — 2026-07-29 15:40 UTC
+
+| | |
+|---|---|
+| Assets indexed | 8,954 (290 GB across 3 libraries) |
+| Thumbnails ready | 8,935 / 8,954 (99.8%) |
+| Frames embedded | 8,987 / 8,995 (99.9%) |
+| Located — EXIF | 3,913 |
+| Located — inferred | 264, across 67 places |
+| Transcripts | **12 / 52 assets with audio (23%)** |
+| Derivatives failed | 80 |
+| All queues | empty |
+
 ### In progress
 
-- **Library-wide visual indexing** — embedding ~9k assets (~70 min of
-  background work at 288 ms/image on current hardware). Location inference
-  is queued behind it, since it needs embeddings on both the located and the
-  unlocated side of every comparison.
-- **Transcription backfill** across the promo/auction footage.
+Nothing is running. Every queue is empty, which for transcription means
+stalled rather than finished — see below.
+
+### Needs attention
+
+- **Transcription has stalled at 12 of 52 audio-bearing assets** with an
+  empty queue. Nothing is retrying them. Cause not yet diagnosed; this is
+  the top open question about the running system.
+- **80 failed derivatives.** Four are the 1–2 GB TIFF panoramas that exceed
+  the worker's 1.27 GB memory limit (waiting on the RAM upgrade, and now
+  reported honestly as running out of memory). The rest are mostly DJI MP4
+  proxy failures and the BRAW proxies deferred until a GPU exists — worth a
+  pass to confirm nothing else is hiding in there.
+- **SMB reads at 5.2 MB/s** (measured). This is the binding constraint on
+  every whole-file operation and shapes timeouts throughout.
 
 ### Next up
 
-1. **Storage management from the UI** — stage 2 and 3 (see below); stage 1,
+1. **Location** (issue #34): Google Maps basemap + address lookup, and a
+   library-style view for clicking into a place.
+2. **GELCO share** added as a library.
+3. **Storage management from the UI** — stages 2 and 3 (see below); stage 1,
    the read-only view and fstab generator, has shipped.
-2. **Location** (issue #34): map view, reverse geocoding, inference tuning
-   once the first inferred locations can be judged against known ground truth.
-3. M8 proper: large-library benchmarks, failure drills, security review.
-4. M9: Adobe Premiere panel research (UXP vs CEP).
+4. M8 proper: large-library benchmarks, failure drills, security review.
+5. M9: Adobe Premiere panel research (UXP vs CEP).
 
 ### Recently landed
 
+- **Places** (#34): 4,177 located assets clustered into 67 named shoots,
+  named from folder structure rather than a gazetteer.
+- **Location inference**: 264 positions lent from GPS-bearing cameras to
+  cameras that were on the same job. Anchors are EXIF-only, so no inferred
+  position ever seeds another.
 - **Cross-library move detection** and the watcher departure lane — see
   "Media that moves" below.
-- **Duplicate detection** with on-demand full-BLAKE3 verification.
+- **Duplicate detection** (#24) with on-demand full-BLAKE3 verification.
+  Real result: ~3.5 GB reclaimable, 1.2% of the corpus.
 - **Trusted-proxy client IP handling** — a client can no longer spoof a LAN
   address past the public-access gate.
-- **Supply chain**: both images scanned and SBOM'd on every push; releases
-  scan before publishing and pin by digest.
+- **Supply chain** (#19): both images scanned and SBOM'd on every push;
+  releases scan before publishing and pin by digest. Caught a real CVE on
+  its first run.
+- **Large-image handling**: images over 192 MB scale through FFmpeg rather
+  than Pillow, with timeouts derived from file size.
 
 ### Deliberately deferred
 
