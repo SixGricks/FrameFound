@@ -128,6 +128,43 @@ def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 192
         raise FfmpegError("No frame could be extracted from the video")
 
 
+def downscale_still(src: Path, dst: Path, max_edge: int) -> None:
+    """Scale a still image down during decode, writing a JPEG.
+
+    For images Pillow cannot hold in memory — multi-gigabyte 16-bit TIFF
+    exports, mainly. FFmpeg scales as it decodes rather than materialising the
+    full raster and then copying it.
+
+    JPEG rather than WebP for the same reason as `extract_poster`: ffmpeg
+    routes .webp through libwebp_anim, which fails on some high-resolution
+    sources. The caller re-encodes this much smaller intermediate.
+    """
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={max_edge}:{max_edge}:force_original_aspect_ratio=decrease",
+            "-c:v",
+            "mjpeg",
+            "-pix_fmt",
+            "yuvj420p",
+            "-qscale:v",
+            "2",
+            str(dst),
+        ],
+        POSTER_TIMEOUT_S,
+    )
+    if not dst.is_file() or dst.stat().st_size == 0:
+        raise FfmpegError("The image could not be decoded")
+
+
 def transcode_proxy(src: Path, dst: Path, height: int = 1080) -> str:
     """1080p (default) H.264+AAC faststart MP4 proxy. Returns the codec used."""
     scale = f"scale=-2:'min({height},ih)'"

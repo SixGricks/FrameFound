@@ -31,3 +31,48 @@ def test_garbage_raises_thumbnail_error(tmp_path: Path) -> None:
     src.write_bytes(b"not an image at all")
     with pytest.raises(ThumbnailError):
         make_image_derivative(src, tmp_path / "out.webp", max_edge=512)
+
+
+def test_oversized_images_never_reach_pillow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole point of the size threshold: a file too large to decode must
+    not be handed to Pillow, because that is what killed the worker."""
+    from framefound.processing import thumbnails
+
+    src = tmp_path / "huge.tif"
+    src.write_bytes(b"\x00" * 16)
+    monkeypatch.setattr(thumbnails, "LARGE_IMAGE_BYTES", 8)
+
+    opened: list[Path] = []
+    monkeypatch.setattr(thumbnails, "_encode_webp", lambda s, d, e: (opened.append(s), (4, 4))[1])
+    scaled: list[Path] = []
+
+    def fake_downscale(source: Path, dest: Path, max_edge: int) -> None:
+        scaled.append(source)
+        dest.write_bytes(b"jpeg")
+
+    monkeypatch.setattr("framefound.processing.ffmpeg.downscale_still", fake_downscale)
+
+    assert make_image_derivative(src, tmp_path / "out.webp", max_edge=512) == (4, 4)
+    assert scaled == [src], "FFmpeg should have handled the oversized source"
+    assert opened and opened[0] != src, "Pillow must only see the scaled intermediate"
+
+
+def test_ffmpeg_failure_surfaces_as_thumbnail_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from framefound.processing import thumbnails
+    from framefound.processing.ffmpeg import FfmpegError
+
+    src = tmp_path / "huge.tif"
+    src.write_bytes(b"\x00" * 16)
+    monkeypatch.setattr(thumbnails, "LARGE_IMAGE_BYTES", 8)
+
+    def boom(source: Path, dest: Path, max_edge: int) -> None:
+        raise FfmpegError("The image could not be decoded")
+
+    monkeypatch.setattr("framefound.processing.ffmpeg.downscale_still", boom)
+
+    with pytest.raises(ThumbnailError):
+        make_image_derivative(src, tmp_path / "out.webp", max_edge=512)
