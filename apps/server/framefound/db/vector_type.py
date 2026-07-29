@@ -6,9 +6,10 @@ on SQLite, which has no such type — there the values round-trip as JSON so
 model code, fixtures, and migrations stay identical across both.
 """
 
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import JSON, Dialect
+from sqlalchemy import JSON, Dialect, Float
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 EMBEDDING_DIMENSIONS = 512  # CLIP ViT-B/32
@@ -24,6 +25,21 @@ class Embedding(TypeDecorator[list[float]]):
     def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
         super().__init__()
         self.dimensions = dimensions
+
+    class comparator_factory(TypeDecorator.Comparator[list[float]]):  # noqa: N801
+        """Re-expose pgvector's distance operators.
+
+        A TypeDecorator does not inherit the wrapped type's custom comparator,
+        so `column.cosine_distance(...)` would raise AttributeError even
+        though the underlying column really is a pgvector `vector`. Declaring
+        the operator here keeps query code identical to plain pgvector usage.
+        """
+
+        def cosine_distance(self, other: list[float]) -> ColumnElement[float]:
+            return cast("ColumnElement[float]", self.op("<=>", return_type=Float)(other))
+
+        def l2_distance(self, other: list[float]) -> ColumnElement[float]:
+            return cast("ColumnElement[float]", self.op("<->", return_type=Float)(other))
 
     def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
         if dialect.name == "postgresql":
