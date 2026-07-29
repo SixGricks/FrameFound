@@ -229,14 +229,20 @@ services:
       retries: 5
 
   ddns:
-    # Optional Cloudflare DDNS sidecar. Enable with: --profile ddns
-    profiles: [ddns]
+    # Dynamic-DNS sidecar. Idle until remote access is configured in the UI,
+    # so it is safe to leave running; it costs nothing when unused.
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 250M
     command: ["python", "-m", "framefound.ddns"]
     env_file: .env
-    networks: [internal]
+    networks: [internal, edge]  # needs outbound access to the DNS provider
+    depends_on:
+      postgres: { condition: service_healthy }
 
   cloudflared:
     # Optional Cloudflare Tunnel. Enable with: --profile tunnel

@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/libraries", label: "Libraries" },
   { href: "/processing", label: "Processing" },
   { href: "/health", label: "System" },
+  { href: "/security", label: "Security" },
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {

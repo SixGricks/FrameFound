@@ -7,6 +7,35 @@ export interface User {
   id: string;
   email: string;
   role: string;
+  totp_enabled: boolean;
+}
+
+export interface AuthSession {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  current: boolean;
+}
+
+export interface RemoteAccess {
+  mode: "local" | "tailscale" | "domain" | "tunnel";
+  public_access_enabled: boolean;
+  domain: string;
+  ddns_provider: string;
+  ddns_zone: string;
+  ddns_record: string;
+  ddns_configured: boolean;
+  ddns_ipv4: boolean;
+  ddns_ipv6: boolean;
+  ddns_proxied: boolean;
+  ddns_interval_minutes: number;
+  your_connection: "local" | "lan" | "tailnet" | "internet" | "unknown";
+  last_ipv4: string;
+  last_checked_at: string;
+  last_updated_at: string;
+  last_error: string;
 }
 
 export interface Library {
@@ -158,13 +187,53 @@ function query(params: Record<string, string | number | boolean | undefined | nu
 
 export const api = {
   me: () => request<User>("/auth/me"),
-  login: (email: string, password: string) =>
+  login: (email: string, password: string, totpCode?: string) =>
     request<User>("/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, totp_code: totpCode ?? null }),
     }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
+
+  sessions: () => request<AuthSession[]>("/auth/sessions"),
+  revokeSession: (id: string) =>
+    request<void>(`/auth/sessions/${id}`, { method: "DELETE" }),
+  revokeOtherSessions: () =>
+    request<{ revoked: number }>("/auth/sessions/revoke-others", { method: "POST" }),
+
+  totpStart: (password: string) =>
+    request<{ provisioning_uri: string; secret: string }>("/auth/totp/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }),
+  totpConfirm: (code: string) =>
+    request<{ recovery_codes: string[] }>("/auth/totp/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }),
+  totpDisable: (password: string, code: string) =>
+    request<void>("/auth/totp/disable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password, code }),
+    }),
+
+  remoteAccess: () => request<RemoteAccess>("/remote-access"),
+  updateRemoteAccess: (patch: Record<string, unknown>) =>
+    request<RemoteAccess>("/remote-access", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  disablePublicAccess: () =>
+    request<RemoteAccess>("/remote-access/disable-public", { method: "POST" }),
+  testDns: () =>
+    request<{ ok: boolean; message: string; detected_ipv4: string | null }>(
+      "/remote-access/test-dns",
+      { method: "POST" },
+    ),
 
   libraries: () => request<Library[]>("/libraries"),
   scanLibrary: (id: string) => request<unknown>(`/libraries/${id}/scan`, { method: "POST" }),

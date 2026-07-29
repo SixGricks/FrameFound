@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from framefound import __version__
+from framefound.api.public_gate import PublicAccessGate
 from framefound.api.v1.router import api_v1
 from framefound.config import get_settings
 from framefound.errors import error_response, register_error_handlers
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     register_error_handlers(app)
+    app.add_middleware(PublicAccessGate)
     app.include_router(api_v1, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=False)

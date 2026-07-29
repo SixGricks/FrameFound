@@ -9,6 +9,8 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -17,10 +19,18 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.login(email, password);
+      await api.login(email, password, needsCode ? totpCode : undefined);
       router.push("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed");
+      const message = err instanceof Error ? err.message : "Sign-in failed";
+      // The server asks for a second factor only after the password checks
+      // out, so revealing the prompt here leaks nothing.
+      if (message.toLowerCase().includes("authenticator")) {
+        setNeedsCode(true);
+        setError(null);
+      } else {
+        setError(message);
+      }
     } finally {
       setBusy(false);
     }
@@ -59,6 +69,25 @@ export default function LoginPage() {
             required
           />
         </label>
+
+        {needsCode && (
+          <label className="field">
+            Authenticator code
+            <input
+              className="input mono"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="000000"
+              value={totpCode}
+              onChange={(e) => setTotpCode(e.target.value)}
+              required
+              autoFocus
+            />
+            <span className="faint" style={{ fontSize: "0.76rem" }}>
+              Lost your phone? Enter one of your recovery codes.
+            </span>
+          </label>
+        )}
 
         {error && (
           <p style={{ color: "var(--ember)", fontSize: "0.86rem", marginBottom: 0 }}>{error}</p>
