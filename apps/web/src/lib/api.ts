@@ -143,6 +143,30 @@ export interface DuplicateReport {
   note: string;
 }
 
+export interface Place {
+  name: string;
+  lat: number;
+  lon: number;
+  radius_km: number;
+  asset_count: number;
+  inferred_count: number;
+  first_captured_at: string | null;
+  last_captured_at: string | null;
+  cover_asset_id: string | null;
+}
+
+export interface NearbyAsset {
+  asset_id: string;
+  filename: string;
+  media_type: MediaType;
+  distance_km: number;
+  gps_lat: number;
+  gps_lon: number;
+  gps_source: string | null;
+  gps_confidence: number | null;
+  captured_at: string | null;
+}
+
 export interface SceneFrame {
   ts_ms: number;
   is_scene_change: boolean;
@@ -299,6 +323,15 @@ export const api = {
     request<SearchResponse>(`/search${query({ q, library_id: libraryId, limit: 40 })}`),
   similar: (assetId: string) => request<VisualHit[]>(`/search/similar/${assetId}`),
   scenes: (assetId: string) => request<SceneFrame[]>(`/assets/${assetId}/scenes`),
+
+  places: (radiusKm: number, includeInferred: boolean) =>
+    request<Place[]>(
+      `/places${query({ radius_km: radiusKm, include_inferred: includeInferred })}`,
+    ),
+  assetsNear: (lat: number, lon: number, radiusKm: number) =>
+    request<NearbyAsset[]>(
+      `/assets/near${query({ lat, lon, radius_km: radiusKm, limit: 120 })}`,
+    ),
 
   duplicates: (kind: string, minSizeMb: number) =>
     request<DuplicateReport>(`/duplicates${query({ kind, min_size_mb: minSizeMb })}`),

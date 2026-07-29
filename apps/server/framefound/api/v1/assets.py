@@ -123,58 +123,10 @@ async def list_assets(
     )
 
 
-@router.get("/{asset_id}", response_model=AssetDetail)
-async def get_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> AssetDetail:
-    asset = await db.get(Asset, asset_id)
-    if asset is None:
-        raise HTTPException(404, "Asset not found")
-    return AssetDetail.model_validate(asset)
-
-
-class TranscriptSegmentOut(BaseModel):
-    start_ms: int
-    end_ms: int
-    text: str
-    speaker: str | None
-    confidence: float | None
-
-    model_config = {"from_attributes": True}
-
-
-class TranscriptOut(BaseModel):
-    language: str
-    language_confidence: float | None
-    model_name: str
-    processed_at: datetime
-    segment_count: int
-    segments: list[TranscriptSegmentOut]
-
-
-@router.get("/{asset_id}/transcript", response_model=TranscriptOut)
-async def get_transcript(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> TranscriptOut:
-    from sqlalchemy.orm import selectinload
-
-    from framefound.db.models import Transcript
-
-    transcript = (
-        await db.execute(
-            select(Transcript)
-            .where(Transcript.asset_id == asset_id)
-            .options(selectinload(Transcript.segments))
-        )
-    ).scalar_one_or_none()
-    if transcript is None:
-        raise HTTPException(404, "No transcript is available for this item")
-    return TranscriptOut(
-        language=transcript.language,
-        language_confidence=transcript.language_confidence,
-        model_name=transcript.model_name,
-        processed_at=transcript.processed_at,
-        segment_count=transcript.segment_count,
-        segments=[TranscriptSegmentOut.model_validate(s) for s in transcript.segments],
-    )
-
-
+# `/near` is registered before `/{asset_id}`: FastAPI matches in declaration
+# order, so a literal path placed after a parameterised one is unreachable —
+# `near` gets parsed as an asset UUID and rejected before the handler runs.
+# This was live for a while; tests/test_places_api.py now guards it.
 class NearbyAsset(BaseModel):
     asset_id: uuid.UUID
     filename: str
@@ -234,6 +186,58 @@ async def assets_near(
         )
         for distance, asset in scored[:limit]
     ]
+
+
+@router.get("/{asset_id}", response_model=AssetDetail)
+async def get_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> AssetDetail:
+    asset = await db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "Asset not found")
+    return AssetDetail.model_validate(asset)
+
+
+class TranscriptSegmentOut(BaseModel):
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker: str | None
+    confidence: float | None
+
+    model_config = {"from_attributes": True}
+
+
+class TranscriptOut(BaseModel):
+    language: str
+    language_confidence: float | None
+    model_name: str
+    processed_at: datetime
+    segment_count: int
+    segments: list[TranscriptSegmentOut]
+
+
+@router.get("/{asset_id}/transcript", response_model=TranscriptOut)
+async def get_transcript(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> TranscriptOut:
+    from sqlalchemy.orm import selectinload
+
+    from framefound.db.models import Transcript
+
+    transcript = (
+        await db.execute(
+            select(Transcript)
+            .where(Transcript.asset_id == asset_id)
+            .options(selectinload(Transcript.segments))
+        )
+    ).scalar_one_or_none()
+    if transcript is None:
+        raise HTTPException(404, "No transcript is available for this item")
+    return TranscriptOut(
+        language=transcript.language,
+        language_confidence=transcript.language_confidence,
+        model_name=transcript.model_name,
+        processed_at=transcript.processed_at,
+        segment_count=transcript.segment_count,
+        segments=[TranscriptSegmentOut.model_validate(s) for s in transcript.segments],
+    )
 
 
 @router.get("/{asset_id}/nearby", response_model=list[NearbyAsset])
