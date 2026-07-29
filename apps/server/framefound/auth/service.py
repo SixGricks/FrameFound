@@ -107,6 +107,61 @@ async def revoke_session(db: AsyncSession, token: str) -> None:
         auth_session.revoked = True
 
 
+async def list_sessions(db: AsyncSession, user_id: uuid.UUID) -> list[AuthSession]:
+    """Live sessions for a user, newest first."""
+    result = await db.execute(
+        select(AuthSession)
+        .where(AuthSession.user_id == user_id, AuthSession.revoked.is_(False))
+        .order_by(AuthSession.created_at.desc())
+    )
+    now = _now()
+    return [
+        s
+        for s in result.scalars().all()
+        if (s.expires_at if s.expires_at.tzinfo else s.expires_at.replace(tzinfo=UTC)) > now
+    ]
+
+
+async def revoke_all_sessions(
+    db: AsyncSession, user_id: uuid.UUID, except_token: str | None = None
+) -> int:
+    """Sign out everywhere. Used after a password/2FA change and by the user."""
+    keep = _hash_token(except_token) if except_token else None
+    result = await db.execute(
+        select(AuthSession).where(AuthSession.user_id == user_id, AuthSession.revoked.is_(False))
+    )
+    count = 0
+    for auth_session in result.scalars().all():
+        if keep is not None and auth_session.token_hash == keep:
+            continue
+        auth_session.revoked = True
+        count += 1
+    return count
+
+
+async def revoke_session_by_id(db: AsyncSession, user_id: uuid.UUID, session_id: uuid.UUID) -> bool:
+    auth_session = await db.get(AuthSession, session_id)
+    if auth_session is None or auth_session.user_id != user_id:
+        return False
+    auth_session.revoked = True
+    return True
+
+
+def hash_recovery_code(code: str) -> str:
+    return hashlib.sha256(code.strip().lower().encode()).hexdigest()
+
+
+def consume_recovery_code(user: User, code: str) -> bool:
+    """Recovery codes are single use: a match removes it from the stored set."""
+    digest = hash_recovery_code(code)
+    remaining = list(user.totp_recovery_hashes or [])
+    if digest not in remaining:
+        return False
+    remaining.remove(digest)
+    user.totp_recovery_hashes = remaining
+    return True
+
+
 async def setup_token_consumed(db: AsyncSession) -> bool:
     return await db.get(AppSetting, SETUP_CONSUMED_KEY) is not None
 

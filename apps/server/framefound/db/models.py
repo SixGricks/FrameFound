@@ -37,7 +37,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(Role, default="user")
-    totp_secret: Mapped[str | None] = mapped_column(String(255), default=None)  # TODO(m7)
+    # Sealed with the app secret (auth/crypto.py) — a DB dump alone is not
+    # enough to mint valid codes. Pending until confirmed by a live code.
+    totp_secret: Mapped[str | None] = mapped_column(String(255), default=None)
+    totp_pending_secret: Mapped[str | None] = mapped_column(String(255), default=None)
+    totp_recovery_hashes: Mapped[list[str]] = mapped_column(JSON, default=list)
     disabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
