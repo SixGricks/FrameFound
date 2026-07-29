@@ -9,19 +9,26 @@ cache honest.
 import uuid
 from datetime import datetime
 
+import structlog
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from framefound.auth.deps import CurrentUser, DbDep
+from framefound.auth.deps import CurrentUser, DbDep, require_admin
 from framefound.db.models import Asset, Derivative
 from framefound.media import places as places_lib
+from framefound.media.geocoding import cache_key as geocode_key
+from framefound.media.geocoding import reverse_geocode_many
+from framefound.media.maps_store import MapsConfig, load_maps_config, save_maps_config
+
+log = structlog.get_logger()
 
 router = APIRouter(prefix="/places", tags=["places"])
 
 
 class PlaceOut(BaseModel):
     name: str
+    named_from: str  # folder | geocode | unknown
     lat: float
     lon: float
     radius_km: float
@@ -30,6 +37,19 @@ class PlaceOut(BaseModel):
     first_captured_at: datetime | None
     last_captured_at: datetime | None
     cover_asset_id: uuid.UUID | None
+
+
+class MapConfigOut(BaseModel):
+    """What the page needs to decide whether it can draw a basemap.
+
+    The browser key is returned only to an authenticated session. It is public
+    by nature — the Maps JS API reads it from the page — but keeping it out of
+    the built bundle means an unauthenticated visitor cannot lift it.
+    """
+
+    basemap_enabled: bool
+    browser_key: str
+    geocoding_ready: bool
 
 
 @router.get("", response_model=list[PlaceOut])
@@ -91,16 +111,38 @@ async def list_places(
         .all()
     )
 
+    named = [(place, places_lib.name_for(place)) for place in clustered]
+
+    # Only clusters the folder structure could not name are worth a lookup —
+    # and only when the operator has turned geocoding on. Folder names are
+    # street addresses; a gazetteer would answer with the county.
+    addresses: dict[str, str] = {}
+    maps = await load_maps_config(db)
+    unnamed = [p for p, name in named if name == places_lib.UNKNOWN_NAME]
+    if unnamed and maps.geocoding_ready and maps.geocode_unnamed_places:
+        try:
+            addresses = await reverse_geocode_many(
+                db, [(p.lat, p.lon) for p in unnamed], maps.geocoding_key()
+            )
+        except Exception:
+            # A geocoding outage must not take the page down with it.
+            log.warning("places.geocode_unavailable", exc_info=True)
+
     out = []
-    for place in clustered:
+    for place, name in named:
         times = [m.captured_at for m in place.members if m.captured_at]
         cover = next(
             (m.asset_id for m in place.members if uuid.UUID(m.asset_id) in with_thumbnails),
             None,
         )
+        named_from = "folder"
+        if name == places_lib.UNKNOWN_NAME:
+            looked_up = addresses.get(geocode_key(place.lat, place.lon), "")
+            name, named_from = (looked_up, "geocode") if looked_up else (name, "unknown")
         out.append(
             PlaceOut(
-                name=places_lib.name_for(place),
+                name=name,
+                named_from=named_from,
                 lat=round(place.lat, 6),
                 lon=round(place.lon, 6),
                 radius_km=round(place.radius_km, 3),
@@ -112,3 +154,75 @@ async def list_places(
             )
         )
     return out
+
+
+@router.get("/map-config", response_model=MapConfigOut)
+async def map_config(_user: CurrentUser, db: DbDep) -> MapConfigOut:
+    maps = await load_maps_config(db)
+    return MapConfigOut(
+        basemap_enabled=maps.basemap_ready,
+        browser_key=maps.browser_key() if maps.basemap_ready else "",
+        geocoding_ready=maps.geocoding_ready,
+    )
+
+
+class MapsSettingsOut(BaseModel):
+    """Never returns either key — only whether one is present.
+
+    The browser key is readable through /map-config by an authenticated
+    session because the page cannot load Maps without it. This settings view
+    is about configuration state, so it reports presence and nothing more.
+    """
+
+    basemap_enabled: bool
+    browser_key_configured: bool
+    geocoding_key_configured: bool
+    geocode_unnamed_places: bool
+
+
+class MapsSettingsUpdate(BaseModel):
+    basemap_enabled: bool | None = None
+    geocode_unnamed_places: bool | None = None
+    # Empty string clears a key; omitted leaves it untouched.
+    browser_key: str | None = None
+    geocoding_key: str | None = None
+
+
+def _maps_out(config: MapsConfig) -> MapsSettingsOut:
+    return MapsSettingsOut(
+        basemap_enabled=config.basemap_enabled,
+        browser_key_configured=bool(config.browser_key_sealed),
+        geocoding_key_configured=bool(config.geocoding_key_sealed),
+        geocode_unnamed_places=config.geocode_unnamed_places,
+    )
+
+
+@router.get("/maps-settings", response_model=MapsSettingsOut)
+async def get_maps_settings(_user: CurrentUser, db: DbDep) -> MapsSettingsOut:
+    return _maps_out(await load_maps_config(db))
+
+
+@router.put("/maps-settings", response_model=MapsSettingsOut, dependencies=[require_admin])
+async def update_maps_settings(
+    body: MapsSettingsUpdate, _user: CurrentUser, db: DbDep
+) -> MapsSettingsOut:
+    """Turning the basemap on is an outbound-traffic decision, so it is
+    admin-only and off until someone chooses it."""
+    config = await load_maps_config(db)
+    fields = body.model_dump(exclude_unset=True)
+    if "basemap_enabled" in fields:
+        config.basemap_enabled = bool(fields["basemap_enabled"])
+    if "geocode_unnamed_places" in fields:
+        config.geocode_unnamed_places = bool(fields["geocode_unnamed_places"])
+    if "browser_key" in fields:
+        config.with_browser_key((fields["browser_key"] or "").strip())
+    if "geocoding_key" in fields:
+        config.with_geocoding_key((fields["geocoding_key"] or "").strip())
+    await save_maps_config(db, config)
+    log.info(
+        "maps.settings_updated",
+        basemap_enabled=config.basemap_enabled,
+        browser_key=bool(config.browser_key_sealed),
+        geocoding_key=bool(config.geocoding_key_sealed),
+    )
+    return _maps_out(config)

@@ -28,6 +28,10 @@ from framefound.media.geo import haversine_km
 # two shoots on the same street stay separate.
 DEFAULT_RADIUS_KM = 0.75
 
+# Returned when nothing in the paths gives the cluster a name. Callers key
+# geocoding off this, so it is a constant rather than a literal.
+UNKNOWN_NAME = "Unknown location"
+
 
 @dataclass
 class LocatedAsset:
@@ -84,7 +88,7 @@ def name_for(place: Place) -> str:
     # they drop out rather than contributing an empty name.
     folders = [f for f in (_folder_of(m.relative_path) for m in place.members) if f]
     if not folders:
-        return "Unknown location"
+        return UNKNOWN_NAME
 
     common = Counter(folders).most_common(1)[0]
     if common[1] * 2 > len(folders):  # a clear majority sit together
@@ -97,7 +101,7 @@ def name_for(place: Place) -> str:
         if len(set(parts)) != 1:
             break
         shared.append(parts[0])
-    return shared[-1] if shared else "Unknown location"
+    return shared[-1] if shared else UNKNOWN_NAME
 
 
 def cluster(assets: list[LocatedAsset], radius_km: float = DEFAULT_RADIUS_KM) -> list[Place]:

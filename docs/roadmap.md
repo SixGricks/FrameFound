@@ -28,7 +28,7 @@ reality rather than the original sequence.
 
 | | |
 |---|---|
-| Assets indexed | 8,954 (290 GB across 3 libraries) |
+| Assets indexed | 8,954 + GELCO still scanning (18 TB share) |
 | Thumbnails ready | 8,935 / 8,954 (99.8%) |
 | Frames embedded | 8,987 / 8,995 (99.9%) |
 | Located — EXIF | 3,913 |
@@ -57,9 +57,10 @@ stalled rather than finished — see below.
 
 ### Next up
 
-1. **Location** (issue #34): Google Maps basemap + address lookup, and a
-   library-style view for clicking into a place.
-2. **GELCO share** added as a library.
+1. **GELCO processing** — the scan is running; metadata, thumbnails,
+   embeddings and location inference follow behind it. This is the first
+   library at genuine scale and will be the real benchmark.
+2. **Inference tuning** (#34) against places the operator can verify.
 3. **Storage management from the UI** — stages 2 and 3 (see below); stage 1,
    the read-only view and fstab generator, has shipped.
 4. M8 proper: large-library benchmarks, failure drills, security review.
@@ -67,8 +68,23 @@ stalled rather than finished — see below.
 
 ### Recently landed
 
+- **GELCO library** — the 18 TB share added read-only, with Premiere scratch
+  folders (previews, auto-save, captured-and-generated, #recycle) excluded so
+  regenerable intermediates never enter the catalogue. Proxies off, matching
+  Intel 2026.
+- **Google Maps, opt-in** — a real basemap on Places and address lookup for
+  clusters the folders cannot name. Two separate keys (browser, referrer-
+  restricted; geocoding, server-side and IP-restricted), both sealed at rest
+  and configured on the Security page. Off by default: enabling either sends
+  data to Google. Geocoding results are cached in the database, and a place
+  the folders already name is never looked up.
+- **Place detail view** — a place opens as a library-style page with media,
+  position-source and sort filters, and paging.
 - **Places** (#34): 4,177 located assets clustered into 67 named shoots,
   named from folder structure rather than a gazetteer.
+- **`/assets/near` was unreachable** — registered after `/assets/{asset_id}`,
+  so FastAPI parsed "near" as a UUID. Never worked until now; no test had
+  covered it.
 - **Location inference**: 264 positions lent from GPS-bearing cameras to
   cameras that were on the same job. Anchors are EXIF-only, so no inferred
   position ever seeds another.

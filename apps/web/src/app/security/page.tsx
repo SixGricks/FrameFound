@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import MapsSettingsCard from "@/components/MapsSettingsCard";
 import Shell from "@/components/Shell";
 import { api, type AuthSession, type RemoteAccess, type User } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
@@ -391,6 +392,8 @@ export default function SecurityPage() {
       )}
 
       {/* ---- sessions ---- */}
+      <MapsSettingsCard />
+
       <div className="sectionhead">
         <h2>Signed-in devices</h2>
         <button

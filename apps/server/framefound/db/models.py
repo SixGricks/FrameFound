@@ -360,3 +360,19 @@ class Scan(Base):
     files_missing: Mapped[int] = mapped_column(default=0)
     files_deferred: Mapped[int] = mapped_column(default=0)  # unstable; next pass
     error: Mapped[str | None] = mapped_column(String(500), default=None)
+
+
+class GeocodeCache(Base):
+    """Reverse-geocoding results, keyed on a rounded coordinate.
+
+    Persisted rather than held in memory because every lookup costs money and
+    clusters are recomputed on every request. An empty `address` records a
+    lookup that legitimately returned nothing, so it is not retried forever —
+    see geocoding.FAILURE_RETRY_AFTER.
+    """
+
+    __tablename__ = "geocode_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    address: Mapped[str] = mapped_column(String(300), default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

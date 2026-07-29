@@ -145,6 +145,7 @@ export interface DuplicateReport {
 
 export interface Place {
   name: string;
+  named_from: "folder" | "geocode" | "unknown";
   lat: number;
   lon: number;
   radius_km: number;
@@ -153,6 +154,19 @@ export interface Place {
   first_captured_at: string | null;
   last_captured_at: string | null;
   cover_asset_id: string | null;
+}
+
+export interface MapConfig {
+  basemap_enabled: boolean;
+  browser_key: string;
+  geocoding_ready: boolean;
+}
+
+export interface MapsSettings {
+  basemap_enabled: boolean;
+  browser_key_configured: boolean;
+  geocoding_key_configured: boolean;
+  geocode_unnamed_places: boolean;
 }
 
 export interface NearbyAsset {
@@ -332,6 +346,15 @@ export const api = {
     request<NearbyAsset[]>(
       `/assets/near${query({ lat, lon, radius_km: radiusKm, limit: 120 })}`,
     ),
+
+  mapConfig: () => request<MapConfig>("/places/map-config"),
+  mapsSettings: () => request<MapsSettings>("/places/maps-settings"),
+  updateMapsSettings: (patch: Partial<MapsSettings & { browser_key: string; geocoding_key: string }>) =>
+    request<MapsSettings>("/places/maps-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
 
   duplicates: (kind: string, minSizeMb: number) =>
     request<DuplicateReport>(`/duplicates${query({ kind, min_size_mb: minSizeMb })}`),

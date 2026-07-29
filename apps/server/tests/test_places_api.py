@@ -144,3 +144,73 @@ async def test_an_unknown_asset_id_still_returns_not_found(client: AsyncClient) 
     route that used to shadow it."""
     resp = await client.get(f"/api/v1/assets/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+async def test_maps_keys_are_never_returned(client: AsyncClient) -> None:
+    """The settings view reports presence, not values. A key echoed back
+    would end up in browser history, logs, and screenshots."""
+    await client.put(
+        "/api/v1/places/maps-settings",
+        json={"browser_key": "browser-secret", "geocoding_key": "server-secret"},
+    )
+    body = (await client.get("/api/v1/places/maps-settings")).json()
+    assert body == {
+        "basemap_enabled": False,
+        "browser_key_configured": True,
+        "geocoding_key_configured": True,
+        "geocode_unnamed_places": True,
+    }
+    assert "secret" not in (await client.get("/api/v1/places/maps-settings")).text
+
+
+async def test_the_browser_key_is_withheld_until_the_basemap_is_enabled(
+    client: AsyncClient,
+) -> None:
+    await client.put("/api/v1/places/maps-settings", json={"browser_key": "browser-secret"})
+    first = (await client.get("/api/v1/places/map-config")).json()
+    assert first["basemap_enabled"] is False
+    assert first["browser_key"] == ""
+
+    await client.put("/api/v1/places/maps-settings", json={"basemap_enabled": True})
+    second = (await client.get("/api/v1/places/map-config")).json()
+    assert second["basemap_enabled"] is True
+    assert second["browser_key"] == "browser-secret"
+
+
+async def test_enabling_the_basemap_without_a_key_stays_off(client: AsyncClient) -> None:
+    # Otherwise the page would try to load Maps with no key and show an error
+    # instead of falling back to the scatter it can draw locally.
+    await client.put("/api/v1/places/maps-settings", json={"basemap_enabled": True})
+    assert (await client.get("/api/v1/places/map-config")).json()["basemap_enabled"] is False
+
+
+async def test_a_key_can_be_cleared(client: AsyncClient) -> None:
+    await client.put("/api/v1/places/maps-settings", json={"geocoding_key": "server-secret"})
+    assert (await client.get("/api/v1/places/maps-settings")).json()["geocoding_key_configured"]
+    await client.put("/api/v1/places/maps-settings", json={"geocoding_key": ""})
+    assert not (await client.get("/api/v1/places/maps-settings")).json()["geocoding_key_configured"]
+
+
+async def test_omitting_a_key_leaves_it_alone(client: AsyncClient) -> None:
+    await client.put("/api/v1/places/maps-settings", json={"browser_key": "keep-me"})
+    await client.put("/api/v1/places/maps-settings", json={"basemap_enabled": True})
+    assert (await client.get("/api/v1/places/maps-settings")).json()["browser_key_configured"]
+
+
+async def test_places_are_not_geocoded_when_the_folders_already_name_them(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every lookup is billable. Folder names are street addresses and are
+    strictly better, so a named cluster must never reach Google."""
+    calls: list[tuple[float, float]] = []
+
+    async def spy(db: object, coords: list[tuple[float, float]], key: str) -> dict[str, str]:
+        calls.extend(coords)
+        return {}
+
+    monkeypatch.setattr("framefound.api.v1.places.reverse_geocode_many", spy)
+    await client.put("/api/v1/places/maps-settings", json={"geocoding_key": "server-secret"})
+
+    body = (await client.get("/api/v1/places")).json()
+    assert all(p["named_from"] == "folder" for p in body)
+    assert calls == []
