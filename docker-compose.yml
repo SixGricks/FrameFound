@@ -62,7 +62,7 @@ services:
       # FRAMEFOUND_MEDIA_ROOT in .env is the HOST path for the bind source.
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
-      - framefound-data:/data                      # derived files: thumbs, proxies, transcripts
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data                      # derived files: thumbs, proxies, transcripts
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
     networks: [internal]
     depends_on:
@@ -93,7 +93,7 @@ services:
       # FRAMEFOUND_MEDIA_ROOT in .env is the HOST path for the bind source.
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
-      - framefound-data:/data
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
     networks: [internal]
     depends_on:
@@ -116,7 +116,7 @@ services:
     environment:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
-      - framefound-data:/data
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
     networks: [internal]
     depends_on:
@@ -141,7 +141,7 @@ services:
       # FRAMEFOUND_MEDIA_ROOT in .env is the HOST path for the bind source.
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
-      - framefound-data:/data
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
       - framefound-models:/models                  # downloaded model weights cache
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
     networks: [internal]
@@ -166,7 +166,7 @@ services:
       # FRAMEFOUND_MEDIA_ROOT in .env is the HOST path for the bind source.
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
-      - framefound-data:/data
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro
     networks: [internal]
     depends_on:

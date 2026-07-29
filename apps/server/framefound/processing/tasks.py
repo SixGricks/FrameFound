@@ -135,6 +135,12 @@ async def _visuals(db: AsyncSession, asset: Asset, library: Library, path: Path)
     await deriv.generate_visuals(db, get_settings().data_dir, asset, path)
 
 
+class ProcessingPaused(Exception):
+    """Raised when a stage cannot run yet for an environmental reason (disk
+    space). Retrying immediately would spin, so the task exits quietly and the
+    work is picked up by a later scan or a manual reprocess."""
+
+
 async def _proxy(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
     # Re-checked at run time so disabling proxies on a library immediately
     # no-ops any jobs already sitting in the queue.
@@ -247,6 +253,8 @@ def generate_derivatives(asset_id: str) -> None:
     """Thumbnails, previews, posters, waveforms for one asset (idempotent)."""
     try:
         asyncio.run(_with_asset("generate_derivatives", uuid.UUID(asset_id), _visuals))
+    except deriv.OutOfSpace as exc:
+        log.warning("derivatives.paused_low_disk", asset_id=asset_id, reason=str(exc))
     except Exception:
         log.error("derivatives.failed", asset_id=asset_id, exc_info=True)
         raise
@@ -263,6 +271,8 @@ def generate_proxy(asset_id: str) -> None:
     """Browser-playable H.264 proxy for one video asset (idempotent)."""
     try:
         asyncio.run(_with_asset("generate_proxy", uuid.UUID(asset_id), _proxy))
+    except deriv.OutOfSpace as exc:
+        log.warning("proxy.paused_low_disk", asset_id=asset_id, reason=str(exc))
     except Exception:
         log.error("proxy.failed", asset_id=asset_id, exc_info=True)
         raise

@@ -24,6 +24,36 @@ THUMBNAIL_EDGE = 512
 PREVIEW_EDGE = 2048
 
 
+class OutOfSpace(RuntimeError):
+    """Free space on the derivative store is below the configured floor."""
+
+
+def free_gb(data_dir: Path) -> float | None:
+    import shutil
+
+    try:
+        return shutil.disk_usage(data_dir).free / 1024**3
+    except OSError:
+        return None
+
+
+def ensure_space(data_dir: Path) -> None:
+    """Refuse to generate when the store is nearly full.
+
+    Filling the disk would take Postgres down with it, so generation stops
+    while there is still headroom. Derivatives are disposable — pausing them
+    costs previews, never catalog integrity or originals.
+    """
+    from framefound.config import get_settings
+
+    floor = get_settings().min_free_gb
+    available = free_gb(data_dir)
+    if available is not None and available < floor:
+        raise OutOfSpace(
+            f"Only {available:.1f} GB free for previews; generation pauses below {floor:.0f} GB"
+        )
+
+
 def derivative_relpath(asset_id: uuid.UUID, kind: str, ext: str) -> str:
     aid = str(asset_id)
     return f"derivatives/{aid[:2]}/{aid}/{kind}.{ext}"
@@ -86,6 +116,8 @@ def _abs(data_dir: Path, derivative: Derivative) -> Path:
 async def generate_visuals(db: AsyncSession, data_dir: Path, asset: Asset, source: Path) -> None:
     """Thumbnail/preview (image), poster+thumbnail (video), waveform (audio)."""
     import asyncio
+
+    ensure_space(data_dir)
 
     if asset.media_type == "image":
         for kind, edge in (("thumbnail", THUMBNAIL_EDGE), ("preview", PREVIEW_EDGE)):
@@ -165,6 +197,7 @@ async def generate_video_proxy(
 ) -> None:
     import asyncio
 
+    ensure_space(data_dir)
     derivative = await _upsert(db, asset.id, "proxy", "mp4")
     target = _abs(data_dir, derivative)
     if asset.extension == "braw":
