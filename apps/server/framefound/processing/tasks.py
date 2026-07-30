@@ -377,6 +377,11 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
     log.info("frames.sampled", asset_id=str(asset.id), frames=written, scenes=scene_counter)
     if written:
         embed_frames.delay(str(asset.id))
+        # Face detection reads the sampled frames off local disk, so it can run
+        # as soon as they exist — it does not wait on embeddings. Chained here
+        # rather than after embedding because the two are independent and
+        # serialising them would double the time to a usable People page.
+        detect_faces.delay(str(asset.id))
 
 
 @celery_app.task(
