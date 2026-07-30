@@ -1,19 +1,25 @@
 "use client";
 
-// Two ways to draw the same places.
+// Three ways to draw the same places, in order of how much they tell an
+// outsider:
 //
-// With a Google Maps key configured, a real basemap — which means tile
-// requests to Google that reveal roughly where the operator is looking. That
-// is a deliberate opt-in, off by default, configured on the Security page.
+//   maplibre — vector tiles from a style URL the operator chooses. Point it at
+//              your own OpenMapTiles or Protomaps server and no third party
+//              learns anything. This is the recommended basemap.
+//   google   — Google's tiles. Every pan is a request telling Google roughly
+//              where you are looking.
+//   none     — a scatter drawn from the coordinates already on this machine.
+//              No outbound request at all, and still enough to see how the
+//              jobs sit relative to one another.
 //
-// Without one, a scatter drawn from the coordinates themselves. No outbound
-// request, no third party, and still enough to see how the jobs sit relative
-// to each other.
+// All three render the same markers and fire the same onSelect, so the rest of
+// the page does not know or care which is active.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { Place } from "@/lib/api";
+import type { MapConfig, Place } from "@/lib/api";
 import type { GMap, GMarker } from "@/types/google-maps";
+import type { MlMap, MlMarker } from "@/types/maplibre";
 
 /** Load the Maps JS API once per page, however many components ask for it. */
 function loadMaps(key: string): Promise<void> {
@@ -31,20 +37,46 @@ function loadMaps(key: string): Promise<void> {
   return window.__framefoundMapsLoading;
 }
 
+/** Load MapLibre (script + stylesheet) once per page. */
+function loadMapLibre(libraryUrl: string, stylesheetUrl: string): Promise<void> {
+  if (window.maplibregl) return Promise.resolve();
+  if (window.__framefoundMapLibreLoading) return window.__framefoundMapLibreLoading;
+
+  window.__framefoundMapLibreLoading = new Promise<void>((resolve, reject) => {
+    if (stylesheetUrl && !document.querySelector(`link[href="${stylesheetUrl}"]`)) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = stylesheetUrl;
+      document.head.appendChild(link);
+    }
+    const script = document.createElement("script");
+    script.src = libraryUrl;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("MapLibre failed to load"));
+    document.head.appendChild(script);
+  });
+  return window.__framefoundMapLibreLoading;
+}
+
 export default function PlaceMap({
   places,
-  browserKey,
+  config,
   selected,
   onSelect,
 }: {
   places: Place[];
-  browserKey: string;
+  config: MapConfig | null;
   selected: Place | null;
   onSelect: (place: Place) => void;
 }) {
+  const provider = config?.basemap_enabled ? config.provider : "none";
+  const browserKey = provider === "google" ? (config?.browser_key ?? "") : "";
   const holder = useRef<HTMLDivElement>(null);
   const mapRef = useRef<GMap | null>(null);
   const markersRef = useRef<GMarker[]>([]);
+  const mlRef = useRef<MlMap | null>(null);
+  const mlMarkersRef = useRef<MlMarker[]>([]);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -110,6 +142,68 @@ export default function PlaceMap({
     }
   }, [selected]);
 
+  // MapLibre: same markers, same onSelect, tiles from wherever the operator
+  // pointed the style. Nothing here needs an API key.
+  useEffect(() => {
+    if (provider !== "maplibre" || !config?.style_url) return;
+    let cancelled = false;
+
+    loadMapLibre(config.library_url, config.stylesheet_url)
+      .then(() => {
+        if (cancelled || !holder.current || !window.maplibregl) return;
+        mlRef.current ??= new window.maplibregl.Map({
+          container: holder.current,
+          style: config.style_url,
+          center: [places[0]?.lon ?? 0, places[0]?.lat ?? 0],
+          zoom: 9,
+        });
+        mlRef.current.addControl(new window.maplibregl.NavigationControl(), "top-right");
+        mlRef.current.on("load", () => !cancelled && setReady(true));
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, config?.style_url, config?.library_url, config?.stylesheet_url, places]);
+
+  useEffect(() => {
+    const map = mlRef.current;
+    if (provider !== "maplibre" || !ready || !map || !window.maplibregl || !places.length) return;
+    const api = window.maplibregl;
+
+    mlMarkersRef.current.forEach((marker) => marker.remove());
+    mlMarkersRef.current = places.map((place) => {
+      // A DOM element rather than the default pin, so the count is readable
+      // and the marker matches the rest of the interface.
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "mapdot";
+      el.textContent = String(place.asset_count);
+      el.title = `${place.name} — ${place.asset_count} assets`;
+      el.addEventListener("click", () => onSelect(place));
+      return new api.Marker({ element: el }).setLngLat([place.lon, place.lat]).addTo(map);
+    });
+
+    const lons = places.map((p) => p.lon);
+    const lats = places.map((p) => p.lat);
+    map.fitBounds(
+      [
+        [Math.min(...lons), Math.min(...lats)],
+        [Math.max(...lons), Math.max(...lats)],
+      ],
+      { padding: 56, maxZoom: 15 },
+    );
+  }, [provider, places, onSelect, ready]);
+
+  useEffect(() => {
+    if (provider === "maplibre" && selected && mlRef.current) {
+      mlRef.current.flyTo({ center: [selected.lon, selected.lat] });
+    }
+  }, [provider, selected]);
+
   const scatter = useMemo(() => {
     if (!places.length) return [];
     const lats = places.map((p) => p.lat);
@@ -129,7 +223,8 @@ export default function PlaceMap({
 
   const select = useCallback((place: Place) => onSelect(place), [onSelect]);
 
-  if (browserKey && !failed) {
+  const hasBasemap = !failed && (browserKey || (provider === "maplibre" && config?.style_url));
+  if (hasBasemap) {
     return (
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
         <div ref={holder} style={{ width: "100%", height: 380 }} />
@@ -141,8 +236,9 @@ export default function PlaceMap({
     <div className="card">
       {failed && (
         <p className="faint" style={{ marginTop: 0, fontSize: "0.84rem" }}>
-          Google Maps could not load — check the key and its referrer
-          restrictions. Showing positions without a basemap.
+          {provider === "maplibre"
+            ? "The map library or tile style could not load — check the URLs on the Security page. Showing positions without a basemap."
+            : "Google Maps could not load — check the key and its referrer restrictions. Showing positions without a basemap."}
         </p>
       )}
       <svg
@@ -172,9 +268,10 @@ export default function PlaceMap({
       </svg>
       {!failed && (
         <p className="faint" style={{ fontSize: "0.78rem", margin: "10px 0 0" }}>
-          Relative positions, drawn from the coordinates themselves. Add a
-          Google Maps key on the Security page for a real basemap — that sends
-          tile requests to Google.
+          Relative positions, drawn from the coordinates themselves — nothing
+          leaves this machine. For a real basemap, add a self-hosted tile style
+          on the Security page; OpenMapTiles or Protomaps keeps it all on your
+          network.
         </p>
       )}
     </div>

@@ -76,6 +76,62 @@ export default function MapsSettingsCard() {
         </p>
 
         <label className="field">
+          <span>Basemap provider</span>
+          <select
+            className="select"
+            value={settings.provider}
+            onChange={(e) => save({ provider: e.target.value }, "Provider changed")}
+          >
+            <option value="none">None — draw positions locally</option>
+            <option value="maplibre">Self-hosted tiles (OpenMapTiles / Protomaps)</option>
+            <option value="google">Google Maps</option>
+          </select>
+          <small className="faint">
+            Self-hosted tiles are the recommended option: MapLibre renders from
+            a style URL you control, so no third party sees where you are
+            looking and there is no key and no bill.
+          </small>
+        </label>
+
+        {settings.provider === "maplibre" && (
+          <>
+            <label className="field">
+              <span>Tile style URL</span>
+              <input
+                className="input"
+                placeholder="https://tiles.your-nas.local/style.json"
+                defaultValue={settings.style_url}
+                onBlur={(e) =>
+                  e.target.value !== settings.style_url &&
+                  save({ style_url: e.target.value }, "Style saved")
+                }
+              />
+              <small className="faint">
+                A MapLibre style JSON. Point it at your own OpenMapTiles or
+                Protomaps server — that single URL decides where every tile
+                comes from.
+              </small>
+            </label>
+            <label className="field">
+              <span>MapLibre library URL</span>
+              <input
+                className="input"
+                defaultValue={settings.library_url}
+                onBlur={(e) =>
+                  e.target.value !== settings.library_url &&
+                  save({ library_url: e.target.value }, "Library URL saved")
+                }
+              />
+              <small className="faint">
+                Defaults to a CDN. Change it to a path on this server for an
+                install with no internet access at all.
+              </small>
+            </label>
+          </>
+        )}
+
+        {settings.provider === "google" && (
+        <label className="field">
           <span>Maps browser key</span>
           <input
             className="input"
@@ -92,6 +148,7 @@ export default function MapsSettingsCard() {
             in. Restrict it by HTTP referrer in the Google Cloud console.
           </small>
         </label>
+        )}
 
         <label className="field">
           <span>Geocoding key</span>

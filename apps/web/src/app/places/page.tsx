@@ -13,7 +13,7 @@ import { useRouter } from "next/navigation";
 import PlaceMap from "@/components/PlaceMap";
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
-import { api, type Place } from "@/lib/api";
+import { api, type MapConfig, type Place } from "@/lib/api";
 import { shortDate } from "@/lib/format";
 
 function placeHref(place: Place): string {
@@ -32,7 +32,7 @@ function placeHref(place: Place): string {
 export default function PlacesPage() {
   const router = useRouter();
   const [places, setPlaces] = useState<Place[] | null>(null);
-  const [browserKey, setBrowserKey] = useState("");
+  const [mapConfig, setMapConfig] = useState<MapConfig | null>(null);
   const [includeInferred, setIncludeInferred] = useState(true);
   const [radiusKm, setRadiusKm] = useState(0.75);
   const [hovered, setHovered] = useState<Place | null>(null);
@@ -54,8 +54,8 @@ export default function PlacesPage() {
   useEffect(() => {
     api
       .mapConfig()
-      .then((config) => setBrowserKey(config.browser_key))
-      .catch(() => setBrowserKey(""));
+      .then(setMapConfig)
+      .catch(() => setMapConfig(null));
   }, []);
 
   const open = useCallback((place: Place) => router.push(placeHref(place)), [router]);
@@ -104,7 +104,7 @@ export default function PlacesPage() {
           <div style={{ marginBottom: 18 }}>
             <PlaceMap
               places={places}
-              browserKey={browserKey}
+              config={mapConfig}
               selected={hovered}
               onSelect={open}
             />

@@ -1,5 +1,11 @@
 # Maps and address lookup
 
+> **Self-hosted tiles are the recommended basemap.** MapLibre renders from a
+> style URL you control, so no third party learns where you are looking, there
+> is no API key, and there is no bill. Jump to
+> [Self-hosting tiles](#self-hosting-tiles-recommended). Google remains
+> supported for anyone who would rather not run a tile server.
+
 FrameFound works out **where** your media was shot, groups it into places, and
 lets you browse a shoot by location. All of that works with no third party
 involved.
@@ -50,7 +56,61 @@ remains fully functional.
 
 ---
 
-## Setting it up
+## Self-hosting tiles (recommended)
+
+Set **Basemap provider** to *Self-hosted tiles* on Security → Maps &
+geocoding, and give it a MapLibre style URL. That single URL decides where
+every tile comes from; point it at your own server and nothing leaves the
+network.
+
+Two ways to get one, and the second is much less work than its reputation
+suggests.
+
+### Protomaps — one file, no extra service
+
+A whole region is a single `.pmtiles` file served over HTTP range requests.
+Caddy can serve it directly; there is no tile server to run, no database, and
+nothing to keep alive.
+
+```bash
+# A regional extract rather than the planet: ~1-2 GB for the US Northeast
+# against ~100 GB for the world.
+curl -O https://build.protomaps.com/20260701.pmtiles   # or extract your own
+```
+
+Serve the file, point the style at it, done. On a 100 GB VM disk with 5.9 GB
+of RAM this is the realistic option, and it is what would suit this install.
+
+### OpenMapTiles — a tile server
+
+Closer to what most people mean by "self-hosted maps", and heavier: a
+`tileserver-gl` process plus an `.mbtiles` extract.
+
+```yaml
+# Sketch. Regional extracts from openmaptiles.com or built with the
+# openmaptiles toolchain.
+tileserver:
+  image: maptiler/tileserver-gl:latest
+  command: ["--mbtiles", "/data/region.mbtiles"]
+  volumes: ["./tiles:/data"]
+  networks: [internal]
+```
+
+Then set the style URL to `http://tileserver:8080/styles/basic/style.json`.
+Budget a few hundred MB of RAM for the process and disk for the extract — and
+note the host is already over-committed on memory limits, so trim something
+else first.
+
+### Fully offline
+
+The MapLibre library itself defaults to a CDN. For an install with no internet
+at all, download `maplibre-gl.js` and `maplibre-gl.css`, serve them from this
+host, and set **MapLibre library URL** to the local path. At that point the map
+makes no outbound request of any kind.
+
+---
+
+## Setting up Google instead
 
 ### 1. Create a Google Cloud project
 

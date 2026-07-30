@@ -220,6 +220,10 @@ export interface MapConfig {
   basemap_enabled: boolean;
   browser_key: string;
   geocoding_ready: boolean;
+  provider: "none" | "maplibre" | "google";
+  style_url: string;
+  library_url: string;
+  stylesheet_url: string;
 }
 
 export interface MapsSettings {
@@ -227,6 +231,10 @@ export interface MapsSettings {
   browser_key_configured: boolean;
   geocoding_key_configured: boolean;
   geocode_unnamed_places: boolean;
+  provider: "none" | "maplibre" | "google";
+  style_url: string;
+  library_url: string;
+  stylesheet_url: string;
 }
 
 export interface NearbyAsset {

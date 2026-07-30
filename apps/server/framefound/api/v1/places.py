@@ -10,8 +10,8 @@ import uuid
 from datetime import datetime
 
 import structlog
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from framefound.auth.deps import CurrentUser, DbDep, require_admin
@@ -50,6 +50,10 @@ class MapConfigOut(BaseModel):
     basemap_enabled: bool
     browser_key: str
     geocoding_ready: bool
+    provider: str
+    style_url: str
+    library_url: str
+    stylesheet_url: str
 
 
 @router.get("", response_model=list[PlaceOut])
@@ -159,10 +163,17 @@ async def list_places(
 @router.get("/map-config", response_model=MapConfigOut)
 async def map_config(_user: CurrentUser, db: DbDep) -> MapConfigOut:
     maps = await load_maps_config(db)
+    ready = maps.basemap_ready
     return MapConfigOut(
-        basemap_enabled=maps.basemap_ready,
-        browser_key=maps.browser_key() if maps.basemap_ready else "",
+        basemap_enabled=ready,
+        # Only Google needs a key in the page, and only once the basemap is
+        # actually on. MapLibre needs none at all when the tiles are yours.
+        browser_key=(maps.browser_key() if ready and maps.provider == "google" else ""),
         geocoding_ready=maps.geocoding_ready,
+        provider=maps.provider if ready else "none",
+        style_url=maps.style_url if ready and maps.provider == "maplibre" else "",
+        library_url=maps.library_url,
+        stylesheet_url=maps.stylesheet_url,
     )
 
 
@@ -178,11 +189,19 @@ class MapsSettingsOut(BaseModel):
     browser_key_configured: bool
     geocoding_key_configured: bool
     geocode_unnamed_places: bool
+    provider: str
+    style_url: str
+    library_url: str
+    stylesheet_url: str
 
 
 class MapsSettingsUpdate(BaseModel):
     basemap_enabled: bool | None = None
     geocode_unnamed_places: bool | None = None
+    provider: str | None = Field(default=None, pattern="^(none|maplibre|google)$")
+    style_url: str | None = Field(default=None, max_length=2000)
+    library_url: str | None = Field(default=None, max_length=2000)
+    stylesheet_url: str | None = Field(default=None, max_length=2000)
     # Empty string clears a key; omitted leaves it untouched.
     browser_key: str | None = None
     geocoding_key: str | None = None
@@ -194,6 +213,10 @@ def _maps_out(config: MapsConfig) -> MapsSettingsOut:
         browser_key_configured=bool(config.browser_key_sealed),
         geocoding_key_configured=bool(config.geocoding_key_sealed),
         geocode_unnamed_places=config.geocode_unnamed_places,
+        provider=config.provider,
+        style_url=config.style_url,
+        library_url=config.library_url,
+        stylesheet_url=config.stylesheet_url,
     )
 
 
@@ -214,6 +237,19 @@ async def update_maps_settings(
         config.basemap_enabled = bool(fields["basemap_enabled"])
     if "geocode_unnamed_places" in fields:
         config.geocode_unnamed_places = bool(fields["geocode_unnamed_places"])
+    if "provider" in fields:
+        config.provider = str(fields["provider"])
+    for url_field in ("style_url", "library_url", "stylesheet_url"):
+        if url_field in fields:
+            value = (fields[url_field] or "").strip()
+            # Only http(s). A javascript: or data: URL here would be injected
+            # straight into a <script src> on every operator's browser.
+            if value and not value.startswith(("http://", "https://", "/")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{url_field} must be an http(s) URL or an absolute path",
+                )
+            setattr(config, url_field, value)
     if "browser_key" in fields:
         config.with_browser_key((fields["browser_key"] or "").strip())
     if "geocoding_key" in fields:

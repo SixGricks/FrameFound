@@ -207,31 +207,27 @@ taken.
 **Still open:** health-aware storage — disconnected-mount alerts, capacity
 warnings, and per-library storage attribution on the System page.
 
-## Maps provider — revisit
+## Maps provider — resolved
 
-Google Maps is wired in as an **opt-in** basemap and address-lookup layer, off
-by default. It is the only outbound dependency in normal operation, and worth
-revisiting once real usage shows what is actually needed.
+Self-hosted vector tiles are now the **recommended** basemap, and Google is one
+option among three rather than the only one. Chosen on Security → Maps &
+geocoding:
 
-The seams are deliberately narrow — `media/geocoding.py` is the only file that
-speaks Google's protocol, `media/maps_store.py` holds the keys and toggles,
-and `PlaceMap.tsx` already renders two ways. `geocode_cache` is keyed on
-coordinates, not on a provider, so cached addresses survive a switch.
+- **none** — the local scatter. Nothing leaves the machine.
+- **maplibre** — MapLibre GL from a style URL you control. Point it at your own
+  Protomaps file or OpenMapTiles server and no third party sees anything.
+  No API key, no bill. See [maps.md](maps.md#self-hosting-tiles-recommended).
+- **google** — Google's tiles, still supported for anyone who would rather not
+  run a tile server.
 
-Worth weighing when the time comes:
+Protomaps is the pragmatic route on this hardware: a regional `.pmtiles` extract
+is one file served over range requests, with no tile server process to keep
+alive on a host that is already over-committed on memory.
 
-- **Self-hosted tiles** (OpenMapTiles / Protomaps + MapLibre) — nothing leaves
-  the network; real setup cost and disk. Most consistent with a self-hosted
-  catalogue.
-- **Nominatim, self-hosted, regional extract** — offline reverse geocoding,
-  no per-lookup cost. Folder-name naming already does most of this work, so
-  the marginal value is small.
-- **Mapbox / MapTiler / Esri** — commercial like Google; Esri's aerial imagery
-  is arguably better for property work.
-
-Decision deferred deliberately: the current setup costs nothing until enabled,
-and the folder-name naming means geocoding may barely be used. Full comparison
-in [maps.md](maps.md#switching-to-a-different-map-provider).
+MapLibre is loaded at runtime from a configurable URL rather than bundled, so an
+install with no internet can serve the library from its own origin and the map
+makes no outbound request at all. That URL is validated to http(s) or an
+absolute path, because it goes into a `<script src>`.
 
 ## Media that moves (mostly shipped)
 

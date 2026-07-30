@@ -28,6 +28,25 @@ from framefound.db.models import AppSetting
 MAPS_KEY = "google_maps"
 
 
+# Basemap providers, in order of how much they tell an outsider.
+#   none      — the local scatter. Nothing leaves the machine.
+#   maplibre  — vector tiles from a style URL you choose. Point it at your own
+#               OpenMapTiles/Protomaps server and nothing leaves your network.
+#   google    — Google's tiles. Every pan reveals where you are looking.
+PROVIDERS = ("none", "maplibre", "google")
+
+# A MapLibre style is the single piece of configuration that decides where
+# tiles come from, so it is the whole story for self-hosting. Left blank
+# deliberately: guessing a public demo endpoint would quietly reintroduce the
+# outbound dependency the operator chose MapLibre to avoid.
+DEFAULT_STYLE_URL = ""
+
+# maplibre-gl is loaded at runtime rather than bundled, so this can be pointed
+# at a copy served from the same host for an install with no internet at all.
+DEFAULT_LIBRARY_URL = "https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"
+DEFAULT_STYLESHEET_URL = "https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css"
+
+
 @dataclass
 class MapsConfig:
     browser_key_sealed: str = ""
@@ -35,13 +54,31 @@ class MapsConfig:
     # Off unless asked for: a basemap is an outbound dependency, and the
     # scatter view works with no third party involved.
     basemap_enabled: bool = False
+    provider: str = "none"
+    # Self-hosted vector tiles. A style URL is all MapLibre needs; if it points
+    # at your own server, no third party sees anything.
+    style_url: str = DEFAULT_STYLE_URL
+    library_url: str = DEFAULT_LIBRARY_URL
+    stylesheet_url: str = DEFAULT_STYLESHEET_URL
     # Reverse geocoding only fills gaps. Folder names are more specific than
     # anything a gazetteer returns, so they win where they exist.
     geocode_unnamed_places: bool = True
 
     @property
     def basemap_ready(self) -> bool:
-        return self.basemap_enabled and bool(self.browser_key_sealed)
+        """Enabled *and* actually configured.
+
+        Reporting ready without the piece each provider needs would load a map
+        that errors instead of falling back to the scatter, which is worse than
+        no basemap at all.
+        """
+        if not self.basemap_enabled:
+            return False
+        if self.provider == "google":
+            return bool(self.browser_key_sealed)
+        if self.provider == "maplibre":
+            return bool(self.style_url.strip())
+        return False
 
     @property
     def geocoding_ready(self) -> bool:

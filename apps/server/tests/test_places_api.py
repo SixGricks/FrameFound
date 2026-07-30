@@ -154,12 +154,9 @@ async def test_maps_keys_are_never_returned(client: AsyncClient) -> None:
         json={"browser_key": "browser-secret", "geocoding_key": "server-secret"},
     )
     body = (await client.get("/api/v1/places/maps-settings")).json()
-    assert body == {
-        "basemap_enabled": False,
-        "browser_key_configured": True,
-        "geocoding_key_configured": True,
-        "geocode_unnamed_places": True,
-    }
+    assert body["browser_key_configured"] is True
+    assert body["geocoding_key_configured"] is True
+    # Presence only — never the values, anywhere in the payload.
     assert "secret" not in (await client.get("/api/v1/places/maps-settings")).text
 
 
@@ -171,7 +168,10 @@ async def test_the_browser_key_is_withheld_until_the_basemap_is_enabled(
     assert first["basemap_enabled"] is False
     assert first["browser_key"] == ""
 
-    await client.put("/api/v1/places/maps-settings", json={"basemap_enabled": True})
+    await client.put(
+        "/api/v1/places/maps-settings",
+        json={"basemap_enabled": True, "provider": "google"},
+    )
     second = (await client.get("/api/v1/places/map-config")).json()
     assert second["basemap_enabled"] is True
     assert second["browser_key"] == "browser-secret"
@@ -214,3 +214,80 @@ async def test_places_are_not_geocoded_when_the_folders_already_name_them(
     body = (await client.get("/api/v1/places")).json()
     assert all(p["named_from"] == "folder" for p in body)
     assert calls == []
+
+
+async def test_maplibre_needs_no_key_at_all(client: AsyncClient) -> None:
+    """The point of self-hosted tiles: nothing to authenticate to, because the
+    tiles are yours."""
+    await client.put(
+        "/api/v1/places/maps-settings",
+        json={
+            "provider": "maplibre",
+            "style_url": "https://tiles.example.internal/style.json",
+            "basemap_enabled": True,
+        },
+    )
+    config = (await client.get("/api/v1/places/map-config")).json()
+    assert config["basemap_enabled"] is True
+    assert config["provider"] == "maplibre"
+    assert config["style_url"] == "https://tiles.example.internal/style.json"
+    assert config["browser_key"] == "", "no key should ever be handed out for MapLibre"
+
+
+async def test_maplibre_without_a_style_stays_off(client: AsyncClient) -> None:
+    # Loading MapLibre with no style errors on the page; the local scatter is
+    # a better answer than a broken map.
+    await client.put(
+        "/api/v1/places/maps-settings",
+        json={"provider": "maplibre", "basemap_enabled": True},
+    )
+    assert (await client.get("/api/v1/places/map-config")).json()["basemap_enabled"] is False
+
+
+async def test_a_google_key_is_not_leaked_when_the_provider_is_maplibre(
+    client: AsyncClient,
+) -> None:
+    """Switching to self-hosted tiles must stop handing out the Google key,
+    even though it is still stored for a switch back."""
+    await client.put("/api/v1/places/maps-settings", json={"browser_key": "browser-secret"})
+    await client.put(
+        "/api/v1/places/maps-settings",
+        json={
+            "provider": "maplibre",
+            "style_url": "https://tiles.example.internal/style.json",
+            "basemap_enabled": True,
+        },
+    )
+    config = (await client.get("/api/v1/places/map-config")).json()
+    assert config["browser_key"] == ""
+    assert "browser-secret" not in (await client.get("/api/v1/places/map-config")).text
+
+
+async def test_a_script_url_must_be_http_or_an_absolute_path(client: AsyncClient) -> None:
+    """library_url goes into a <script src>. A javascript: or data: URL here
+    would execute in every operator's browser."""
+    for bad in ("javascript:alert(1)", "data:text/javascript,alert(1)", "ftp://x/y.js"):
+        resp = await client.put("/api/v1/places/maps-settings", json={"library_url": bad})
+        assert resp.status_code == 400, bad
+
+
+async def test_a_self_hosted_absolute_path_is_allowed(client: AsyncClient) -> None:
+    # An install with no internet serves the library from its own origin.
+    resp = await client.put(
+        "/api/v1/places/maps-settings", json={"library_url": "/vendor/maplibre-gl.js"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["library_url"] == "/vendor/maplibre-gl.js"
+
+
+async def test_switching_to_none_turns_the_basemap_off(client: AsyncClient) -> None:
+    await client.put(
+        "/api/v1/places/maps-settings",
+        json={
+            "provider": "maplibre",
+            "style_url": "https://tiles.example.internal/style.json",
+            "basemap_enabled": True,
+        },
+    )
+    await client.put("/api/v1/places/maps-settings", json={"provider": "none"})
+    assert (await client.get("/api/v1/places/map-config")).json()["basemap_enabled"] is False

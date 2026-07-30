@@ -805,6 +805,27 @@ h2 {
   accent-color: var(--amber);
 }
 
+/* MapLibre marker. A DOM element rather than the default pin, so the asset
+   count is legible and the marker belongs to the same interface as everything
+   else. */
+.mapdot {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--ink);
+  background: var(--amber);
+  color: #241a08;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.7);
+}
+.mapdot:hover {
+  background: #ffb648;
+}
+
 /* ---------- nav menu ---------- */
 
 .menu {
