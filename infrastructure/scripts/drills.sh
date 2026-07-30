@@ -85,7 +85,11 @@ if [ -x ./infrastructure/scripts/manage.sh ]; then
       workdir=$(mktemp -d)
       tar -xzf "$newest" -C "$workdir" ./catalog.dump 2>/dev/null
       if [ -s "$workdir/catalog.dump" ]; then
-        toc=$($COMPOSE exec -T postgres pg_restore -l /dev/stdin < "$workdir/catalog.dump" 2>/dev/null | grep -c "TABLE DATA")
+        # Copied in rather than piped: pg_restore needs to seek within a
+        # custom-format archive, and a pipe is not seekable.
+        $COMPOSE cp "$workdir/catalog.dump" postgres:/tmp/ff-drill.dump >/dev/null 2>&1
+        toc=$($COMPOSE exec -T postgres pg_restore -l /tmp/ff-drill.dump 2>/dev/null | grep -c "TABLE DATA")
+        $COMPOSE exec -T postgres rm -f /tmp/ff-drill.dump >/dev/null 2>&1
         if [ "${toc:-0}" -gt 5 ]; then
           ok "dump is restorable — pg_restore lists $toc tables of data"
         else
