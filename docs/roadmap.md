@@ -86,6 +86,14 @@ reality rather than the original sequence.
 
 ### In progress — face recognition
 
+**Two bugs found by looking at production rather than trusting green tests:**
+`detect_faces` existed, was tested, was deployed, and nothing ever called it —
+0 faces after a full pass. Then once wired, the SCRFD decoder read bounding
+boxes out of the keypoint tensors and found zero faces in the entire library
+without erroring once. Both fixed; the decoder now has 13 tests written
+against the model's real output shapes.
+
+
 **On by default**, per the operator's decision, with a real off switch. Landed
 so far: the `people`/`faces` model, SCRFD + ArcFace via ONNX (the same AVX-free
 path as CLIP, so it runs on the Westmere Xeons), greedy clustering, and
