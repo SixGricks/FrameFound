@@ -1,0 +1,96 @@
+<!--
+  FrameFound panel for Premiere Pro (UXP).
+
+  Deliberately plain HTML with no build step and no framework. A panel that
+  needs npm, a bundler and a toolchain version to rebuild is a panel that stops
+  being maintainable the moment the person who set it up is busy — and this one
+  has to survive inside somebody's Premiere install for years. Everything here
+  can be edited with a text editor and reloaded.
+
+  Styling follows the host's own theme variables so the panel does not look
+  like a website glued into an editing application.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        font-family: "Adobe Clean", system-ui, sans-serif;
+        font-size: 12px;
+        color: #e8e8e8;
+        background: #262626;
+      }
+      .wrap { padding: 10px; display: flex; flex-direction: column; gap: 8px; height: 100vh; box-sizing: border-box; }
+      .row { display: flex; gap: 6px; align-items: center; }
+      .grow { flex: 1; min-width: 0; }
+      .muted { color: #9a9a9a; font-size: 11px; }
+      .err { color: #ff8a80; font-size: 11px; }
+      #results { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+      .hit {
+        display: flex; gap: 8px; align-items: center; padding: 5px;
+        border: 1px solid #3a3a3a; border-radius: 4px; cursor: pointer; background: #2f2f2f;
+      }
+      .hit[data-selected="true"] { border-color: #2680eb; background: #223449; }
+      .hit img { width: 64px; height: 36px; object-fit: cover; background: #111; border-radius: 2px; flex-shrink: 0; }
+      .hit .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .hit .sub { color: #9a9a9a; font-size: 10px; }
+      .offline { color: #ffb74d; }
+      input, select, button { font-family: inherit; font-size: 12px; }
+      input, select {
+        background: #1d1d1d; color: #e8e8e8; border: 1px solid #4a4a4a;
+        border-radius: 4px; padding: 4px 6px;
+      }
+      button {
+        background: #4a4a4a; color: #e8e8e8; border: 1px solid #5a5a5a;
+        border-radius: 4px; padding: 5px 10px; cursor: pointer;
+      }
+      button.primary { background: #2680eb; border-color: #2680eb; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      details summary { cursor: pointer; color: #9a9a9a; }
+      .settings { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="row">
+        <input id="q" class="grow" placeholder="Search your catalogue…" />
+        <button id="go" class="primary">Find</button>
+      </div>
+
+      <div class="row">
+        <select id="profile" class="grow" title="Which machine's paths to use"></select>
+        <select id="type" title="Filter by kind">
+          <option value="">All</option>
+          <option value="video">Video</option>
+          <option value="image">Stills</option>
+          <option value="audio">Audio</option>
+        </select>
+      </div>
+
+      <div id="status" class="muted">Not connected. Open Settings below.</div>
+      <div id="results"></div>
+
+      <div class="row">
+        <button id="import" disabled>Import selected</button>
+        <span id="count" class="muted"></span>
+      </div>
+
+      <details id="settings">
+        <summary>Settings</summary>
+        <div class="settings">
+          <input id="server" placeholder="http://framefound.local:8080" />
+          <input id="token" type="password" placeholder="Panel token (ffp_…)" />
+          <div class="row">
+            <button id="save" class="grow">Save and connect</button>
+          </div>
+          <div class="muted">
+            Create a token in FrameFound under Security → Panel tokens. It is
+            shown once. Revoke it there if this machine is lost.
+          </div>
+        </div>
+      </details>
+    </div>
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import MapsSettingsCard from "@/components/MapsSettingsCard";
+import PanelTokensCard from "@/components/PanelTokensCard";
 import TailnetCard from "@/components/TailnetCard";
 import Shell from "@/components/Shell";
 import { api, type AuthSession, type RemoteAccess, type User } from "@/lib/api";
@@ -451,6 +452,8 @@ export default function SecurityPage() {
           </tbody>
         </table>
       </div>
+
+      <PanelTokensCard />
     </Shell>
   );
 }

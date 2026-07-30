@@ -23,7 +23,7 @@ reality rather than the original sequence.
 | **M6** Web UI alpha | ✅ | search, browse, asset detail, places, storage, tags, dashboards |
 | **M7** Remote access | ✅ | 2FA, sealed secrets, DDNS, kill switch, sessions, Tailscale enrolment |
 | **M8** Hardening | ✅ | backup/restore, image scanning + SBOMs, benchmarks, failure drills (9/9) |
-| **M9** Editorial handoff | 🔶 started | ADR-0019 decided; FCP7 XML export shipped |
+| **M9** Editorial handoff | 🔶 started | panel tokens, `/panel` API, Premiere UXP + Lightroom Lua clients written (untested in-host) |
 
 ### Measured state of the production install — 2026-07-29 17:45 UTC
 
@@ -89,10 +89,14 @@ reality rather than the original sequence.
    produced 52 correct suggestions out of 60. It gets useful once real tags
    exist.
 3. **Inference tuning** (#34) against places you can verify.
-4. **M9 remaining**: marker export from transcript hits, panel tokens with
-   revocation, then a UXP spike against a current Premiere (ADR-0019).
-5. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
-6. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
+4. **Load the panels in their hosts.** The Premiere UXP panel and the
+   Lightroom Classic plugin are written and their server side is tested, but
+   neither has been run inside its application — see [panels.md](panels.md).
+   That first run is the remaining unknown.
+5. **M9 remaining**: marker export from transcript hits, so a search result
+   lands on the frame rather than the file (`fcp7.Marker` is waiting for it).
+6. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
+7. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
 
 ### Design decisions taken (2026-07-30)
 

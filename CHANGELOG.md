@@ -24,6 +24,12 @@ versioning: [Semantic Versioning](https://semver.org/).
   merged at the moment of creation rather than discovered later. Naming a
   person offers a **Merge into** action per match.
 
+- Editing panels for Adobe Premiere Pro (UXP) and Lightroom Classic (Lua SDK),
+  plus the `/api/v1/panel` surface they share and scoped, revocable **panel
+  tokens** managed under Security. Results carry a path already translated for
+  the workstation through the `path_mappings` profiles, which had existed since
+  Milestone 2 with nothing consuming them. See [docs/panels.md](docs/panels.md).
+
 ### Fixed
 - Face thumbnails showed unrelated content. Faces are detected in *sampled
   frames*, but the grid cropped from the asset's thumbnail — a different

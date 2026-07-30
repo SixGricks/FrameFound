@@ -67,6 +67,54 @@ class AuthSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class PanelToken(Base):
+    """A credential for an editing panel — Premiere, Lightroom, a script.
+
+    Separate from `auth_sessions` on purpose, even though both are opaque
+    bearer strings. A session belongs to a browser, slides its expiry on use
+    and carries the user's full authority. A panel token belongs to a *machine*,
+    never expires by inactivity (an editor may not open the panel for a month),
+    and is deliberately weaker than the user who made it: read-only unless
+    explicitly widened.
+
+    The panel is the reason this exists rather than reusing the session cookie.
+    A cookie in a desktop extension cannot be revoked from the machine it grants
+    access to, cannot be told apart from the operator's own browser in an audit,
+    and rides along on every request the host application happens to make. A
+    named, listed, revocable token is the same trust decision made visible.
+
+    Only the hash is stored, as with sessions. `prefix` is the visible part, so
+    a list of four tokens can be told apart without revealing any of them.
+    """
+
+    __tablename__ = "panel_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # Operator-supplied: "Edit bay iMac", "DJ's laptop".
+    name: Mapped[str] = mapped_column(String(120), default="")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # First few characters of the token, for identification in a list.
+    prefix: Mapped[str] = mapped_column(String(16), default="")
+    # premiere | lightroom | other — informational, never a permission.
+    host: Mapped[str] = mapped_column(String(20), default="other")
+    # Comma-separated. "read" is search and metadata; "export" additionally
+    # allows generating an FCP7 XML. Nothing here grants a write to the library.
+    scopes: Mapped[str] = mapped_column(String(200), default="read")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Null means it does not expire. An editing workstation that is used twice a
+    # year should not silently stop working, so this is opt-in rather than
+    # imposed — but it is offered, and shown in the list.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_used_ip: Mapped[str | None] = mapped_column(String(45), default=None)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    user: Mapped[User] = relationship()
+
+
 class AppSetting(Base):
     """Typed key-value store for wizard-managed configuration."""
 

@@ -237,6 +237,24 @@ export interface MapsSettings {
   stylesheet_url: string;
 }
 
+export interface PanelToken {
+  id: string;
+  name: string;
+  host: "premiere" | "lightroom" | "other";
+  scopes: string[];
+  prefix: string;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  last_used_ip: string | null;
+  revoked: boolean;
+}
+
+export interface PanelTokenCreated extends PanelToken {
+  /** Returned exactly once. There is no endpoint that can show it again. */
+  token: string;
+}
+
 export interface TagSuggestion {
   id: string;
   name: string;
@@ -470,6 +488,21 @@ export const api = {
     request<void>(`/auth/sessions/${id}`, { method: "DELETE" }),
   revokeOtherSessions: () =>
     request<{ revoked: number }>("/auth/sessions/revoke-others", { method: "POST" }),
+
+  panelTokens: () => request<PanelToken[]>("/auth/panel-tokens"),
+  createPanelToken: (body: {
+    name: string;
+    host: string;
+    scopes: string[];
+    expires_in_days?: number | null;
+  }) =>
+    request<PanelTokenCreated>("/auth/panel-tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  revokePanelToken: (id: string) =>
+    request<void>(`/auth/panel-tokens/${id}`, { method: "DELETE" }),
 
   totpStart: (password: string) =>
     request<{ provisioning_uri: string; secret: string }>("/auth/totp/start", {

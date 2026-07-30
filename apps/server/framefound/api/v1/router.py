@@ -13,6 +13,7 @@ from framefound.api.v1.basemaps import router as basemaps_router
 from framefound.api.v1.duplicates import router as duplicates_router
 from framefound.api.v1.libraries import router as libraries_router
 from framefound.api.v1.media import router as media_router
+from framefound.api.v1.panel import router as panel_router
 from framefound.api.v1.people import router as people_router
 from framefound.api.v1.places import router as places_router
 from framefound.api.v1.remote_access import router as remote_access_router
@@ -38,6 +39,7 @@ api_v1.include_router(basemaps_router)
 api_v1.include_router(people_router)
 api_v1.include_router(tags_router)
 api_v1.include_router(slideshows_router)
+api_v1.include_router(panel_router)
 
 
 class SystemInfo(BaseModel):

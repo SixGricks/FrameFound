@@ -5,7 +5,7 @@ cross-site POSTs from carrying the cookie in modern browsers.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -298,3 +298,126 @@ async def revoke_other_sessions(request: Request, db: DbDep, user: CurrentUser) 
     )
     await db.commit()
     return {"revoked": count}
+
+
+# --- panel tokens ---------------------------------------------------------
+#
+# Listed alongside sessions because they are the same kind of thing from the
+# operator's point of view: a way in that is currently open. ADR-0019 committed
+# to this treatment — a credential that cannot be revoked from the machine it
+# grants access to is a leak with a delay on it.
+
+
+class PanelTokenOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    host: str
+    scopes: list[str]
+    prefix: str
+    created_at: datetime
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    last_used_ip: str | None
+    revoked: bool
+
+
+class PanelTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    host: str = Field(default="other", max_length=20)
+    scopes: list[str] = Field(default_factory=lambda: ["read"])
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class PanelTokenCreated(PanelTokenOut):
+    # Returned exactly once. There is no endpoint that can show it again, which
+    # is the point: a token the server can re-display is a token the server is
+    # storing in a form an attacker could use.
+    token: str
+
+
+def _token_out(record: object) -> PanelTokenOut:
+    from framefound.db.models import PanelToken
+
+    assert isinstance(record, PanelToken)
+    return PanelTokenOut(
+        id=record.id,
+        name=record.name,
+        host=record.host,
+        scopes=record.scopes.split(","),
+        prefix=record.prefix,
+        created_at=record.created_at,
+        expires_at=record.expires_at,
+        last_used_at=record.last_used_at,
+        last_used_ip=record.last_used_ip,
+        revoked=record.revoked,
+    )
+
+
+@router.get("/panel-tokens", response_model=list[PanelTokenOut])
+async def list_panel_tokens(db: DbDep, user: CurrentUser) -> list[PanelTokenOut]:
+    from sqlalchemy import select
+
+    from framefound.db.models import PanelToken
+
+    rows = (
+        (
+            await db.execute(
+                select(PanelToken)
+                .where(PanelToken.user_id == user.id)
+                .order_by(PanelToken.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_token_out(row) for row in rows]
+
+
+@router.post("/panel-tokens", response_model=PanelTokenCreated, status_code=201)
+async def create_panel_token(
+    body: PanelTokenCreate, request: Request, db: DbDep, user: CurrentUser
+) -> PanelTokenCreated:
+    """Mint a token for one machine. The secret is shown once and never again."""
+    from datetime import timedelta
+
+    from framefound.auth import panel_tokens
+
+    expires_at = (
+        datetime.now(UTC) + timedelta(days=body.expires_in_days) if body.expires_in_days else None
+    )
+    try:
+        minted = await panel_tokens.mint(
+            db,
+            user=user,
+            name=body.name,
+            host=body.host,
+            scopes=body.scopes,
+            expires_at=expires_at,
+        )
+    except panel_tokens.PanelTokenError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+    await service.audit(
+        db, "auth.panel_token_created", actor_user_id=user.id, ip=client_ip(request)
+    )
+    await db.commit()
+    log.info("auth.panel_token_created", host=body.host, scopes=minted.record.scopes)
+    return PanelTokenCreated(**_token_out(minted.record).model_dump(), token=minted.plaintext)
+
+
+@router.delete("/panel-tokens/{token_id}", status_code=204)
+async def revoke_panel_token(
+    token_id: uuid.UUID, request: Request, db: DbDep, user: CurrentUser
+) -> None:
+    """Revoke rather than delete, so the audit trail keeps the name and the
+    last-used timestamp — which is what someone investigating a leak needs."""
+    from framefound.db.models import PanelToken
+
+    record = await db.get(PanelToken, token_id)
+    if record is None or record.user_id != user.id:
+        raise HTTPException(404, "No such token")
+    record.revoked = True
+    await service.audit(
+        db, "auth.panel_token_revoked", actor_user_id=user.id, ip=client_ip(request)
+    )
+    await db.commit()
