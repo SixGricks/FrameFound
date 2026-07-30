@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
+import PathMappingsEditor from "@/components/PathMappingsEditor";
 import Shell from "@/components/Shell";
 import { api, type Library } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
@@ -98,6 +99,7 @@ export default function LibrariesPage() {
                   </button>
                 </div>
               </div>
+              <PathMappingsEditor libraryId={lib.id} libraryName={lib.name} />
             </div>
           ))}
         </div>

@@ -237,6 +237,18 @@ export interface MapsSettings {
   stylesheet_url: string;
 }
 
+export interface PathMappingInput {
+  profile_name: string;
+  platform: "windows" | "macos" | "linux";
+  mapped_prefix: string;
+}
+
+export interface PathMapping extends PathMappingInput {
+  id: string;
+  /** The library root as that machine would see it — a worked example. */
+  example: string;
+}
+
 export interface PanelToken {
   id: string;
   name: string;
@@ -539,6 +551,14 @@ export const api = {
     ),
 
   libraries: () => request<Library[]>("/libraries"),
+  pathMappings: (libraryId: string) =>
+    request<PathMapping[]>(`/libraries/${libraryId}/path-mappings`),
+  replacePathMappings: (libraryId: string, mappings: PathMappingInput[]) =>
+    request<PathMapping[]>(`/libraries/${libraryId}/path-mappings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mappings),
+    }),
   scanLibrary: (id: string) => request<unknown>(`/libraries/${id}/scan`, { method: "POST" }),
 
   assets: (params: {

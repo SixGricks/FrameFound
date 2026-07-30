@@ -261,3 +261,82 @@ async def cancel_scan(library_id: uuid.UUID, db: DbDep, _user: CurrentUser) -> S
     return ScanOut.model_validate(
         await _transition_scan(db, library_id, ("pending", "running", "paused"), "cancelled")
     )
+
+
+# --- path mappings --------------------------------------------------------
+#
+# These could only be set when a library was created, which made them
+# unreachable for the four libraries that already existed — and the editing
+# panels are the first thing that actually consumes them. A profile the
+# operator cannot create is a feature that does not exist.
+
+
+class PathMappingOut(PathMappingIn):
+    id: uuid.UUID
+    example: str
+
+
+@router.get("/{library_id}/path-mappings", response_model=list[PathMappingOut])
+async def list_path_mappings(
+    library_id: uuid.UUID, _user: CurrentUser, db: DbDep
+) -> list[PathMappingOut]:
+    """Where each workstation mounts this library.
+
+    Each entry carries a worked `example` — the library root as that machine
+    would see it. A prefix looks right far more often than it is right, and one
+    worked example is what makes a wrong drive letter obvious at a glance.
+    """
+    from framefound.api.v1.panel import _translate
+
+    library = await db.get(Library, library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="No such library")
+
+    rows = (
+        (await db.execute(select(PathMapping).where(PathMapping.library_id == library_id)))
+        .scalars()
+        .all()
+    )
+    root = library.root_path.rstrip("/")
+    return [
+        PathMappingOut(
+            id=row.id,
+            profile_name=row.profile_name,
+            platform=row.platform,
+            mapped_prefix=row.mapped_prefix,
+            example=_translate(f"{root}/Example/Clip.mp4", root, row.mapped_prefix),
+        )
+        for row in rows
+    ]
+
+
+@router.put(
+    "/{library_id}/path-mappings",
+    response_model=list[PathMappingOut],
+    dependencies=[require_admin],
+)
+async def replace_path_mappings(
+    library_id: uuid.UUID, body: list[PathMappingIn], _user: CurrentUser, db: DbDep
+) -> list[PathMappingOut]:
+    """Replace the whole set for one library.
+
+    Replace rather than patch: there are rarely more than a handful, they are
+    edited as a group, and a partial update across a unique (library, profile)
+    constraint is a great deal of machinery for a form with three fields.
+    """
+    from sqlalchemy import delete as sql_delete
+
+    library = await db.get(Library, library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="No such library")
+
+    names = [m.profile_name.strip() for m in body]
+    if len(set(names)) != len(names):
+        raise HTTPException(status_code=400, detail="Two profiles cannot share a name")
+
+    await db.execute(sql_delete(PathMapping).where(PathMapping.library_id == library_id))
+    for mapping in body:
+        db.add(PathMapping(library_id=library_id, **mapping.model_dump()))
+    await db.commit()
+    log.info("library.path_mappings_replaced", library_id=str(library_id), count=len(body))
+    return await list_path_mappings(library_id, _user, db)
