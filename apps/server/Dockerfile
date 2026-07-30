@@ -17,6 +17,11 @@ WORKDIR /app
 COPY pyproject.toml README.md alembic.ini ./
 COPY migrations ./migrations
 COPY framefound ./framefound
+# pmtiles: a single Go binary used to pull a regional basemap out of the
+# 125 GB planet archive over range requests. ~10 MB, no runtime deps.
+ARG PMTILES_VERSION=1.28.0
+RUN set -eux;     arch="$(dpkg --print-architecture)";     case "$arch" in amd64) pm=x86_64 ;; arm64) pm=arm64 ;; *) pm="" ;; esac;     if [ -n "$pm" ]; then       curl -fsSL "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_${pm}.tar.gz"         | tar -xz -C /usr/local/bin pmtiles && chmod +x /usr/local/bin/pmtiles;     fi
+
 RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai]"
 
 # Pre-create the data mountpoint owned by the app user so Docker named

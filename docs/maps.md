@@ -66,20 +66,30 @@ network.
 Two ways to get one, and the second is much less work than its reputation
 suggests.
 
-### Protomaps — one file, no extra service
+### Protomaps — built in, no extra service
 
-A whole region is a single `.pmtiles` file served over HTTP range requests.
-Caddy can serve it directly; there is no tile server to run, no database, and
-nothing to keep alive.
+**This is now handled by FrameFound itself.** Go to Storage → Basemaps, pick a
+region, and it extracts one.
 
-```bash
-# A regional extract rather than the planet: ~1-2 GB for the US Northeast
-# against ~100 GB for the world.
-curl -O https://build.protomaps.com/20260701.pmtiles   # or extract your own
-```
+There is no pre-built regional download to fetch — the Protomaps planet build
+is a single 125 GB archive at
+`https://data.source.coop/protomaps/openstreetmap/v4.pmtiles`. But PMTiles is
+addressable by HTTP range request, so a bounding box can be pulled out of it
+without fetching the rest. That is what `pmtiles extract` does and why the
+format was chosen over an mbtiles + tileserver stack.
 
-Serve the file, point the style at it, done. On a 100 GB VM disk with 5.9 GB
-of RAM this is the realistic option, and it is what would suit this install.
+| Region | Bounding box | Approx |
+|---|---|---|
+| Pennsylvania (+ surrounds) | `-80.9,39.4,-74.4,42.5` | ~0.6 GB |
+| US Northeast | `-81.0,38.4,-66.9,45.1` | ~2 GB |
+| Continental US | `-125.0,24.4,-66.9,49.4` | ~12 GB |
+
+Capped at zoom 14: street names are readable and the archive is a fraction of
+what full zoom costs.
+
+The resulting file is served straight out of the data directory by the same
+range-request code that handles video scrubbing. No tile server, no extra
+container, nothing to keep alive.
 
 ### OpenMapTiles — a tile server
 

@@ -882,21 +882,26 @@ def _round_key(embedding: list[float] | None) -> str:
 @celery_app.task(
     name="framefound.fetch_basemap",
     queue="media",
-    # No autoretry: a partial 12 GB download retried automatically would burn
-    # bandwidth on a loop. Failures are reported and re-requested by hand.
+    # No autoretry: extraction reads a lot from a remote archive and retrying
+    # automatically would burn bandwidth on a loop. Failures are reported and
+    # re-requested by hand.
     max_retries=0,
 )
-def fetch_basemap(name: str, url: str) -> None:
-    """Stream a PMTiles archive to disk.
+def fetch_basemap(name: str, bbox: str) -> None:
+    """Pull one region out of the Protomaps planet archive.
 
-    On `media` because it is a long IO-bound transfer, which is that lane's
-    whole shape — and because it must not sit in front of frame sampling or
-    embedding work.
+    Extraction rather than download: the planet is 125 GB and this host has
+    tens of gigabytes free. PMTiles is addressable by HTTP range request, so
+    `pmtiles extract` fetches only the tiles inside the bounding box — which is
+    the reason the format was chosen over an mbtiles + tileserver stack.
 
-    Downloaded to a `.part` file and renamed on completion, so an interrupted
-    transfer never leaves something that looks like a usable basemap.
+    Written to a `.part` file and renamed on success, so an interrupted run
+    never leaves something that looks like a usable basemap.
     """
-    import httpx
+    import shutil
+    import subprocess
+
+    from framefound.api.v1.basemaps import PLANET_URL
 
     settings = get_settings()
     directory = settings.data_dir / "basemaps"
@@ -906,24 +911,37 @@ def fetch_basemap(name: str, url: str) -> None:
 
     if final.exists():
         return
+    if shutil.which("pmtiles") is None:
+        log.error("basemap.tool_missing", name=name)
+        raise RuntimeError("The pmtiles tool is not installed in this image")
 
-    free = deriv.free_bytes(directory) if hasattr(deriv, "free_bytes") else None
-    log.info("basemap.download_started", name=name, url=url, free_bytes=free)
-
+    partial.unlink(missing_ok=True)
+    log.info("basemap.extract_started", name=name, bbox=bbox)
     try:
-        with httpx.stream("GET", url, follow_redirects=True, timeout=60) as response:
-            response.raise_for_status()
-            expected = int(response.headers.get("content-length", 0)) or None
-            written = 0
-            with partial.open("wb") as handle:
-                for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                    handle.write(chunk)
-                    written += len(chunk)
-        if expected and written != expected:
-            raise OSError(f"truncated: got {written} of {expected} bytes")
+        completed = subprocess.run(  # noqa: S603 - fixed binary, argv form, no shell
+            [  # noqa: S607 - resolved from PATH in our own image
+                "pmtiles",
+                "extract",
+                PLANET_URL,
+                str(partial),
+                f"--bbox={bbox}",
+                # Zoom 14 is the point where a basemap stops helping and starts
+                # costing: street names are readable and the archive is a
+                # fraction of what full zoom would be.
+                "--maxzoom=14",
+            ],
+            capture_output=True,
+            timeout=4 * 3600,
+            check=False,
+        )
+        if completed.returncode != 0:
+            tail = completed.stderr.decode("utf-8", "replace")[-400:]
+            raise RuntimeError(tail or "pmtiles extract failed")
+        if not partial.is_file() or partial.stat().st_size < 1024:
+            raise RuntimeError("extraction produced no usable archive")
         partial.rename(final)
-        log.info("basemap.download_finished", name=name, bytes=written)
+        log.info("basemap.extract_finished", name=name, bytes=final.stat().st_size)
     except Exception as exc:
         partial.unlink(missing_ok=True)
-        log.error("basemap.download_failed", name=name, error=str(exc)[:300])
+        log.error("basemap.extract_failed", name=name, error=str(exc)[:300])
         raise

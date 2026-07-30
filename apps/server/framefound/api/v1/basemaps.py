@@ -37,26 +37,37 @@ SUBDIR = "basemaps"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MAX_BYTES = 32 * 1024**3  # a planet extract is ~100 GB; refuse to fill the disk
 
-# Suggested extracts. Deliberately a short curated list rather than a browser
-# for every region on earth: the operator needs the one their work is in.
+# The Protomaps planet build on Source Cooperative. Verified reachable and
+# range-capable (206 + PMTiles magic); ~125 GB, which is far more than this
+# host has free — hence extraction rather than download.
+#
+# An earlier version of this file guessed per-region URLs like
+# `.../extracts/us-northeast.pmtiles`. They 404. There is no pre-built regional
+# extract at a stable URL; the supported route is to pull a bounding box out of
+# the planet archive over range requests, which is what PMTiles is designed for
+# and why the format was chosen in the first place.
+PLANET_URL = "https://data.source.coop/protomaps/openstreetmap/v4.pmtiles"
+
+# Bounding boxes, west,south,east,north. Generous by a little: a map that stops
+# at the state line looks broken when a job sits just over it.
 CATALOGUE = [
     {
+        "name": "pennsylvania",
+        "label": "Pennsylvania (+ surrounding counties)",
+        "bbox": "-80.9,39.4,-74.4,42.5",
+        "approx_gb": 0.6,
+    },
+    {
         "name": "us-northeast",
-        "label": "US Northeast (PA, NJ, NY, NE)",
-        "url": "https://build.protomaps.com/extracts/us-northeast.pmtiles",
+        "label": "US Northeast (PA, NJ, NY, MD, DE, New England)",
+        "bbox": "-81.0,38.4,-66.9,45.1",
         "approx_gb": 2.0,
     },
     {
         "name": "us",
-        "label": "United States",
-        "url": "https://build.protomaps.com/extracts/us.pmtiles",
+        "label": "Continental United States",
+        "bbox": "-125.0,24.4,-66.9,49.4",
         "approx_gb": 12.0,
-    },
-    {
-        "name": "planet",
-        "label": "Whole planet (large)",
-        "url": "https://build.protomaps.com/extracts/planet.pmtiles",
-        "approx_gb": 100.0,
     },
 ]
 
@@ -78,8 +89,8 @@ class BasemapList(BaseModel):
 
 class DownloadRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
-    # Only needed for something not in the catalogue.
-    url: str = Field(default="", max_length=2000)
+    # west,south,east,north. Only needed for a region not in the catalogue.
+    bbox: str = Field(default="", max_length=80)
 
 
 def _basemap_dir(settings: SettingsDep) -> Path:
@@ -160,16 +171,17 @@ async def serve_tiles(name: str, request: Request, _user: CurrentUser, settings:
 async def download_basemap(
     body: DownloadRequest, _user: CurrentUser, settings: SettingsDep
 ) -> dict[str, str]:
-    """Start a download. Admin-only: it writes to disk and uses bandwidth."""
+    """Extract a region from the planet archive. Admin-only: it writes to disk.
+
+    Extraction, not download: the planet is 125 GB and this host has 42 GB
+    free, but PMTiles is addressable by range request so a bounding box can be
+    pulled without fetching the rest.
+    """
     name = _safe_name(body.name)
-    known = {str(item["name"]): str(item["url"]) for item in CATALOGUE}
-    url = (body.url or "").strip() or known.get(name, "")
-    if not url:
-        raise HTTPException(status_code=400, detail="No URL for that basemap")
-    if not url.startswith("https://"):
-        # A basemap is tens of gigabytes fetched unattended; plain HTTP would
-        # be silently tamperable for the whole download.
-        raise HTTPException(status_code=400, detail="The URL must be https")
+    known = {str(item["name"]): str(item["bbox"]) for item in CATALOGUE}
+    bbox = (body.bbox or "").strip() or known.get(name, "")
+    if not _valid_bbox(bbox):
+        raise HTTPException(status_code=400, detail="Need a bounding box as west,south,east,north")
 
     target = _basemap_dir(settings) / f"{name}.pmtiles"
     if target.exists():
@@ -178,11 +190,23 @@ async def download_basemap(
     try:
         from framefound.processing.tasks import fetch_basemap
 
-        fetch_basemap.delay(name, url)
+        fetch_basemap.delay(name, bbox)
     except Exception:
         raise HTTPException(status_code=503, detail="The processing queue is unavailable") from None
-    log.info("basemap.download_queued", name=name, url=url)
-    return {"status": "downloading", "name": name}
+    log.info("basemap.extract_queued", name=name, bbox=bbox)
+    return {"status": "extracting", "name": name}
+
+
+def _valid_bbox(bbox: str) -> bool:
+    """west,south,east,north within real coordinate ranges, correctly ordered."""
+    parts = bbox.split(",")
+    if len(parts) != 4:
+        return False
+    try:
+        west, south, east, north = (float(p) for p in parts)
+    except ValueError:
+        return False
+    return -180 <= west < east <= 180 and -90 <= south < north <= 90
 
 
 @router.delete("/{name}", status_code=204, dependencies=[require_admin])
