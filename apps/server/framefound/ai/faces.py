@@ -180,23 +180,33 @@ def _decode_scrfd(
 ) -> list[tuple[float, float, float, float, float]]:
     """Turn SCRFD's per-stride score/box tensors into image-space boxes.
 
-    The model emits three strides (8, 16, 32), each with a score tensor and a
-    distance-to-edge box tensor over an implicit anchor grid. Anchors are two
-    per cell. Decoding it here rather than pulling in the full insightface
-    package keeps the dependency to onnxruntime, which is what actually has to
-    work on this hardware.
+    det_10g emits **nine** tensors, in three groups of three strides:
+
+        [0,1,2]  scores  (12800,1) (3200,1) (800,1)
+        [3,4,5]  boxes   (12800,4) (3200,4) (800,4)
+        [6,7,8]  kps     (12800,10) ...      — five landmarks, unused here
+
+    12800 is 80x80x2: an 80-cell grid at stride 8 with two anchors per cell.
+
+    The first version of this assumed six outputs and took `len(outputs) // 2`
+    as the group size, which gave 4 — so it read boxes out of the *keypoint*
+    tensors and produced garbage. Verified against the real output shapes this
+    time rather than inferred from the architecture.
     """
     import numpy as np
 
     strides = (8, 16, 32)
     results: list[tuple[float, float, float, float, float]] = []
-    half = len(outputs) // 2
+    # Three groups: scores, boxes, and keypoints we do not use.
+    group = len(outputs) // 3
+    if group == 0:
+        return []
 
     for index, stride in enumerate(strides):
-        if index >= half:
+        if index >= group:
             break
         scores = np.asarray(outputs[index]).reshape(-1)
-        deltas = np.asarray(outputs[index + half]).reshape(-1, 4)
+        deltas = np.asarray(outputs[index + group]).reshape(-1, 4)
         if scores.size == 0 or deltas.shape[0] != scores.size:
             continue
 
