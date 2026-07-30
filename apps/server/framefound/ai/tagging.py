@@ -35,10 +35,27 @@ from dataclasses import dataclass
 # more trustworthy than a dictionary definition.
 EXAMPLE_HALF_WEIGHT = 3.0
 
-# A suggestion is never offered below this, whatever the examples imply. Two
-# unrelated photographs of outdoor equipment sit around 0.7 in CLIP space, so
-# anything under this is noise regardless of what the arithmetic says.
-SIMILARITY_FLOOR = 0.78
+# CLIP's modality gap, measured on this library (3,000 frames, ViT-B/32):
+#
+#   text  vs image:  min 0.119   median 0.189   p95 0.235   max 0.294
+#   image vs image:  min 0.270   median 0.458   p95 0.534   near-dupes 0.88+
+#
+# Text and image embeddings occupy different regions of the space, so a cosine
+# score means nothing without knowing which regime produced it. An absolute
+# floor cannot work: 0.78 is unreachable for a prototype with any text in it,
+# and trivially cleared by one built purely from images.
+#
+# The bar is therefore taken from the *distribution* of scores actually
+# observed — a high percentile of everything scored in this run. That is
+# regime-independent by construction, self-calibrating as a tag's prototype
+# moves from text-heavy to example-heavy, and states the real intent directly:
+# suggest what stands out from the library, not what merely scores highly.
+BASELINE_PERCENTILE = 99.0
+
+# Used only before any scoring has happened, so the two regimes need separate
+# values. Both sit near the top of their measured range.
+TEXT_ONLY_FLOOR = 0.26
+EXAMPLE_FLOOR = 0.55
 
 # Pulled back from the weakest accepted example so near-misses still surface;
 # pushed above the strongest rejection so a known wrong answer cannot return.
@@ -118,23 +135,39 @@ class Threshold:
     reason: str
 
 
+def fallback_floor(has_examples: bool) -> float:
+    """The bar to use when no score distribution is available yet."""
+    return EXAMPLE_FLOOR if has_examples else TEXT_ONLY_FLOOR
+
+
 def derive_threshold(
     prototype: list[float],
     positives: list[list[float]],
     negatives: list[list[float]],
+    baseline: float | None = None,
 ) -> Threshold:
     """Where to draw the line for this particular tag.
+
+    `baseline` is a high percentile of the scores observed in the run being
+    thresholded. Passing it is what makes the bar regime-independent; without
+    it the fallback floors apply, which are rough by comparison.
 
     Reported with a reason, because an operator who sees an odd suggestion
     deserves to be able to find out why it cleared the bar.
     """
-    if not positives:
-        return Threshold(SIMILARITY_FLOOR, "nothing tagged yet — using the default match bar")
-
-    positive_scores = [cosine(prototype, vector) for vector in positives]
-    weakest = min(positive_scores)
-    candidate = weakest - POSITIVE_MARGIN
     count = len(positives)
+    floor = baseline if baseline is not None else fallback_floor(bool(positives))
+
+    if not positives:
+        return Threshold(
+            floor,
+            "nothing tagged yet — matching on the tag's name alone"
+            if baseline is None
+            else "nothing tagged yet — using the top 1% of matches",
+        )
+
+    weakest = min(cosine(prototype, vector) for vector in positives)
+    candidate = weakest - POSITIVE_MARGIN
     reason = f"just below the weakest of {count} tagged example{'' if count == 1 else 's'}"
 
     if negatives:
@@ -143,14 +176,25 @@ def derive_threshold(
             candidate = strongest_wrong + NEGATIVE_MARGIN
             reason = f"just above the closest of {len(negatives)} rejected suggestions"
 
-    if candidate < SIMILARITY_FLOOR:
-        # The examples imply a bar below the floor — usually because there are
-        # too few of them to have pulled the prototype close to any of them
-        # yet. Say that, rather than claiming there are no examples.
+    if candidate < floor:
+        # The examples are not distinctive enough to beat the library at large.
+        # Holding at the baseline is the honest answer — and saying so is more
+        # useful than silently suggesting nothing.
         return Threshold(
-            SIMILARITY_FLOOR,
-            f"{count} example{'' if count == 1 else 's'} so far — holding at the default bar",
+            floor,
+            f"{count} example{'' if count == 1 else 's'} so far — held at the top "
+            "1% of matches until they are more distinctive",
         )
     # A tag whose examples are all near-identical would otherwise set a bar so
     # high nothing else could ever clear it.
     return Threshold(min(candidate, 0.98), reason)
+
+
+def percentile(scores: list[float], point: float = BASELINE_PERCENTILE) -> float | None:
+    """Nearest-rank percentile. Enough samples or nothing — a percentile of a
+    handful of scores describes the handful, not the library."""
+    if len(scores) < 100:
+        return None
+    ordered = sorted(scores)
+    index = min(len(ordered) - 1, int(round(point / 100.0 * (len(ordered) - 1))))
+    return ordered[index]

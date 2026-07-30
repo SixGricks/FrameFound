@@ -60,6 +60,31 @@ async def _asset_vectors(
     return out
 
 
+async def _example_vectors(
+    db: AsyncSession, tag_id: uuid.UUID
+) -> tuple[list[list[float]], list[list[float]]]:
+    """(positives, negatives) for a tag, as one vector per asset."""
+    links = (
+        (
+            await db.execute(
+                select(AssetTag).where(
+                    AssetTag.tag_id == tag_id,
+                    AssetTag.source.in_(("manual", "confirmed", "rejected")),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    positive_ids = [link.asset_id for link in links if link.source in ("manual", "confirmed")]
+    negative_ids = [link.asset_id for link in links if link.source == "rejected"]
+    vectors = await _asset_vectors(db, positive_ids + negative_ids)
+    return (
+        [vectors[a] for a in positive_ids if a in vectors],
+        [vectors[a] for a in negative_ids if a in vectors],
+    )
+
+
 @celery_app.task(
     name="framefound.learn_tag",
     queue="vision",
@@ -80,26 +105,7 @@ def learn_tag(tag_id: str, then_suggest: bool = True) -> None:
                 if tag is None:
                     return
 
-                links = (
-                    (
-                        await db.execute(
-                            select(AssetTag).where(
-                                AssetTag.tag_id == tag.id,
-                                AssetTag.source.in_(("manual", "confirmed", "rejected")),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                positive_ids = [
-                    link.asset_id for link in links if link.source in ("manual", "confirmed")
-                ]
-                negative_ids = [link.asset_id for link in links if link.source == "rejected"]
-
-                vectors = await _asset_vectors(db, positive_ids + negative_ids)
-                positives = [vectors[a] for a in positive_ids if a in vectors]
-                negatives = [vectors[a] for a in negative_ids if a in vectors]
+                positives, negatives = await _example_vectors(db, tag.id)
 
                 # The words, averaged over caption-style prompts: CLIP responds
                 # better to "a photo of a power broom" than to the bare noun.
@@ -170,8 +176,6 @@ def suggest_for_tag(tag_id: str) -> None:
                 tag = await db.get(Tag, uuid.UUID(tag_id))
                 if tag is None or not tag.prototype or not tag.suggest_enabled:
                     return
-                threshold = tag.threshold or tagging.SIMILARITY_FLOOR
-
                 decided = set(
                     (await db.execute(select(AssetTag.asset_id).where(AssetTag.tag_id == tag.id)))
                     .scalars()
@@ -188,17 +192,35 @@ def suggest_for_tag(tag_id: str) -> None:
                     )
                 ).all()
 
+                # Score everything first, then decide the bar from what was
+                # actually seen. An absolute cutoff cannot work across CLIP's
+                # modality gap — see ai/tagging.py for the measurements.
                 prototype = np.asarray(tag.prototype, dtype=np.float32)
                 best: dict[uuid.UUID, float] = {}
+                all_scores: list[float] = []
                 for asset_id, embedding in rows:
-                    if asset_id in decided or not embedding:
+                    if not embedding:
                         continue
                     # Both are unit vectors, so the dot product is cosine.
                     score = float(prototype @ np.asarray(embedding, dtype=np.float32))
-                    if score >= threshold and score > best.get(asset_id, 0.0):
+                    all_scores.append(score)
+                    if asset_id in decided:
+                        continue
+                    if score > best.get(asset_id, -1.0):
                         best[asset_id] = score
 
-                ranked = sorted(best.items(), key=lambda kv: -kv[1])[:MAX_SUGGESTIONS_PER_RUN]
+                positives, negatives = await _example_vectors(db, tag.id)
+                threshold_spec = tagging.derive_threshold(
+                    tag.prototype, positives, negatives, tagging.percentile(all_scores)
+                )
+                threshold = threshold_spec.value
+                # The bar moves with the library, so record what was actually
+                # used rather than leaving a stale value from the learn pass.
+                tag.threshold = threshold
+                tag.threshold_reason = threshold_spec.reason
+
+                above = {a: s for a, s in best.items() if s >= threshold}
+                ranked = sorted(above.items(), key=lambda kv: -kv[1])[:MAX_SUGGESTIONS_PER_RUN]
                 for asset_id, score in ranked:
                     db.add(
                         AssetTag(
@@ -213,7 +235,7 @@ def suggest_for_tag(tag_id: str) -> None:
                     "tagging.suggested",
                     tag=tag.name,
                     offered=len(ranked),
-                    above_threshold=len(best),
+                    above_threshold=len(above),
                     frames_considered=len(rows),
                     threshold=round(threshold, 4),
                 )

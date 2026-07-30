@@ -115,7 +115,7 @@ def test_example_weight_grows_monotonically() -> None:
 
 def test_with_no_examples_the_threshold_is_the_floor() -> None:
     threshold = tagging.derive_threshold(unit(1), [], [])
-    assert threshold.value == tagging.SIMILARITY_FLOOR
+    assert threshold.value == tagging.TEXT_ONLY_FLOOR
     assert "nothing tagged yet" in threshold.reason
 
 
@@ -153,7 +153,40 @@ def test_the_threshold_never_drops_below_the_floor() -> None:
     outdoor photograph would match every tag."""
     prototype = unit(1, 0)
     threshold = tagging.derive_threshold(prototype, [rotated(1.5)], [])
-    assert threshold.value == tagging.SIMILARITY_FLOOR
+    assert threshold.value == tagging.EXAMPLE_FLOOR
+
+
+def test_a_supplied_baseline_replaces_the_fallback_floor() -> None:
+    """The measured fix. CLIP's text and image regions are far apart — text vs
+    image tops out near 0.29 on this library while image vs image reaches 0.97
+    — so an absolute floor is meaningless. A percentile of the scores actually
+    observed is regime-independent."""
+    prototype = unit(1, 0)
+    weak = rotated(1.3)  # cos ~ 0.267: a plausible text-vs-image score
+    from_baseline = tagging.derive_threshold(prototype, [weak], [], baseline=0.24)
+    assert from_baseline.value == pytest.approx(tagging.cosine(prototype, weak) - 0.015)
+    # Without the baseline the image-regime fallback would reject it outright.
+    assert tagging.derive_threshold(prototype, [weak], []).value == tagging.EXAMPLE_FLOOR
+
+
+def test_the_baseline_still_wins_when_examples_are_not_distinctive() -> None:
+    prototype = unit(1, 0)
+    threshold = tagging.derive_threshold(prototype, [rotated(1.5)], [], baseline=0.30)
+    assert threshold.value == 0.30
+    assert "top 1%" in threshold.reason
+
+
+def test_a_percentile_needs_enough_samples_to_mean_anything() -> None:
+    # A percentile over a handful of scores describes the handful.
+    assert tagging.percentile([0.1, 0.9]) is None
+    assert tagging.percentile([0.5] * 99) is None
+    assert tagging.percentile([0.5] * 100) == 0.5
+
+
+def test_the_percentile_picks_the_top_of_the_distribution() -> None:
+    scores = [i / 1000 for i in range(1000)]
+    top = tagging.percentile(scores)
+    assert top is not None and top > 0.98
 
 
 def test_hitting_the_floor_does_not_claim_there_are_no_examples() -> None:
