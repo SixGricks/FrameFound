@@ -49,6 +49,28 @@ reality rather than the original sequence.
 
 ### Needs attention
 
+- **UNRESOLVED: the scanner's maintenance block does not execute.** The
+  scanner logs `scanner.started` and then nothing. The face pipeline is proven
+  working — running `cluster_unassigned_faces` by hand turned 45 faces into 7
+  people instantly — but the periodic sweep that should call it never runs, and
+  neither do the stuck-asset requeue or the transcript retry sweep.
+
+  Ruled out so far, each tested rather than assumed:
+  - Observer setup blocking the loop. Was **a** real bug and is fixed (watch
+    registration now runs in a thread; `watcher.started` appears 70 s after
+    start instead of never), but it was not the whole cause.
+  - The watch queue draining. GELCO's watcher was disabled and the loop still
+    produced one log line.
+  - A long-running scan holding the loop. No scan is pending or running.
+
+  Next thing to try: add a heartbeat log at the top of each loop iteration to
+  find out whether the loop is spinning at all, then bisect the body. The
+  symptom of a blocked async loop is silence, not an error — a log that simply
+  stops is the signal.
+
+  **Workaround meanwhile:** clustering, transcript requeue and stuck-asset
+  requeue can all be invoked directly against the worker, and do work.
+
 - **21 damaged files, 127 GB** — found by the QA sweep, not a FrameFound bug.
   All fail with "moov atom not found": recordings interrupted before the camera
   finished writing the container. They will not open in Premiere either. One is
