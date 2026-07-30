@@ -232,7 +232,37 @@ taken.
 **Still open:** health-aware storage — disconnected-mount alerts, capacity
 warnings, and per-library storage attribution on the System page.
 
-## Automated video and slideshows (researched, not scheduled)
+## Automated video and slideshows (A/C started)
+
+Design decisions taken with the operator:
+
+| | |
+|---|---|
+| Theming | CLIP selection + styling presets + generated title cards. **No** generative motion on the photos themselves. |
+| Face review | Confirm before it counts |
+| Render output | The VM data directory |
+| Music | Operator supplies their own licensed tracks |
+
+**Landed so far:** `media/theming.py` (themes as data, not code — a church
+running a different VBS next summer adds one without a deploy) and
+`media/slideshow.py` (selection: near-duplicate collapsing, face coverage,
+themed ordering). 16 tests.
+
+The selection logic is where the value is. A good event slideshow is not a
+clever transition, it is the right forty photographs out of four hundred with
+nobody left out — so `select()` gives every required person their best frame
+*first*, then fills, then re-sorts chronologically. Choosing on merit and
+re-sorting afterwards is what lets a themed slideshow still tell the day in
+order; picking chronologically first would mean the theme only influenced the
+tail.
+
+Low-scoring frames are pushed back rather than removed, so a thin day still
+produces a slideshow instead of four photos.
+
+**Still to come:** the render task itself (FFmpeg Ken Burns + transitions +
+audio), the project model, and the UI.
+
+## Automated video and slideshows — research
 
 Full analysis in [video-generation.md](video-generation.md). The finding worth
 recording here: **"AI video from photos" is two products wearing one name**, and
