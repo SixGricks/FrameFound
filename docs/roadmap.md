@@ -232,9 +232,50 @@ taken.
 **Still open:** health-aware storage — disconnected-mount alerts, capacity
 warnings, and per-library storage attribution on the System page.
 
-## Maps provider — resolved
+## Automated video and slideshows (researched, not scheduled)
 
-Self-hosted vector tiles are now the **recommended** basemap, and Google is one
+Full analysis in [video-generation.md](video-generation.md). The finding worth
+recording here: **"AI video from photos" is two products wearing one name**, and
+only one of them is dependable.
+
+- **Deterministic renders** (Ken Burns, ordering, transitions, music, text) are
+  pure FFmpeg, need no GPU, work on current hardware, and are reliable because
+  nothing is invented. This is what an estate agent would actually put a
+  client's name on, and it covers both listing videos and event slideshows.
+- **Generative image-to-video** (SVD, LTX-Video, Wan 2.1, CogVideoX — all local,
+  12–24 GB VRAM) is genuinely impressive and genuinely unsuited to property
+  interiors: architecture must stay rigid and generative motion is loose with
+  straight lines, invented space beyond the frame is a *disclosure* problem for
+  a regulated listing rather than a quality one, and independently generated
+  clips do not hold colour continuity across a 90-second edit. Estimated 3 in 10
+  interior clips usable; better on exteriors and drone material.
+
+Recommended sequence: build the deterministic renderer first (it is what makes
+generative clips usable at all, by giving them somewhere to sit), then add
+generative clips as an optional, reviewed, exteriors-only enhancement once the
+GPU lands.
+
+Event slideshows are the easiest win and lean on what already exists: capture
+time for order, CLIP for collapsing near-duplicates, and **face coverage as a
+constraint** so every named person appears — which is exactly what a church or
+a family asks for and what a chronological cut misses.
+
+## Maps — native, no extra service
+
+Basemaps are now served by FrameFound itself. PMTiles puts a whole region in
+**one file** addressed by HTTP range requests — the same mechanism already
+implemented for video scrubbing — so a basemap is a download into the data
+directory and an endpoint that serves byte ranges out of it. No tile server, no
+extra container, nothing to keep alive on a host that is already
+over-committed.
+
+`GET /api/v1/basemaps` lists a short curated catalogue (US Northeast ~2 GB, US
+~12 GB, planet ~100 GB) with what is installed; `POST /api/v1/basemaps/download`
+streams one in on the `media` lane, to a `.part` file renamed on completion so
+an interrupted transfer never looks like a usable map. Once the file is there,
+nothing about the map leaves the network.
+
+Self-hosted vector tiles are the **recommended** basemap, and Google is one
 option among three rather than the only one. Chosen on Security → Maps &
 geocoding:
 

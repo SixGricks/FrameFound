@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from framefound import __version__
 from framefound.api.v1.assets import router as assets_router
+from framefound.api.v1.basemaps import router as basemaps_router
 from framefound.api.v1.duplicates import router as duplicates_router
 from framefound.api.v1.libraries import router as libraries_router
 from framefound.api.v1.media import router as media_router
@@ -31,6 +32,7 @@ api_v1.include_router(remote_access_router)
 api_v1.include_router(storage_router)
 api_v1.include_router(duplicates_router)
 api_v1.include_router(places_router)
+api_v1.include_router(basemaps_router)
 api_v1.include_router(tags_router)
 
 

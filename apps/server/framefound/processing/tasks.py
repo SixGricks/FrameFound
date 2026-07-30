@@ -877,3 +877,53 @@ def _round_key(embedding: list[float] | None) -> str:
     if not embedding:
         return ""
     return ",".join(f"{v:.3f}" for v in embedding[:16])
+
+
+@celery_app.task(
+    name="framefound.fetch_basemap",
+    queue="media",
+    # No autoretry: a partial 12 GB download retried automatically would burn
+    # bandwidth on a loop. Failures are reported and re-requested by hand.
+    max_retries=0,
+)
+def fetch_basemap(name: str, url: str) -> None:
+    """Stream a PMTiles archive to disk.
+
+    On `media` because it is a long IO-bound transfer, which is that lane's
+    whole shape — and because it must not sit in front of frame sampling or
+    embedding work.
+
+    Downloaded to a `.part` file and renamed on completion, so an interrupted
+    transfer never leaves something that looks like a usable basemap.
+    """
+    import httpx
+
+    settings = get_settings()
+    directory = settings.data_dir / "basemaps"
+    directory.mkdir(parents=True, exist_ok=True)
+    final = directory / f"{name}.pmtiles"
+    partial = directory / f"{name}.pmtiles.part"
+
+    if final.exists():
+        return
+
+    free = deriv.free_bytes(directory) if hasattr(deriv, "free_bytes") else None
+    log.info("basemap.download_started", name=name, url=url, free_bytes=free)
+
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60) as response:
+            response.raise_for_status()
+            expected = int(response.headers.get("content-length", 0)) or None
+            written = 0
+            with partial.open("wb") as handle:
+                for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                    handle.write(chunk)
+                    written += len(chunk)
+        if expected and written != expected:
+            raise OSError(f"truncated: got {written} of {expected} bytes")
+        partial.rename(final)
+        log.info("basemap.download_finished", name=name, bytes=written)
+    except Exception as exc:
+        partial.unlink(missing_ok=True)
+        log.error("basemap.download_failed", name=name, error=str(exc)[:300])
+        raise
