@@ -8,6 +8,8 @@ Loop responsibilities:
 4. Confirm departures — paths a watchdog event claims are gone — and flag the
    assets behind them `missing` once a stat agrees.
 5. Re-queue work that failed and was never looked at again.
+6. Keep table statistics fresh, so bulk inserts do not quietly cost the
+   query planner its indexes.
 """
 
 import asyncio
@@ -19,7 +21,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import structlog
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -281,6 +283,33 @@ async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     log.info("scanner.transcripts_requeued", count=len(candidates))
 
 
+async def _refresh_statistics(db: AsyncSession) -> None:
+    """ANALYZE the tables that grow in bulk.
+
+    Found by the M8 benchmark: after 9,429 embeddings were inserted, vector
+    search silently stopped using its HNSW index and fell back to sorting
+    every row. The index was present and correct — the planner's row estimates
+    were stale, so it mis-costed the index scan and chose a sort.
+
+    That degrades linearly and invisibly: 75 ms at 9k frames, and nobody
+    notices until the library is ten times larger. Autovacuum gets there
+    eventually, but "eventually" is not good enough for a table that gains
+    thousands of rows in one background run.
+
+    ANALYZE samples rather than reading everything, so this stays cheap as the
+    catalogue grows.
+    """
+    for table in ("frames", "assets", "asset_tags", "derivatives"):
+        try:
+            await db.execute(text(f"ANALYZE {table}"))
+        except Exception:
+            # SQLite in tests, or a permissions problem. Not worth failing the
+            # maintenance pass over.
+            log.debug("scanner.analyze_skipped", table=table)
+            return
+    await db.commit()
+
+
 async def main() -> None:
     configure_logging()
     log.info("scanner.started")
@@ -319,6 +348,7 @@ async def main() -> None:
                 if time.time() - last_requeue > 300:
                     await _requeue_stuck_assets(db, enqueue)
                     await _requeue_missing_transcripts(db)
+                    await _refresh_statistics(db)
                     last_requeue = time.time()
         except Exception:
             log.error("scanner.loop_error", exc_info=True)

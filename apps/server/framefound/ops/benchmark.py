@@ -195,8 +195,9 @@ async def run(db: AsyncSession) -> Report:
             # A sequential scan here means the HNSW index is not being used,
             # which is invisible until the library is large enough to hurt.
             report.warnings.append(
-                "Vector search is NOT using an index scan — check the HNSW index "
-                f"on frames.embedding. Plan: {plan_text[:200]}"
+                "Vector search is NOT using an index scan. The usual cause is "
+                "stale statistics after a bulk embedding run, not a missing "
+                "index — try ANALYZE frames. Plan: " + plan_text[:180]
             )
 
     # Places clusters on every request, so its cost grows with located assets.
