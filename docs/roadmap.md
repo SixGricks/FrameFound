@@ -75,6 +75,15 @@ reality rather than the original sequence.
 4. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
 5. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
 
+### Design decisions taken (2026-07-30)
+
+| Question | Decision |
+|---|---|
+| Slideshow theming | CLIP selection + styling presets + generated title cards. **Not** generative motion on the photos. |
+| Face review | Confirm before it counts |
+| Render output | VM data directory |
+| Slideshow music | Operator supplies licensed tracks |
+
 ### In progress — face recognition
 
 **On by default**, per the operator's decision, with a real off switch. Landed
@@ -82,7 +91,8 @@ so far: the `people`/`faces` model, SCRFD + ArcFace via ONNX (the same AVX-free
 path as CLIP, so it runs on the Westmere Xeons), greedy clustering, and
 per-person thresholds derived from corrections. 16 tests on the grouping logic.
 
-Still to come: the API, the naming UI, and the review flow.
+API landed (naming, confirm, reject, merge, forget — 13 tests). Still to
+come: the People page and the review UI.
 
 Design notes worth keeping:
 - **No zero-shot start.** A tag bootstraps from its own words because CLIP
