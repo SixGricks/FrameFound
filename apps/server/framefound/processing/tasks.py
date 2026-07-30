@@ -4,10 +4,18 @@ Queues are segregated by latency class so bulk work never starves
 user-visible work (learned in deployment when 8k metadata jobs delayed
 thumbnails by hours):
 
-  metadata - bulk extraction sweeps (high volume, moderate cost)
-  visuals  - thumbnails/posters/waveforms (fast, user-visible)
-  media    - proxy transcodes (heavy, long-running)
-  default  - legacy name, still consumed so pre-rename queued jobs drain
+  metadata  - bulk extraction sweeps (high volume, moderate cost)
+  visuals   - thumbnails/posters/waveforms (fast, user-visible)
+  media     - proxy transcodes (heavy, long-running)
+  frames    - sampling stills out of video (IO-bound, ~60-100 s each on a
+              5.2 MB/s share) — shares worker-media, which is FFmpeg-shaped
+  vision    - CLIP embeddings (~300 ms each, CPU-bound)
+  transcribe- speech to text (minutes each)
+  default   - legacy name, still consumed so pre-rename queued jobs drain
+
+The split between frames/vision/transcribe was learned three times over: each
+time two latency classes shared a worker, the slow one starved the fast one and
+the catalogue silently stopped gaining searchable data.
 
 Stage chain: extract_metadata -> generate_derivatives + generate_proxy.
 Every task is idempotent; each execution writes a Job history row (the
@@ -373,7 +381,12 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
 
 @celery_app.task(
     name="framefound.sample_frames",
-    queue="vision",
+    # `frames`, not `vision`. Sampling decodes video off the share — 60-100 s
+    # per asset at the measured 5.2 MB/s — while embedding the resulting JPEGs
+    # takes ~300 ms. Sharing a queue meant 6,271 sampling jobs starved the
+    # embedding work behind them and the catalogue stopped gaining searchable
+    # frames entirely. Same latency-class rule, one level further down.
+    queue="frames",
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 2},

@@ -16,7 +16,10 @@ from framefound.db.models import Asset, Derivative, Job
 log = structlog.get_logger()
 router = APIRouter(prefix="/system", tags=["system"])
 
-QUEUES = ("visuals", "metadata", "media", "transcribe", "vision", "default")
+# Order is the pipeline order, so the dashboard reads as a flow rather than
+# an alphabetical list.  must be here or the slowest stage in the
+# system would be invisible on the page built to show what is happening.
+QUEUES = ("metadata", "visuals", "frames", "vision", "transcribe", "media", "default")
 
 
 class ComponentStatus(BaseModel):

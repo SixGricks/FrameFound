@@ -103,6 +103,9 @@ services:
       redis: { condition: service_healthy }
 
   worker-media:
+    # Also takes `frames`: sampling is FFmpeg reading video off the share,
+    # which is the same shape as a proxy transcode and nothing like the
+    # 300 ms embedding work on `vision`.
     # Heavy lane: proxy transcodes only, isolated so a long FFmpeg run
     # never blocks thumbnails or metadata.
     build: apps/server
@@ -113,7 +116,7 @@ services:
         limits:
           cpus: "2.0"
           memory: 1100M
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media", "--concurrency=1"]
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media,frames", "--concurrency=1"]
     env_file: .env
     environment:
       FRAMEFOUND_MEDIA_ROOT: /media
