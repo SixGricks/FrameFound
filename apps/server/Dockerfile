@@ -4,7 +4,7 @@ FROM python:3.12-slim AS base
 
 # Media probing/processing binaries (invoked as subprocesses, never linked).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl \
+    && apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as non-root (threat model: container compromise != root on host mounts).
