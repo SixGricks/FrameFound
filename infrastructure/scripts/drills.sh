@@ -79,11 +79,22 @@ if [ -x ./infrastructure/scripts/manage.sh ]; then
     if [ -n "$newest" ] && tar -tzf "$newest" >/dev/null 2>&1; then
       size=$(du -h "$newest" | cut -f1)
       ok "backup written and readable ($size)"
-      if tar -tzf "$newest" | grep -q "\.sql"; then
-        ok "backup contains a database dump"
+      # Not a filename check — the dump is pg_dump custom format, so ask
+      # pg_restore whether it can actually read a table of contents out of it.
+      # A backup nobody has tried to read is not a backup.
+      workdir=$(mktemp -d)
+      tar -xzf "$newest" -C "$workdir" ./catalog.dump 2>/dev/null
+      if [ -s "$workdir/catalog.dump" ]; then
+        toc=$($COMPOSE exec -T postgres pg_restore -l /dev/stdin < "$workdir/catalog.dump" 2>/dev/null | grep -c "TABLE DATA")
+        if [ "${toc:-0}" -gt 5 ]; then
+          ok "dump is restorable — pg_restore lists $toc tables of data"
+        else
+          bad "pg_restore could not read a usable table of contents (found ${toc:-0})"
+        fi
       else
-        bad "backup has no database dump in it"
+        bad "backup contains no catalog.dump"
       fi
+      rm -rf "$workdir"
     else
       bad "backup archive missing or corrupt"
     fi
