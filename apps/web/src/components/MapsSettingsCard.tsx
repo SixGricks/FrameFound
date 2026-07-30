@@ -80,7 +80,12 @@ export default function MapsSettingsCard() {
           <select
             className="select"
             value={settings.provider}
-            onChange={(e) => save({ provider: e.target.value }, "Provider changed")}
+            onChange={(e) =>
+              save(
+                { provider: e.target.value as MapsSettings["provider"] },
+                "Provider changed",
+              )
+            }
           >
             <option value="none">None — draw positions locally</option>
             <option value="maplibre">Self-hosted tiles (OpenMapTiles / Protomaps)</option>
