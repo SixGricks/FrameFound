@@ -1,14 +1,19 @@
 "use client";
 
-// A face, cropped from the frame it was found in.
+// A face, cropped out of the frame it was found in.
 //
-// No crop is stored or served. The frame is already available through the
-// media endpoint, so the box is applied here with CSS — scaling the frame up
-// and shifting it so the face fills the square. Keeping a second copy of
-// everyone's face on disk would double the most sensitive data in the system
-// for no benefit.
+// The crop is computed by the API and served as a square JPEG. This used to be
+// done here in CSS and it was wrong in two independent ways: it cropped from
+// the *asset's* thumbnail rather than the frame the face was detected in — so
+// any face found partway through a video showed unrelated content — and the
+// tile's `object-fit: cover` cropped the image before the box maths applied,
+// so the normalised coordinates no longer referred to what was on screen.
+//
+// Server-side, the client needs to know no geometry at all, and it downloads a
+// small square thumbnail per face instead of a full frame image. Still nothing
+// is stored: the crop is computed per request from a frame already on disk.
 
-import { mediaUrl, type FaceRef } from "@/lib/api";
+import { faceCropUrl, type FaceRef } from "@/lib/api";
 
 export default function FaceCrop({
   face,
@@ -17,17 +22,6 @@ export default function FaceCrop({
   face: FaceRef;
   size?: number;
 }) {
-  // A little air around the box: face detectors crop tight to the features,
-  // and a portrait with no forehead is hard to recognise.
-  const pad = 0.35;
-  const w = Math.min(1, face.box_w * (1 + pad * 2));
-  const h = Math.min(1, face.box_h * (1 + pad * 2));
-  const x = Math.max(0, face.box_x - face.box_w * pad);
-  const y = Math.max(0, face.box_y - face.box_h * pad);
-
-  // Zoom so the padded box fills the tile, then offset to bring it into view.
-  const scale = 1 / Math.max(w, h);
-
   return (
     <div
       className="facecrop"
@@ -36,14 +30,11 @@ export default function FaceCrop({
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={mediaUrl(face.asset_id, "thumbnail")}
+        // Twice the displayed size, so it stays sharp on a high-density screen.
+        src={faceCropUrl(face.face_id, Math.min(512, size * 2))}
         alt=""
         loading="lazy"
         decoding="async"
-        style={{
-          transform: `scale(${scale}) translate(${-x * 100}%, ${-y * 100}%)`,
-          transformOrigin: "top left",
-        }}
       />
     </div>
   );

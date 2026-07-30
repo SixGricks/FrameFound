@@ -19,7 +19,22 @@ versioning: [Semantic Versioning](https://semver.org/).
 - Milestone 0: repository scaffolding, architecture docs, ADRs, threat model,
   Docker Compose stack definition, backend and frontend skeletons, CI pipeline.
 
+- Autocomplete on tag entry and person naming. Typing surfaces what already
+  exists, so a second "power broom" tag or a fourth person called "Dad" can be
+  merged at the moment of creation rather than discovered later. Naming a
+  person offers a **Merge into** action per match.
+
 ### Fixed
+- Face thumbnails showed unrelated content. Faces are detected in *sampled
+  frames*, but the grid cropped from the asset's thumbnail — a different
+  picture — so any face found partway through a video showed whatever was at
+  that spot in an unrelated frame (161 of 307 faces on the reference install).
+  Compounding it, `object-fit: cover` cropped the tile before the box maths
+  applied. Crops are now cut server-side from the correct frame; nothing is
+  stored, they are computed per request.
+- Faces below 40px are no longer embedded. ArcFace upscales to 112×112, so a
+  seven-pixel face produced an embedding that was almost entirely
+  interpolation and quietly polluted every cluster it joined.
 - FFmpeg's thread cap reached only the decoder. `-threads` is a per-file
   option, so inserting it before `-i` left x264 running one thread per core on
   every proxy transcode while the setting appeared to be in force — measured at

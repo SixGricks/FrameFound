@@ -73,6 +73,77 @@ performs badly; it is excluded by design. It is also small — the catalog for a
 - If the NAS goes offline, previews stop working and generation pauses, but
   the catalog, search, and metadata keep working entirely.
 
+## Planned: a second drive alongside the RAM upgrade
+
+Both upgrades are expected together, and they relieve different constraints —
+worth being clear about which is which, because it decides what to do first.
+
+**What the second drive fixes.** The host currently has ~34 GB free on one
+volume shared by Postgres, derivatives, models and now renders. That is the
+binding constraint on three separate things: proxy transcodes pause below
+`FRAMEFOUND_MIN_FREE_GB`, basemap extracts need room for a `.part` file the
+size of the finished archive, and a long slideshow render needs working space
+for every piece before the stitch. None of those are RAM problems.
+
+**What the RAM fixes.** Worker memory limits currently total 7.6 GB against
+5.9 GB installed, which only works because they are ceilings rather than
+reservations. `worker-vision` was raised to 1200M after being OOM-killed
+holding three ONNX sessions, paid for by trimming `worker` from 1300M to
+1000M. More RAM removes that zero-sum trade and lets the frames and vision
+lanes run wider, which is what would actually drain the 5,700-job frames
+backlog faster.
+
+### The migration is already a one-line change
+
+Every service that touches derived data mounts `${FRAMEFOUND_DATA_STORE:-framefound-data}`,
+so pointing `/data` at a new disk is an `.env` edit and a restart:
+
+```bash
+FRAMEFOUND_DATA_STORE=/mnt/fast/framefound-data
+```
+
+Nothing in the database stores an absolute path to derived files —
+`Derivative.relative_path`, `Frame.relative_path` and `Slideshow.relative_path`
+are all relative to the data directory, which was the point of that convention.
+So the move is: stop the stack, `rsync -a` the volume to the new disk, change
+the variable, start. No re-processing, no re-scan, no rebuilt thumbnails.
+
+`framefound-models` and `postgres-data` are separate named volumes and can be
+moved independently on the same principle.
+
+### What should go where
+
+| | Where | Why |
+| --- | --- | --- |
+| Postgres | fastest disk, ideally SSD | pgvector HNSW search is random-read bound; this is the one that benefits most from NVMe |
+| `/data` derivatives + frames | large disk | ~15,700 thumbnails and previews today, and it grows with the library |
+| `/data/renders` | large disk | a slideshow is ~1.5 MB per photograph, and the working directory briefly holds every piece |
+| `/data/basemaps` | large disk | one file per region; the continental US is ~12 GB |
+| `/models` | either, small | ~350 MB of ONNX weights, read once per worker start |
+| Originals | unchanged, read-only | FrameFound never writes here and that does not change |
+
+If the second drive is spinning rust and the existing one is SSD, put Postgres
+and `/models` on the SSD and everything in `/data` on the new disk. If the new
+one is the faster drive, move Postgres to it and leave the rest.
+
+### What to do before the hardware arrives
+
+- Nothing in the code. The relocation hook already exists and is exercised by
+  the `FRAMEFOUND_DATA_STORE` default.
+- Worth checking `docs/benchmarks.md` search latency *before* the move, so the
+  Postgres relocation can be judged on numbers rather than impression.
+- The 101 failed derivatives should be re-run after the move: several are
+  likely to be the low-space guard rather than genuine failures, and it would
+  be a shame to migrate the failure state along with the data.
+
+### Still to build
+
+Health-aware storage — a disconnected-mount alert and per-drive capacity
+warnings on the System page. With one drive, "the disk" is unambiguous. With
+two, a full or unmounted second drive presents as unexplained failures spread
+across proxies, renders and basemaps, and the operator has no page that says
+which disk ran out. That becomes worth building the day the drive goes in.
+
 ## The low-space guard
 
 Generation stops while headroom remains, rather than filling the disk:

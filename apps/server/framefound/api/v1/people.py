@@ -13,18 +13,20 @@ confidently wrong, which is the right trade for something that puts one
 person's photograph in another person's album.
 """
 
+import asyncio
+import io
 import re
 import uuid
 from typing import Any, cast
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 
 from framefound.ai import people as people_lib
-from framefound.auth.deps import CurrentUser, DbDep, require_admin
+from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.db.models import Asset, Face, Person
 from framefound.media.maps_store import load_face_config, save_face_config
 
@@ -169,6 +171,96 @@ async def _cover_for(db: DbDep, person: Person) -> FaceOut | None:
     )
     row = (await db.execute(stmt)).first()
     return _face_out(row[0], row[1]) if row else None
+
+
+class NameSuggestion(BaseModel):
+    id: uuid.UUID
+    name: str
+    confirmed_count: int
+    exact: bool
+    cover: FaceOut | None
+
+
+@router.get("/suggest/names", response_model=list[NameSuggestion])
+async def suggest_names(
+    _user: CurrentUser,
+    db: DbDep,
+    q: str = Query(default="", max_length=120),
+    # Plain default rather than Query(): FastAPI infers the query parameter
+    # either way, and the wrapper is what trips B008 on an optional UUID.
+    exclude: uuid.UUID | None = None,
+    limit: int = Query(default=8, ge=1, le=25),
+) -> list[NameSuggestion]:
+    """People whose name matches what is being typed.
+
+    Clustering routinely produces several groups for the same person — a
+    different haircut, a decade, a bad angle — so "Dad" already existing when
+    you go to name a new cluster "Dad" is the normal case, not an error. Left
+    to fend for itself the catalogue accumulates four people called Dad and no
+    single album for any of them.
+
+    Surfacing the match at the moment of typing lets the operator merge instead
+    of duplicating, which is the only point at which they have the context to
+    know it *is* the same person.
+
+    Prefix matches rank above contains-matches, and the exact match is flagged
+    so the UI can say "this already exists" rather than making them read.
+    """
+    term = q.strip().lower()
+    if not term:
+        return []
+
+    stmt = select(Person).where(Person.name != "", func.lower(Person.name).contains(term))
+    if exclude is not None:
+        stmt = stmt.where(Person.id != exclude)
+    people = (await db.execute(stmt.limit(limit * 4))).scalars().all()
+    if not people:
+        return []
+
+    counts = await _confirmed_counts(db, [p.id for p in people])
+    covers = await _covers(db, [p.cover_face_id for p in people if p.cover_face_id])
+
+    def rank(person: Person) -> tuple[int, int, str]:
+        lowered = person.name.lower()
+        # Exact first, then prefix, then anywhere; bigger groups before smaller.
+        tier = 0 if lowered == term else (1 if lowered.startswith(term) else 2)
+        return (tier, -counts.get(person.id, 0), lowered)
+
+    people = sorted(people, key=rank)[:limit]
+    return [
+        NameSuggestion(
+            id=person.id,
+            name=person.name,
+            confirmed_count=counts.get(person.id, 0),
+            exact=person.name.lower() == term,
+            cover=covers.get(person.cover_face_id) if person.cover_face_id else None,
+        )
+        for person in people
+    ]
+
+
+async def _confirmed_counts(db: DbDep, ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Face.person_id, func.count())
+            .where(Face.person_id.in_(ids), Face.source == "confirmed")
+            .group_by(Face.person_id)
+        )
+    ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+async def _covers(db: DbDep, face_ids: list[uuid.UUID]) -> dict[uuid.UUID, FaceOut]:
+    if not face_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Face, Asset).join(Asset, Asset.id == Face.asset_id).where(Face.id.in_(face_ids))
+        )
+    ).all()
+    return {row[0].id: _face_out(row[0], row[1]) for row in rows}
 
 
 @router.get("/{person_id}", response_model=PersonDetail)
@@ -394,12 +486,7 @@ async def update_face_settings(
 
 @router.get("/faces/{face_id}/crop-box", response_model=FaceOut)
 async def face_crop_box(face_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> FaceOut:
-    """Where a face sits in its frame, so the UI can crop it client-side.
-
-    No crop is stored or served: the frame is already available through the
-    media endpoint, and keeping a second copy of everyone's face would double
-    the most sensitive data in the system for nothing.
-    """
+    """Where a face sits in its frame, in normalised coordinates."""
     row = (
         await db.execute(
             select(Face, Asset).join(Asset, Asset.id == Face.asset_id).where(Face.id == face_id)
@@ -408,3 +495,99 @@ async def face_crop_box(face_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> Fa
     if row is None:
         raise HTTPException(status_code=404, detail="No such face")
     return _face_out(row[0], row[1])
+
+
+# A little air around the box. Detectors crop tight to the features, and a
+# portrait with no forehead is genuinely hard to recognise.
+CROP_PADDING = 0.35
+MAX_CROP_SIZE = 512
+
+
+@router.get("/faces/{face_id}/crop")
+async def face_crop(  # type: ignore[no-untyped-def]
+    face_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    settings: SettingsDep,
+    size: int = Query(default=192, ge=32, le=MAX_CROP_SIZE),
+):
+    """The face itself, cropped out of the frame it was found in.
+
+    This replaces a client-side crop that was wrong in two independent ways,
+    and the reason it moved to the server is that both were geometry bugs that
+    looked fine until someone studied the grid.
+
+    The first was the source image. Faces are detected in *sampled frames*, and
+    161 of the 307 faces on the reference deployment came from frames partway
+    through a video. The UI was cropping from the asset's thumbnail — a
+    different picture entirely — so more than half the grid showed whatever
+    happened to be at that spot in an unrelated frame. That is the "random
+    objects" an operator sees, and no amount of detector tuning would have
+    fixed it, because detection was never the problem: those faces average
+    0.73 confidence.
+
+    The second was `object-fit: cover` on the tile. The stored box is
+    normalised against the whole frame, but `cover` crops the image to fill a
+    square before any of the box maths applies, so the coordinates no longer
+    referred to what was on screen.
+
+    Still no crop is *stored*. It is computed per request from a frame that is
+    already on disk, which keeps the promise that mattered — there is no second
+    copy of everyone's face to leak — while removing the client's need to know
+    any geometry at all.
+    """
+    from PIL import Image
+
+    from framefound.db.models import Frame
+
+    row = (
+        await db.execute(
+            select(Face, Frame).join(Frame, Frame.id == Face.frame_id).where(Face.id == face_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such face")
+    face, frame = row[0], row[1]
+
+    path = settings.data_dir / frame.relative_path
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="The frame image is no longer on disk")
+
+    def render() -> bytes:
+        with Image.open(path) as image:
+            rgb = image.convert("RGB")
+            width, height = rgb.size
+            # Normalised -> pixels, in the frame this face was actually found in.
+            cx = (face.box_x + face.box_w / 2) * width
+            cy = (face.box_y + face.box_h / 2) * height
+            # One square side from the larger edge, so the crop never distorts
+            # the face — a box normalised against differing width and height is
+            # not square in pixels even when it looks square in the numbers.
+            half = max(face.box_w * width, face.box_h * height) * (1 + CROP_PADDING * 2) / 2
+            box = (
+                int(max(0, cx - half)),
+                int(max(0, cy - half)),
+                int(min(width, cx + half)),
+                int(min(height, cy + half)),
+            )
+            crop = rgb.crop(box)
+            if crop.width == 0 or crop.height == 0:
+                raise ValueError("degenerate crop")
+            crop = crop.resize((size, size), Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            crop.save(buffer, format="JPEG", quality=85)
+            return buffer.getvalue()
+
+    try:
+        payload = await asyncio.to_thread(render)
+    except (OSError, ValueError) as exc:
+        log.warning("people.crop_failed", face_id=str(face_id), error=str(exc)[:200])
+        raise HTTPException(status_code=422, detail="That frame could not be read") from None
+
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        # A face's box never changes once detected, so this is safe to hold on
+        # to. Private: it is a picture of somebody.
+        headers={"Cache-Control": "private, max-age=86400"},
+    )

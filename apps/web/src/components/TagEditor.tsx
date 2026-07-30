@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import Autocomplete, { type Suggestion } from "@/components/Autocomplete";
 import { api, type AssetTag } from "@/lib/api";
 
 export default function TagEditor({ assetId }: { assetId: string }) {
@@ -110,17 +111,42 @@ export default function TagEditor({ assetId }: { assetId: string }) {
             `Added ${name} — looking for it in your other media`,
           );
         }}
-        style={{ display: "flex", gap: 8 }}
+        style={{ display: "flex", gap: 8, alignItems: "flex-start" }}
       >
-        <input
-          className="input"
-          style={{ flex: 1 }}
-          placeholder="Add a tag — e.g. Power Broom"
-          value={draft}
-          maxLength={120}
-          onChange={(e) => setDraft(e.target.value)}
-          aria-label="Add a tag"
-        />
+        <div style={{ flex: 1 }}>
+          <Autocomplete
+            value={draft}
+            onChange={setDraft}
+            ariaLabel="Add a tag"
+            placeholder="Add a tag — e.g. Power Broom"
+            disabled={busy}
+            fetcher={async (q) => {
+              const found = await api.suggestTags(q);
+              // Tags already on this asset are not worth offering.
+              const here = new Set((tags ?? []).map((t) => t.tag_id));
+              return found
+                .filter((t) => !here.has(t.id))
+                .map(
+                  (t): Suggestion => ({
+                    id: t.id,
+                    label: t.name,
+                    hint: t.asset_count ? `${t.asset_count} tagged` : undefined,
+                    exact: t.exact,
+                  }),
+                );
+            }}
+            onPick={(picked) => {
+              // Add by the existing tag's own name, so the slug matches and
+              // the evidence lands on one prototype instead of being split
+              // across "Power Broom" and "power-broom".
+              setDraft("");
+              run(
+                () => api.addAssetTag(assetId, picked.label),
+                `Added ${picked.label} — using the tag you already have`,
+              );
+            }}
+          />
+        </div>
         <button className="btn btn-primary" disabled={busy || !draft.trim()}>
           Add
         </button>

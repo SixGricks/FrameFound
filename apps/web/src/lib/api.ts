@@ -237,6 +237,22 @@ export interface MapsSettings {
   stylesheet_url: string;
 }
 
+export interface TagSuggestion {
+  id: string;
+  name: string;
+  slug: string;
+  asset_count: number;
+  exact: boolean;
+}
+
+export interface NameSuggestion {
+  id: string;
+  name: string;
+  confirmed_count: number;
+  exact: boolean;
+  cover: FaceRef | null;
+}
+
 export interface Basemap {
   name: string;
   label: string;
@@ -603,6 +619,12 @@ export const api = {
       body: JSON.stringify({ asset_ids: assetIds }),
     }),
 
+  suggestTags: (q: string) => request<TagSuggestion[]>(`/tags/suggest${query({ q })}`),
+  suggestNames: (q: string, exclude?: string) =>
+    request<NameSuggestion[]>(`/people/suggest/names${query({ q, exclude })}`),
+  mergePeople: (into: string, from: string) =>
+    request<{ merged: number }>(`/people/${into}/merge/${from}`, { method: "POST" }),
+
   basemaps: () => request<BasemapList>("/basemaps"),
   downloadBasemap: (name: string, bbox = "") =>
     request<{ status: string; name: string }>("/basemaps/download", {
@@ -636,3 +658,7 @@ export const api = {
 };
 
 export const mediaUrl = (assetId: string, kind: string) => `/api/v1/media/${assetId}/${kind}`;
+
+/** A square crop of one face, cut from the frame it was detected in. */
+export const faceCropUrl = (faceId: string, size = 192) =>
+  `/api/v1/people/faces/${faceId}/crop?size=${size}`;

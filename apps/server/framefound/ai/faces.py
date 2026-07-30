@@ -43,6 +43,14 @@ MIN_DETECTION_SCORE = 0.5
 # stable embedding — a 20px face in a wide drone shot is noise, and clustering
 # noise produces confident nonsense.
 MIN_FACE_FRACTION = 0.02
+# ...and a fraction alone is not enough, because frames are sampled at a fixed
+# size rather than the source resolution. On the reference deployment the
+# smallest accepted boxes were 0.013 x 0.038 of the frame, which on a 512px
+# frame thumbnail is a face about seven pixels across. ArcFace upscales its
+# input to 112x112, so those embeddings were almost entirely interpolation —
+# real detections (they averaged 0.73 confidence) carrying no usable identity,
+# quietly polluting every cluster they landed in.
+MIN_FACE_PIXELS = 40
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,11 @@ class InsightFaceOnnx:
                     continue
                 # Reject tiny faces before spending a recognition pass on them.
                 if (box_w / width) * (box_h / height) < MIN_FACE_FRACTION**2:
+                    continue
+                # Both gates matter: the fraction rejects a face that is small
+                # *within its frame*, this rejects one that is small in
+                # absolute pixels and would be upscaled into mush.
+                if max(box_w, box_h) < MIN_FACE_PIXELS:
                     continue
                 crop = rgb.crop((int(x1), int(y1), int(x2), int(y2))).resize(
                     (RECOGNISER_SIZE, RECOGNISER_SIZE), Image.Resampling.BILINEAR

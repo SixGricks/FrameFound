@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 
+import Autocomplete from "@/components/Autocomplete";
 import FaceCrop from "@/components/FaceCrop";
 import Shell from "@/components/Shell";
 import { api, type PersonDetail } from "@/lib/api";
@@ -79,6 +80,28 @@ export default function PersonPage() {
     }
   }
 
+  async function mergeInto(targetId: string, targetName: string) {
+    // Confirmed rather than done on a click: merging folds this person's faces
+    // into another and leaves nothing behind to undo it with.
+    if (
+      !window.confirm(
+        `Move every face from this group into ${targetName}? ` +
+          "This group will be gone afterwards.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.mergePeople(targetId, personId);
+      // This person no longer exists, so there is no page left to show.
+      router.push(`/people/${targetId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not merge those two");
+      setBusy(false);
+    }
+  }
+
   async function forget() {
     if (
       !confirm(
@@ -131,13 +154,44 @@ export default function PersonPage() {
         </Link>
         {renaming ? (
           <>
-            <input
-              className="input"
-              autoFocus
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && rename()}
-            />
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <Autocomplete
+                value={draft}
+                onChange={setDraft}
+                ariaLabel="Name this person"
+                placeholder="Their name"
+                disabled={busy}
+                // Clustering routinely makes several groups for one person — a
+                // different haircut, a decade, a bad angle. Showing the
+                // existing "Dad" while you type "Dad" is the only moment the
+                // operator has the context to say it is the same person.
+                fetcher={async (q) => {
+                  const found = await api.suggestNames(q, personId);
+                  return found.map((p) => ({
+                    id: p.id,
+                    label: p.name,
+                    hint: p.confirmed_count
+                      ? `${p.confirmed_count} confirmed`
+                      : "no confirmed faces",
+                    exact: p.exact,
+                  }));
+                }}
+                // Picking only fills the field. Merging is a separate,
+                // explicit button — one is naming, the other destroys a
+                // grouping, and they should not be the same gesture.
+                onPick={(picked) => setDraft(picked.label)}
+                renderExtra={(picked) => (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busy}
+                    onClick={() => mergeInto(picked.id, picked.label)}
+                  >
+                    Merge into
+                  </button>
+                )}
+              />
+            </div>
             <button className="btn btn-primary" disabled={busy} onClick={rename}>
               Save
             </button>

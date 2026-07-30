@@ -112,6 +112,23 @@ boxes out of the keypoint tensors and found zero faces in the entire library
 without erroring once. Both fixed; the decoder now has 13 tests written
 against the model's real output shapes.
 
+**A third, reported by looking at the People page:** the grid was full of
+random objects. Not a detector fault — those faces average 0.73 confidence —
+but a display one, wrong twice over. Faces are detected in *sampled frames*,
+and 161 of 307 came from frames partway through a video, while the tile cropped
+from the *asset's* thumbnail: a different picture entirely. Underneath that,
+`object-fit: cover` had already cropped the tile before any box maths applied.
+Crops now come from the API, cut out of the correct frame. Nothing is stored —
+they are computed per request, so the promise that there is no second copy of
+everyone's face still holds.
+
+The same look turned up a quality problem: the smallest accepted boxes were
+0.013 × 0.038 of the frame, about seven pixels across, and ArcFace upscales its
+input to 112×112. Those embeddings were interpolation rather than identity, and
+they were polluting clusters. Detection now requires 40px as well as a minimum
+frame fraction. **Existing faces below that are still in the database** — a
+re-detect would clear them, and is worth doing once the frames backlog drains.
+
 
 **On by default**, per the operator's decision, with a real off switch. Landed
 so far: the `people`/`faces` model, SCRFD + ArcFace via ONNX (the same AVX-free

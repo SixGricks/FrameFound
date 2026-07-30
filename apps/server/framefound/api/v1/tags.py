@@ -115,6 +115,70 @@ async def list_tags(_user: CurrentUser, db: DbDep) -> list[TagOut]:
     return [_tag_out(tag, confirmed.get(tag.id, 0), pending.get(tag.id, 0)) for tag in tags]
 
 
+class TagSuggestion(BaseModel):
+    id: uuid.UUID
+    name: str
+    slug: str
+    asset_count: int
+    exact: bool
+
+
+# Declared before `/{tag_id}/...` so "suggest" is never parsed as a tag id.
+@router.get("/suggest", response_model=list[TagSuggestion])
+async def suggest_tags(
+    _user: CurrentUser,
+    db: DbDep,
+    q: str = Query(default="", max_length=120),
+    limit: int = Query(default=8, ge=1, le=25),
+) -> list[TagSuggestion]:
+    """Existing tags matching what is being typed.
+
+    Tags are matched by slug, so "Power Broom", "power broom" and "power-broom"
+    are one tag rather than three. Without this the operator cannot see that
+    until after they have created the duplicate — and by then the learned
+    prototype is split across both, so each one matches worse than the single
+    tag would have.
+
+    Prefix matches rank above contains-matches, and the most-used tags first
+    within each tier: the tag you want is usually the one you already use.
+    """
+    term = q.strip().lower()
+    if not term:
+        return []
+
+    tags = (
+        (
+            await db.execute(
+                select(Tag)
+                .where(func.lower(Tag.name).contains(term) | Tag.slug.contains(slugify(term)))
+                .limit(limit * 4)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not tags:
+        return []
+
+    confirmed, _pending = await _counts(db)
+
+    def rank(tag: Tag) -> tuple[int, int, str]:
+        lowered = tag.name.lower()
+        tier = 0 if lowered == term else (1 if lowered.startswith(term) else 2)
+        return (tier, -confirmed.get(tag.id, 0), lowered)
+
+    return [
+        TagSuggestion(
+            id=tag.id,
+            name=tag.name,
+            slug=tag.slug,
+            asset_count=confirmed.get(tag.id, 0),
+            exact=tag.name.lower() == term,
+        )
+        for tag in sorted(tags, key=rank)[:limit]
+    ]
+
+
 def _relearn(tag_id: uuid.UUID) -> None:
     """Queue the learner. A queue that is down must not fail the operator's
     edit — the tag is saved either way, and the next edit will pick it up."""
