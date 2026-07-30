@@ -256,6 +256,42 @@ export interface SceneFrame {
   url: string;
 }
 
+export interface FaceRef {
+  face_id: string;
+  asset_id: string;
+  frame_id: string;
+  filename: string;
+  box_x: number;
+  box_y: number;
+  box_w: number;
+  box_h: number;
+  detection_score: number;
+  similarity: number | null;
+  source: "detected" | "confirmed" | "rejected";
+}
+
+export interface PersonSummary {
+  id: string;
+  name: string;
+  slug: string;
+  named: boolean;
+  confirmed_count: number;
+  pending_count: number;
+  cover: FaceRef | null;
+}
+
+export interface PersonDetail extends PersonSummary {
+  faces: FaceRef[];
+}
+
+export interface FaceSettings {
+  enabled: boolean;
+  suggest_across_libraries: boolean;
+  people_count: number;
+  faces_count: number;
+  unnamed_clusters: number;
+}
+
 export interface TagHit {
   asset_id: string;
   filename: string;
@@ -448,6 +484,35 @@ export const api = {
     request<PendingSuggestion[]>(`/tags/${tagId}/pending`),
   relearnTag: (tagId: string) =>
     request<{ status: string }>(`/tags/${tagId}/relearn`, { method: "POST" }),
+
+  people: () => request<PersonSummary[]>("/people"),
+  person: (id: string) => request<PersonDetail>(`/people/${id}`),
+  namePerson: (id: string, name: string) =>
+    request<PersonSummary>(`/people/${id}/name`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  confirmFaces: (id: string, faceIds: string[]) =>
+    request<{ confirmed: number }>(`/people/${id}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ face_ids: faceIds }),
+    }),
+  rejectFaces: (id: string, faceIds: string[]) =>
+    request<{ rejected: number }>(`/people/${id}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ face_ids: faceIds }),
+    }),
+  forgetPerson: (id: string) => request<void>(`/people/${id}`, { method: "DELETE" }),
+  faceSettings: () => request<FaceSettings>("/people/settings/current"),
+  updateFaceSettings: (patch: Partial<FaceSettings>) =>
+    request<FaceSettings>("/people/settings/current", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
 
   storage: () => request<StorageReport>("/storage"),
   addDrive: (body: Record<string, unknown>) =>

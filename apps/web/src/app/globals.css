@@ -826,6 +826,50 @@ h2 {
   background: #ffb648;
 }
 
+/* ---------- faces ---------- */
+
+/* The frame is scaled and shifted so the face fills the tile. No crop is ever
+   stored or served — a second copy of everyone's face on disk would double the
+   most sensitive data in the system for nothing. */
+.facecrop {
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+  position: relative;
+}
+.facecrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.facegrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
+}
+.facepick {
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  color: var(--paper);
+  transition: border-color 0.14s, background 0.14s;
+}
+.facepick:hover {
+  border-color: var(--line-bright);
+}
+.facepick[data-selected="true"] {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+
 /* ---------- nav menu ---------- */
 
 .menu {
