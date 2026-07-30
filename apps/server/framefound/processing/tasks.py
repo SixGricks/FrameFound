@@ -721,3 +721,159 @@ def transcribe_asset(asset_id: str) -> None:
     except Exception:
         log.error("transcribe.failed", asset_id=asset_id, exc_info=True)
         raise
+
+
+@celery_app.task(
+    name="framefound.detect_faces",
+    queue="vision",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 1},
+)
+def detect_faces(asset_id: str) -> None:
+    """Find faces in an asset's sampled frames and match them to known people.
+
+    Runs on `vision` beside embedding: both are short CPU passes over frames
+    that are already on local disk, so neither starves the other.
+
+    Matching is against *confirmed* people only, and a face the operator has
+    already rejected for a person is never offered again for that person —
+    the threshold is a heuristic, the rejection record is the guarantee.
+    """
+    import numpy as np
+    from sqlalchemy import select
+
+    from framefound.ai.faces import FaceModelUnavailable, get_face_provider
+    from framefound.db.models import Face, Frame, Person
+    from framefound.media.maps_store import load_face_config
+
+    async def run() -> None:
+        engine = create_async_engine(get_settings().db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                if not (await load_face_config(db)).active:
+                    return  # switched off; do nothing and leave no trace
+
+                aid = uuid.UUID(asset_id)
+                frames = (
+                    (
+                        await db.execute(
+                            select(Frame)
+                            .where(Frame.asset_id == aid)
+                            .order_by(Frame.ts_ms)
+                            .limit(12)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not frames:
+                    return
+
+                # Already done? Detection is idempotent but re-running it would
+                # duplicate every face row.
+                seen = (
+                    await db.execute(select(Face.id).where(Face.asset_id == aid).limit(1))
+                ).first()
+                if seen is not None:
+                    return
+
+                provider = get_face_provider()
+                data_dir = get_settings().data_dir
+                found = 0
+                for frame in frames:
+                    image = data_dir / frame.relative_path
+                    if not image.is_file():
+                        continue
+                    try:
+                        detected = await asyncio.to_thread(provider.detect, image)
+                    except FaceModelUnavailable:
+                        log.warning("faces.model_unavailable")
+                        return
+                    # `hit` not `face`: the matching loop below binds `face`
+                    # to a Face row, and sharing the name confuses the reader
+                    # as much as it confused the type checker.
+                    for hit in detected:
+                        db.add(
+                            Face(
+                                frame_id=frame.id,
+                                asset_id=aid,
+                                box_x=hit.x,
+                                box_y=hit.y,
+                                box_w=hit.w,
+                                box_h=hit.h,
+                                detection_score=hit.score,
+                                embedding=hit.embedding,
+                                source="detected",
+                            )
+                        )
+                        found += 1
+                await db.commit()
+
+                if not found:
+                    log.info("faces.none_found", asset_id=asset_id)
+                    return
+
+                # Match the new faces against named people.
+                named = (
+                    (
+                        await db.execute(
+                            select(Person).where(Person.prototype.is_not(None), Person.name != "")
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                new_faces = (
+                    (
+                        await db.execute(
+                            select(Face).where(Face.asset_id == aid, Face.person_id.is_(None))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                rejected = {
+                    (str(f.person_id), _round_key(f.embedding))
+                    for f in (await db.execute(select(Face).where(Face.source == "rejected")))
+                    .scalars()
+                    .all()
+                    if f.person_id and f.embedding
+                }
+
+                matched = 0
+                for face in new_faces:
+                    if not face.embedding:
+                        continue
+                    vector = np.asarray(face.embedding, dtype="float32")
+                    best, best_score = None, 0.0
+                    for person in named:
+                        if (str(person.id), _round_key(face.embedding)) in rejected:
+                            continue  # already told no for this person
+                        score = float(vector @ np.asarray(person.prototype, dtype="float32"))
+                        if score >= person.threshold and score > best_score:
+                            best, best_score = person, score
+                    if best is not None:
+                        face.person_id = best.id
+                        face.similarity = round(best_score, 4)
+                        matched += 1
+                await db.commit()
+                log.info(
+                    "faces.detected", asset_id=asset_id, faces=found, matched_to_people=matched
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def _round_key(embedding: list[float] | None) -> str:
+    """A stable key for a face vector, so a rejection can be looked up.
+
+    Rounded because the same face re-embedded is not bit-identical, and an
+    exact key would let a rejected face slip back in on a re-run.
+    """
+    if not embedding:
+        return ""
+    return ",".join(f"{v:.3f}" for v in embedding[:16])

@@ -435,3 +435,69 @@ class AssetTag(Base):
     )
 
     tag: Mapped["Tag"] = relationship(back_populates="asset_links")
+
+
+class Person(Base):
+    """A face cluster, named or not.
+
+    Created unnamed by clustering, then named by the operator. `prototype` is
+    the mean of this person's confirmed face embeddings — the same
+    nearest-centroid approach as tags, for the same reason: it needs no
+    training and improves with every correction.
+    """
+
+    __tablename__ = "people"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Blank until the operator names the cluster. The UI shows "Unnamed person"
+    # rather than inventing something, because a wrong name is worse than none.
+    name: Mapped[str] = mapped_column(String(120), default="")
+    slug: Mapped[str] = mapped_column(String(140), default="", index=True)
+    prototype: Mapped[list[float] | None] = mapped_column(Embedding(), default=None)
+    # Derived from confirmed and rejected faces, per person — a fixed cutoff
+    # cannot work across a bearded man and a clean-shaven one.
+    threshold: Mapped[float] = mapped_column(Float, default=0.42)
+    face_count: Mapped[int] = mapped_column(default=0)
+    cover_face_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Face(Base):
+    """One detected face in one frame.
+
+    The crop is not stored: the frame is already on disk and the box is enough
+    to render a thumbnail on demand. Keeping a second copy of everyone's face
+    would double the most sensitive data in the system for no benefit.
+
+    `source` mirrors the tagging vocabulary:
+      detected  - clustering's own guess, awaiting judgement
+      confirmed - the operator agreed
+      rejected  - the operator said no; never re-offered for this person
+    """
+
+    __tablename__ = "faces"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    frame_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("frames.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # Normalised 0-1 so a box survives the frame being re-rendered at another size.
+    box_x: Mapped[float] = mapped_column(Float)
+    box_y: Mapped[float] = mapped_column(Float)
+    box_w: Mapped[float] = mapped_column(Float)
+    box_h: Mapped[float] = mapped_column(Float)
+    detection_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # ArcFace, 512-d, L2-normalised like the CLIP vectors so cosine is a dot.
+    embedding: Mapped[list[float] | None] = mapped_column(Embedding(), default=None)
+    source: Mapped[str] = mapped_column(String(20), default="detected", index=True)
+    similarity: Mapped[float | None] = mapped_column(Float, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

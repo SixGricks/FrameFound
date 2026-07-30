@@ -120,3 +120,47 @@ async def _put(db: AsyncSession, key: str, value: dict[str, Any]) -> None:
     else:
         row.value = value
     await db.commit()
+
+
+FACES_KEY = "face_recognition"
+
+
+@dataclass
+class FaceConfig:
+    """Face recognition settings.
+
+    **On by default.** This install is single-operator and the feature is the
+    point of the request. The off switch is real and immediate, and it exists
+    because the calculus changes the moment someone else's footage is involved:
+    face templates are biometric identifiers, and Illinois (BIPA), Texas and
+    Washington attach statutory damages per person to collecting them without
+    written consent, with a private right of action. GDPR Art. 9 treats them as
+    special-category data. Self-hosting does not help — it makes the operator
+    the controller.
+
+    Turning it off stops detection and suggestion. It deliberately does *not*
+    delete the people already named: losing that work on a toggle would be its
+    own bug. `purge_on_disable` is offered separately for someone who means it.
+    """
+
+    enabled: bool = True
+    # Grouping only. There is no pre-trained identity set and no external
+    # lookup: every name in the system was typed by the operator.
+    suggest_across_libraries: bool = True
+    purge_on_disable: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self.enabled
+
+
+async def load_face_config(db: AsyncSession) -> FaceConfig:
+    row = await db.get(AppSetting, FACES_KEY)
+    if row is None:
+        return FaceConfig()
+    known = set(FaceConfig().__dict__)
+    return FaceConfig(**{k: v for k, v in row.value.items() if k in known})
+
+
+async def save_face_config(db: AsyncSession, config: FaceConfig) -> None:
+    await _put(db, FACES_KEY, asdict(config))

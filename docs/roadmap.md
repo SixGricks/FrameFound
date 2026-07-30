@@ -75,6 +75,31 @@ reality rather than the original sequence.
 4. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
 5. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
 
+### In progress — face recognition
+
+**On by default**, per the operator's decision, with a real off switch. Landed
+so far: the `people`/`faces` model, SCRFD + ArcFace via ONNX (the same AVX-free
+path as CLIP, so it runs on the Westmere Xeons), greedy clustering, and
+per-person thresholds derived from corrections. 16 tests on the grouping logic.
+
+Still to come: the API, the naming UI, and the review flow.
+
+Design notes worth keeping:
+- **No zero-shot start.** A tag bootstraps from its own words because CLIP
+  shares a space with text; "Brian" tells a face model nothing. So a person
+  begins as an unnamed cluster and the operator supplies the name.
+- **The threshold is a heuristic; the rejection record is the guarantee.** A
+  face more similar than the 0.75 ceiling cannot be excluded by threshold
+  alone, so rejections are stored per person and enforced explicitly. Two
+  siblings are the case that forces this.
+- **No face crops are stored.** The frame is already on disk and the box is
+  enough to render a thumbnail, so the most sensitive data in the system is
+  not duplicated.
+- **Nothing leaves the machine.** No pre-trained identity set, no external
+  lookup, no network call at inference. Every name was typed by the operator.
+- Turning it off stops detection and suggestion but does **not** delete the
+  names already given; losing that work on a toggle would be its own bug.
+
 ### Recently landed
 
 - **Two bugs the operator found, both real** — the Manage dropdown rendered
@@ -172,7 +197,7 @@ reality rather than the original sequence.
 
 ### Deliberately deferred
 
-Face recognition (privacy-gated), OIDC/SSO, multi-tenant permissions, mobile
+OIDC/SSO, multi-tenant permissions, mobile
 apps, OpenSearch backend, Kubernetes, DaVinci/Lightroom integrations,
 generative summaries, cloud storage drivers.
 
@@ -341,7 +366,7 @@ what remains.
 
 ## Deferred beyond 1.0
 
-Face recognition (privacy-gated), OIDC/SSO, multi-tenant permissions, mobile
+OIDC/SSO, multi-tenant permissions, mobile
 apps, OpenSearch backend, Kubernetes, DaVinci/Lightroom integrations,
 generative summaries, cloud storage drivers.
 
