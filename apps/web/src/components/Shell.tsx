@@ -27,11 +27,13 @@ const FIND = [
   { href: "/places", label: "Places" },
   { href: "/tags", label: "Tags" },
   { href: "/people", label: "People" },
+  { href: "/slideshows", label: "Slideshows" },
 ];
 
 const MANAGE = [
   { href: "/libraries", label: "Libraries", hint: "What is being catalogued" },
   { href: "/storage", label: "Storage", hint: "Drives and where things live" },
+  { href: "/basemaps", label: "Basemaps", hint: "Offline maps, one file each" },
   { href: "/duplicates", label: "Duplicates", hint: "Reclaimable space" },
   { href: "/processing", label: "Processing", hint: "Queues and recent failures" },
   { href: "/health", label: "System", hint: "Health and versions" },

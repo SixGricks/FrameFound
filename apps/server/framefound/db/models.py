@@ -501,3 +501,45 @@ class Face(Base):
     source: Mapped[str] = mapped_column(String(20), default="detected", index=True)
     similarity: Mapped[float | None] = mapped_column(Float, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Slideshow(Base):
+    """A slideshow the operator has asked for, and the video it produced.
+
+    Stored rather than rendered-and-forgotten because the interesting failure
+    is social, not technical: somebody watches it and says a person is missing,
+    or that one photograph should not have been included. Answering that
+    requires knowing exactly which frames went in and in what order, which is
+    why `asset_ids` holds the resolved selection rather than the query that
+    produced it. Selection is deterministic, but the *library* is not — a scan
+    completing between two renders would otherwise silently change the result.
+
+    Re-rendering an existing row therefore reproduces the same video. Changing
+    what is in it is an edit to the selection, which is the operator's decision
+    and not a side effect of time passing.
+    """
+
+    __tablename__ = "slideshows"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    theme: Mapped[str] = mapped_column(String(40), default="plain")
+    # pending | rendering | ready | failed
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    # The resolved selection, in render order.
+    asset_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Pacing, canvas and audio. JSON so a new knob does not need a migration —
+    # these are render parameters, never queried across rows.
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Relative to the data volume, like Derivative.relative_path.
+    relative_path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    # Segments finished, out of len(asset_ids). A slideshow render is minutes
+    # of work, so "it is doing something" has to be answerable.
+    segments_done: Mapped[int] = mapped_column(default=0)
+    error: Mapped[str | None] = mapped_column(String(500), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

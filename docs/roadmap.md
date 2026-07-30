@@ -82,14 +82,17 @@ reality rather than the original sequence.
 
 ### Next up
 
-1. **Tag the things you care about.** The mechanism is proven — one DJI aerial
+1. **Make a slideshow.** The render pipeline is built and measured; the
+   Rainforest Falls VBS material is the first real test of whether the
+   *selection* picks well, which is the part no test can answer.
+2. **Tag the things you care about.** The mechanism is proven — one DJI aerial
    produced 52 correct suggestions out of 60. It gets useful once real tags
    exist.
-2. **Inference tuning** (#34) against places you can verify.
-3. **M9 remaining**: marker export from transcript hits, panel tokens with
+3. **Inference tuning** (#34) against places you can verify.
+4. **M9 remaining**: marker export from transcript hits, panel tokens with
    revocation, then a UXP spike against a current Premiere (ADR-0019).
-4. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
-5. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
+5. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
+6. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
 
 ### Design decisions taken (2026-07-30)
 
@@ -293,8 +296,36 @@ tail.
 Low-scoring frames are pushed back rather than removed, so a thin day still
 produces a slideshow instead of four photos.
 
-**Still to come:** the render task itself (FFmpeg Ken Burns + transitions +
-audio), the project model, and the UI.
+**Now landed: the render itself.** `media/render.py` (filter graphs),
+`media/pipeline.py` (orchestration), `render_slideshow` on the `media` queue, a
+`slideshows` table (migration 0013), the `/api/v1/slideshows` surface and a
+review-then-render UI. 38 render tests plus 6 on the thread cap.
+
+The architecture was chosen by measurement, and the measurement overturned the
+obvious design. One `filter_complex` over every still peaks at 792 MB for a
+*single* slide against a 1000 MB worker limit, and a chained `xfade` is killed
+at **any** length — four segments as readily as twenty-four — because each
+later input's decoder buffers until its transition point. Batching the join
+would not have helped.
+
+What works instead: render each slide's body and each crossfade as separate
+short clips (one and two inputs respectively), then stitch with the concat
+demuxer under `-c copy`. Worst piece 302 MB, stitch 62 MB, and neither grows
+with the length of the slideshow. Full numbers and the two FFmpeg traps that
+cost an afternoon are in [video-generation.md](video-generation.md).
+
+**A real bug fell out of the profiling.** `_with_thread_cap` inserted
+`-threads` before `-i`, which configures the *decoder* — `-threads` is a
+per-file option, not a global one. Every proxy transcode had been running x264
+across all 12 cores with the setting appearing to be in force (810 MB against
+470 MB once actually applied). Fixed, with tests pinning both positions.
+
+Renders take about 7 s per photograph on CPU — roughly five minutes for a
+forty-photo show — and pick up NVENC automatically once the GPU lands.
+
+**Still to come:** title cards and interstitials, and a sharpness measure
+(selection currently ties every candidate, so it falls through to theme score
+and capture order).
 
 ## Automated video and slideshows — research
 
@@ -333,11 +364,16 @@ directory and an endpoint that serves byte ranges out of it. No tile server, no
 extra container, nothing to keep alive on a host that is already
 over-committed.
 
-`GET /api/v1/basemaps` lists a short curated catalogue (US Northeast ~2 GB, US
-~12 GB, planet ~100 GB) with what is installed; `POST /api/v1/basemaps/download`
-streams one in on the `media` lane, to a `.part` file renamed on completion so
-an interrupted transfer never looks like a usable map. Once the file is there,
-nothing about the map leaves the network.
+`GET /api/v1/basemaps` lists a short curated catalogue (Pennsylvania ~0.6 GB,
+US Northeast ~2 GB, continental US ~12 GB) with what is installed; `POST
+/api/v1/basemaps/download` extracts one on the `media` lane, to a `.part` file
+renamed on completion so an interrupted transfer never looks like a usable map.
+Once the file is there, nothing about the map leaves the network.
+
+**Manage → Basemaps** now drives all of it: download, size, delete. It polls
+only while an extraction is in flight and says plainly that `pmtiles` reports
+nothing until it finishes, rather than showing a progress bar it would have to
+invent. Pennsylvania was measured at 377 MB in 22 seconds.
 
 Self-hosted vector tiles are the **recommended** basemap, and Google is one
 option among three rather than the only one. Chosen on Security → Maps &

@@ -237,6 +237,63 @@ export interface MapsSettings {
   stylesheet_url: string;
 }
 
+export interface Basemap {
+  name: string;
+  label: string;
+  installed: boolean;
+  size_gb: number | null;
+  approx_gb: number | null;
+  tiles_url: string;
+}
+
+export interface BasemapList {
+  basemaps: Basemap[];
+  installed_count: number;
+  note: string;
+}
+
+export interface SlideshowTheme {
+  slug: string;
+  label: string;
+  hold_seconds: number;
+  transition_seconds: number;
+  accent: string;
+}
+
+export interface ProposedSlide {
+  asset_id: string;
+  filename: string;
+  media_type: MediaType;
+  captured_at: string | null;
+  theme_score: number;
+  people: string[];
+  has_preview: boolean;
+}
+
+export interface SlideshowProposal {
+  theme: string;
+  slides: ProposedSlide[];
+  considered: number;
+  dropped_duplicates: number;
+  people_covered: string[];
+  people_missing: string[];
+  note: string;
+}
+
+export interface Slideshow {
+  id: string;
+  title: string;
+  theme: string;
+  status: "pending" | "rendering" | "ready" | "failed";
+  slide_count: number;
+  segments_done: number;
+  duration_seconds: number | null;
+  size_mb: number | null;
+  error: string | null;
+  created_at: string;
+  video_url: string | null;
+}
+
 export interface NearbyAsset {
   asset_id: string;
   filename: string;
@@ -545,6 +602,34 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ asset_ids: assetIds }),
     }),
+
+  basemaps: () => request<BasemapList>("/basemaps"),
+  downloadBasemap: (name: string, bbox = "") =>
+    request<{ status: string; name: string }>("/basemaps/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, bbox }),
+    }),
+  deleteBasemap: (name: string) => request<void>(`/basemaps/${name}`, { method: "DELETE" }),
+
+  slideshowThemes: () => request<SlideshowTheme[]>("/slideshows/themes"),
+  proposeSlideshow: (body: Record<string, unknown>) =>
+    request<SlideshowProposal>("/slideshows/propose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  createSlideshow: (body: Record<string, unknown>) =>
+    request<Slideshow>("/slideshows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  slideshows: () => request<Slideshow[]>("/slideshows"),
+  slideshow: (id: string) => request<Slideshow>(`/slideshows/${id}`),
+  rerenderSlideshow: (id: string) =>
+    request<Slideshow>(`/slideshows/${id}/render`, { method: "POST" }),
+  deleteSlideshow: (id: string) => request<void>(`/slideshows/${id}`, { method: "DELETE" }),
 
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),

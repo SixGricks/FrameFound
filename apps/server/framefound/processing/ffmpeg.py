@@ -33,16 +33,29 @@ class FfmpegError(RuntimeError):
 
 
 def _with_thread_cap(argv: list[str]) -> list[str]:
-    """Insert -threads after the binary unless the caller already set it.
+    """Cap threads for both the decoder and the encoder.
 
     FFmpeg defaults to every core, which starves the API and the database on a
     shared host. FRAMEFOUND_FFMPEG_THREADS=0 restores the default for machines
     with cores to spare.
+
+    `-threads` is a *per-file* option, not a global one: before `-i` it
+    configures the decoder, before the output path it configures the encoder.
+    This originally set only the first, so x264 kept running a thread per core
+    — measured on the reference deployment as 810 MB peak for one 1080p
+    slideshow slide against 470 MB with the encoder actually capped, because
+    each encoder thread carries its own lookahead queue of decoded frames. That
+    is most of the distance to the worker's memory limit, paid on every proxy
+    transcode, with the setting appearing to be in force.
+
+    Both positions are set, so the name means what it says.
     """
     threads = get_settings().ffmpeg_threads
-    if threads <= 0 or "-threads" in argv:
+    if threads <= 0 or "-threads" in argv or len(argv) < 2:
         return argv
-    return [argv[0], "-threads", str(threads), *argv[1:]]
+    # Last element is the output path by convention across every caller here;
+    # output options belong before it.
+    return [argv[0], "-threads", str(threads), *argv[1:-1], "-threads", str(threads), argv[-1]]
 
 
 def _run(argv: list[str], timeout_s: int) -> None:

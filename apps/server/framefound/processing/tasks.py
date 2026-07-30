@@ -30,6 +30,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -1042,3 +1043,155 @@ def cluster_unassigned_faces(limit: int = 2000) -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+@celery_app.task(
+    name="framefound.render_slideshow",
+    queue="media",
+    # No autoretry: a render is minutes of CPU, and the failures worth having
+    # are deterministic (a missing preview, pacing that cannot fit its
+    # transitions). Retrying automatically would burn the media queue on a loop.
+    max_retries=0,
+)
+def render_slideshow(slideshow_id: str) -> None:
+    """Render one stored slideshow to an MP4 in the data directory.
+
+    Driven piece by piece rather than in one call so `segments_done` advances
+    while it runs: a forty-photograph render is minutes of work, and "is it
+    doing anything?" has to be answerable without reading the logs.
+    """
+    import shutil
+
+    from framefound.db.models import Slideshow
+    from framefound.media import pipeline
+    from framefound.processing.derivatives import ensure_space
+
+    async def run() -> None:
+        settings = get_settings()
+        engine = create_async_engine(settings.db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                show = await db.get(Slideshow, uuid.UUID(slideshow_id))
+                if show is None:
+                    log.warning("slideshow.gone", slideshow_id=slideshow_id)
+                    return
+
+                show.status = "rendering"
+                show.error = None
+                show.segments_done = 0
+                await db.commit()
+
+                workdir = settings.data_dir / "renders" / "work" / str(show.id)
+                try:
+                    ensure_space(settings.data_dir)
+                    spec = await _slideshow_spec(db, show)
+                    pipeline.check_sources(spec)
+                    await asyncio.to_thread(pipeline.choose_encoder, spec)
+
+                    workdir.mkdir(parents=True, exist_ok=True)
+                    pieces = pipeline.plan_pieces(spec, workdir)
+                    for piece in pieces:
+                        await asyncio.to_thread(pipeline.run_piece, piece)
+                        if piece.kind == "body":
+                            show.segments_done = piece.index + 1
+                            await db.commit()
+
+                    output = settings.data_dir / "renders" / f"{show.id}.mp4"
+                    result = await asyncio.to_thread(pipeline.stitch, spec, pieces, workdir, output)
+                except Exception as exc:
+                    await db.rollback()
+                    show.status = "failed"
+                    show.error = str(exc)[:500]
+                    await db.commit()
+                    # The working directory is deliberately left in place: after
+                    # a failure the pieces that did render are the evidence for
+                    # which one broke and how.
+                    log.error("slideshow.failed", slideshow_id=slideshow_id, error=str(exc)[:300])
+                    raise
+                else:
+                    show.status = "ready"
+                    show.relative_path = f"renders/{show.id}.mp4"
+                    show.duration_seconds = result.seconds
+                    show.size_bytes = result.size_bytes
+                    show.error = None
+                    await db.commit()
+                    shutil.rmtree(workdir, ignore_errors=True)
+                    log.info(
+                        "slideshow.rendered",
+                        slideshow_id=slideshow_id,
+                        slides=len(spec.slides),
+                        seconds=result.seconds,
+                        megabytes=round(result.size_bytes / 1024**2, 1),
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+async def _slideshow_spec(db: AsyncSession, show: Any) -> Any:
+    """Build the render parameters from the stored selection and theme.
+
+    Previews are resolved in the order the selection was saved. A photograph
+    without one is left out of the list rather than substituted, so
+    `check_sources` can report how many are missing instead of silently
+    rendering a shorter slideshow than was asked for.
+    """
+    from sqlalchemy import select
+
+    from framefound.db.models import Derivative
+    from framefound.media.render import RenderSpec, Slide, alternate_directions
+    from framefound.media.theming import get_theme
+    from framefound.scanner.paths import PathValidationError, safe_join
+
+    settings = get_settings()
+    theme = get_theme(show.theme)
+    options = dict(show.settings or {})
+
+    asset_ids = [uuid.UUID(a) for a in show.asset_ids]
+    rows = (
+        await db.execute(
+            select(Derivative.asset_id, Derivative.relative_path).where(
+                Derivative.asset_id.in_(asset_ids),
+                Derivative.kind == "preview",
+                Derivative.status == "ready",
+            )
+        )
+    ).all()
+    by_asset = {row[0]: row[1] for row in rows}
+    # Order follows the stored selection, not the database's, and a photograph
+    # without a preview keeps its *place* as an empty path rather than being
+    # dropped or shuffled to the end. `check_sources` then refuses the whole
+    # render and says how many are missing, which is the honest outcome: the
+    # operator asked for these photographs in this order.
+    paths = [str(settings.data_dir / by_asset[a]) if a in by_asset else "" for a in asset_ids]
+
+    hold = float(options.get("hold_seconds", theme.hold_seconds))
+    transition = float(options.get("transition_seconds", theme.transition_seconds))
+    directions = alternate_directions(len(paths))
+
+    audio_path = ""
+    audio_rel = str(options.get("audio_relpath", "") or "")
+    if audio_rel:
+        try:
+            # The operator supplies their own licensed tracks; the path is
+            # theirs, so it is validated against the data directory rather than
+            # trusted.
+            audio_path = str(safe_join(settings.data_dir, audio_rel))
+        except PathValidationError:
+            log.warning("slideshow.audio_rejected", slideshow_id=str(show.id), path=audio_rel)
+
+    return RenderSpec(
+        width=int(options.get("width", 1920)),
+        height=int(options.get("height", 1080)),
+        fps=int(options.get("fps", 30)),
+        transition_seconds=transition,
+        saturation=theme.saturation,
+        contrast=theme.contrast,
+        brightness=theme.brightness,
+        audio_path=audio_path,
+        slides=[
+            Slide(path=path, seconds=hold, direction=directions[i]) for i, path in enumerate(paths)
+        ],
+    )

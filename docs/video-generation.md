@@ -171,5 +171,100 @@ less and it will technically run while being too slow and too small to use.
 
 ---
 
-*Nothing here is scheduled. Tracked in the roadmap under "Automated video and
+## What was built: Option A/C, and what it cost
+
+Option A/C now exists — `framefound/media/render.py` (filter graphs),
+`pipeline.py` (orchestration), `render_slideshow` on the `media` queue, and a
+`slideshows` table holding the resolved selection.
+
+The design was decided by measurement rather than by preference, and the
+measurements were surprising enough to be worth recording.
+
+### The obvious implementation does not work at any size
+
+Feed every still into one `filter_complex`, let FFmpeg do the rest. Measured on
+the reference deployment against the worker's 1000 MB limit:
+
+| what | peak |
+| --- | --- |
+| one slide, scale + x264, no zoompan | 126 MB |
+| one slide, zoompan @1080p | 795 MB |
+| one slide, zoompan @4K supersample | 787 MB |
+| one slide, zoompan + encoder threads capped | 470 MB |
+| one slide, ... + a short x264 lookahead | 259 MB |
+| xfade chain, 4 / 8 / 16 / 24 segments | killed, every one |
+
+Three things fall out of that table.
+
+**Resolution is irrelevant.** 4K supersampling costs the same as 1080p. The
+memory is x264's frame-threading lookahead — zoompan emits frames faster than
+the encoder drains them, and each encoder thread holds its own queue of decoded
+frames. So the supersampling that removes pan judder is effectively free, and
+the lever that matters is the encoder, not the picture.
+
+**An xfade chain cannot be batched out of trouble.** It was killed at four
+segments as readily as at twenty-four, because chaining makes every later
+input's decoder run ahead and buffer until its transition point. A first
+implementation that batched the join into groups of eight would have failed
+exactly as hard as one that did not.
+
+**A latent bug was sitting underneath.** `_with_thread_cap` inserted `-threads`
+before `-i`, which in FFmpeg's parser configures the *decoder*. `-threads` is a
+per-file option, not a global one, so x264 had been running one thread per core
+on every proxy transcode with the setting appearing to be in force: 810 MB
+against 470 MB with it actually applied. Fixed, with `tests/test_ffmpeg_threads.py`
+pinning both positions.
+
+### The shape that does work
+
+    slide 0 body | fade 0->1 | slide 1 body | fade 1->2 | ... | slide n body
+
+A *body* is the part of a slide not shared with a neighbour's crossfade: one
+input, one encoder. A *fade* is the tail of one slide dissolving into the head
+of the next: exactly two inputs, `transition_seconds` long. The pieces are
+stitched by the concat **demuxer** with `-c copy` — packets copied, nothing
+decoded.
+
+Measured over twelve slides: **worst piece 302 MB, concat 62 MB, 2.1 s**, and
+neither figure grows with the length of the slideshow. Every piece is encoded
+once, straight from its still, so the stitch costs no generation of quality.
+
+Trims are expressed in **frames, not seconds**, so a body and the fade abutting
+it cannot disagree about the boundary by a frame.
+
+### Two things that cost an afternoon
+
+`setpts=PTS-STARTPTS` discards the stream's frame-rate metadata, and xfade then
+refuses the input outright — *"The inputs needs to be a constant frame rate;
+current rate of 1/0 is invalid"*. The symptom is a transition clip with no
+frames in it and an encoder reporting only that it could not start. The fix is
+a trailing `fps=`, which looks redundant and is not.
+
+`zoompan`'s `d` is applied **per input frame**. The common `-loop 1 -t 3`
+recipe therefore feeds 90 input frames and asks for 90 output frames from each:
+8100 frames for a three-second slide. Feed the still once.
+
+### Preset
+
+`veryfast` rather than `medium`: 6.8 s against 19.0 s per slide, producing a
+*smaller* file (984 KB against 1107 KB). Slow pans give a slower preset almost
+nothing to work with. `ultrafast` is where it becomes a real tradeoff — 3.1 s,
+but a 9.6 MB file.
+
+At roughly 7 s of work per photograph, a forty-photograph slideshow renders in
+about five minutes on CPU. NVENC is selected automatically when the GPU is
+genuinely usable (probed functionally, not by reading `-encoders`), which is
+where the planned upgrade pays off.
+
+### Still open
+
+- Title cards and interstitials (needs text rendering, not GPU).
+- A sharpness measure. Selection currently ties every candidate at 1.0, so it
+  falls through to theme score and capture order. Ranking on a number we do not
+  have would be worse than not ranking.
+- Option B remains unbuilt and unscheduled, for the reasons above.
+
+---
+
+*Option B is not scheduled. Tracked in the roadmap under "Automated video and
 slideshows" so the sequencing decision is recorded rather than rediscovered.*
