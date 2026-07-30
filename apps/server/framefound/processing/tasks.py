@@ -950,3 +950,95 @@ def fetch_basemap(name: str, bbox: str) -> None:
         partial.unlink(missing_ok=True)
         log.error("basemap.extract_failed", name=name, error=str(exc)[:300])
         raise
+
+
+@celery_app.task(
+    name="framefound.cluster_faces",
+    queue="vision",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 1},
+)
+def cluster_unassigned_faces(limit: int = 2000) -> None:
+    """Group faces that belong to nobody yet into people.
+
+    Detection assigns a face to an existing *named* person when it matches.
+    Everything else lands unassigned, and without this it would stay that way —
+    the People page would be permanently empty no matter how many faces were
+    found. (`cluster_faces` existed and nothing called it, which is the same
+    shape of bug as detection never being wired.)
+
+    New clusters are created unnamed. That is the whole point: the operator
+    supplies names, the system only proposes groupings.
+    """
+    from sqlalchemy import func, select
+
+    from framefound.ai import people as people_lib
+    from framefound.db.models import Face, Person
+    from framefound.media.maps_store import load_face_config
+
+    async def run() -> None:
+        engine = create_async_engine(get_settings().db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                if not (await load_face_config(db)).active:
+                    return
+
+                loose = (
+                    (
+                        await db.execute(
+                            select(Face)
+                            .where(Face.person_id.is_(None), Face.embedding.is_not(None))
+                            .limit(limit)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if len(loose) < people_lib.MIN_CLUSTER_SIZE:
+                    return
+
+                vectors = [
+                    people_lib.FaceVector(
+                        face_id=str(f.id), embedding=f.embedding or [], asset_id=str(f.asset_id)
+                    )
+                    for f in loose
+                ]
+                by_id = {str(f.id): f for f in loose}
+                clusters = people_lib.cluster_faces(vectors)
+
+                created = 0
+                for cluster in clusters:
+                    # A single stray detection is usually a false positive; it
+                    # stays unassigned rather than becoming a "person" of one.
+                    if len(cluster.members) < people_lib.MIN_CLUSTER_SIZE:
+                        continue
+                    person = Person(
+                        name="",
+                        slug="",
+                        prototype=people_lib.prototype_for([m.embedding for m in cluster.members]),
+                        threshold=people_lib.DEFAULT_THRESHOLD,
+                        face_count=0,
+                    )
+                    db.add(person)
+                    await db.flush()
+                    for member in cluster.members:
+                        face = by_id.get(member.face_id)
+                        if face is not None:
+                            face.person_id = person.id
+                    person.cover_face_id = uuid.UUID(cluster.members[0].face_id)
+                    created += 1
+                await db.commit()
+
+                total = (await db.execute(select(func.count()).select_from(Person))).scalar_one()
+                log.info(
+                    "faces.clustered",
+                    considered=len(loose),
+                    groups_created=created,
+                    people_total=total,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())

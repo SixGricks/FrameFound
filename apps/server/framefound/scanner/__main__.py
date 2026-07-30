@@ -26,7 +26,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.db.engine import session_factory
-from framefound.db.models import Asset, Job, Library, Scan
+from framefound.db.models import Asset, Face, Job, Library, Scan
 from framefound.logging import configure_logging
 from framefound.scanner import scan as scan_engine
 from framefound.scanner.stability import is_file_stable
@@ -48,6 +48,9 @@ TRANSCRIBE_BATCH = 25
 # After this many failures an asset is left alone. A file ffmpeg cannot
 # open will never succeed, and retrying it forever starves everything else.
 MAX_TRANSCRIBE_ATTEMPTS = 3
+# Clustering one or two loose faces produces noise, not people. Waiting for
+# a handful means the first groups the operator sees are worth naming.
+MIN_FACES_TO_CLUSTER = 4
 
 
 def _make_enqueue() -> scan_engine.Enqueue:
@@ -221,6 +224,30 @@ async def _requeue_stuck_assets(db: AsyncSession, enqueue: scan_engine.Enqueue) 
     )
     for asset_id in stuck:
         enqueue(asset_id)
+
+
+async def _cluster_new_faces(db: AsyncSession) -> None:
+    """Group faces nobody has been assigned to yet.
+
+    On the maintenance tick rather than per-asset: clustering is only
+    meaningful across a batch, and running it after every detection would
+    rebuild the same groups thousands of times.
+    """
+    if await _queue_busy("vision"):
+        return
+    loose = (
+        await db.execute(select(func.count()).select_from(Face).where(Face.person_id.is_(None)))
+    ).scalar_one()
+    if loose < MIN_FACES_TO_CLUSTER:
+        return
+    try:
+        from framefound.processing.tasks import cluster_unassigned_faces
+
+        cluster_unassigned_faces.delay()
+    except Exception:
+        log.warning("scanner.clustering_unavailable")
+        return
+    log.info("scanner.face_clustering_queued", unassigned=loose)
 
 
 async def _requeue_missing_transcripts(db: AsyncSession) -> None:
