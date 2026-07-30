@@ -8,6 +8,12 @@
 // system. The four "find" destinations stay visible because they are what the
 // product is for; the six administrative ones move behind one menu, since
 // nobody visits Storage twice in a session.
+//
+// The Manage menu sits OUTSIDE <nav className="navlinks"> deliberately. That
+// element scrolls horizontally on narrow screens (overflow-x: auto), and an
+// absolutely-positioned dropdown inside an overflow container is clipped by
+// it — the panel rendered and was invisible, which is exactly how it shipped
+// broken the first time.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
@@ -107,39 +113,39 @@ export default function Shell({ children }: { children: ReactNode }) {
               {link.label}
             </Link>
           ))}
-
-          <div className="menu" ref={menuRef}>
-            <button
-              type="button"
-              className="navlink menu-trigger"
-              data-active={manageActive}
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              Manage
-              <span aria-hidden="true" className="menu-caret">
-                ▾
-              </span>
-            </button>
-            {menuOpen && (
-              <div className="menu-panel" role="menu">
-                {MANAGE.map((link) => (
-                  <Link
-                    key={link.href}
-                    href={link.href}
-                    role="menuitem"
-                    className="menu-item"
-                    data-active={isActive(link.href, pathname)}
-                  >
-                    <span>{link.label}</span>
-                    <small className="faint">{link.hint}</small>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
         </nav>
+
+        <div className="menu" ref={menuRef}>
+          <button
+            type="button"
+            className="navlink menu-trigger"
+            data-active={manageActive}
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            Manage
+            <span aria-hidden="true" className="menu-caret">
+              ▾
+            </span>
+          </button>
+          {menuOpen && (
+            <div className="menu-panel" role="menu">
+              {MANAGE.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  role="menuitem"
+                  className="menu-item"
+                  data-active={isActive(link.href, pathname)}
+                >
+                  <span>{link.label}</span>
+                  <small className="faint">{link.hint}</small>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="topbar-end">
           <span className="mono">{user.email}</span>
           <button className="btn" onClick={signOut} style={{ padding: "6px 12px" }}>

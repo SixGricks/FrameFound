@@ -77,6 +77,13 @@ reality rather than the original sequence.
 
 ### Recently landed
 
+- **Two bugs the operator found, both real** — the Manage dropdown rendered
+  inside `.navlinks`, which scrolls horizontally, so an absolutely-positioned
+  panel was clipped to a 40px-tall row and invisible; and `worker-ai` consumed
+  `transcribe` *and* `vision` at concurrency 1, so ~6,300 sub-second embedding
+  jobs queued behind minutes-long transcriptions and processing looked stalled.
+  Vision now has its own worker.
+
 - **QA sweep** — twelve data-integrity checks over the live catalogue; eleven
   clean. The twelfth asked why 72 assets were `ready` with no thumbnail and
   found 21 damaged files (127 GB): recordings interrupted before the camera

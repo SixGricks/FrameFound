@@ -809,6 +809,7 @@ h2 {
 
 .menu {
   position: relative;
+  flex: none;
 }
 .menu-trigger {
   display: inline-flex;
@@ -857,12 +858,7 @@ h2 {
   color: var(--amber);
 }
 /* On a phone the panel would hang off the right edge of a scrolling nav row. */
-@media (max-width: 900px) {
-  .menu-panel {
-    left: auto;
-    right: 0;
-  }
-}
+
 
 /* Remove control inside a tag chip. Sized for a real target on touch
    without inflating the chip on a pointer device. */
@@ -905,7 +901,17 @@ h2 {
     margin: 0 -16px;
     padding: 0 16px 2px;
   }
+  .menu {
+    order: 2;
+    margin-left: auto;
+  }
+  /* Anchored right, or a 248px panel hangs off the edge of a narrow screen. */
+  .menu-panel {
+    left: auto;
+    right: 0;
+  }
   .topbar-end {
+    order: 2;
     gap: 8px;
   }
   /* The signed-in address is the first thing worth dropping on a phone. */

@@ -127,7 +127,12 @@ services:
       redis: { condition: service_healthy }
 
   worker-ai:
-    # AI queue: transcription, embeddings, captions, OCR.
+    # Transcription only. It used to consume `vision` as well, and that was a
+    # mistake of exactly the kind the queue separation exists to prevent:
+    # a transcription runs for minutes, an embedding for ~300 ms, and at
+    # concurrency 1 the fast work sat behind the slow work. Found in
+    # deployment with 6,277 vision jobs queued behind a Whisper backlog and
+    # the UI looking stalled.
     # docker-compose.gpu.yml overlays GPU access onto this service.
     build: apps/server
     image: ghcr.io/sixgricks/framefound-server:dev
@@ -136,8 +141,10 @@ services:
       resources:
         limits:
           cpus: "3.0"
-          memory: 1600M
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "transcribe,vision", "--concurrency=1"]
+          # Trimmed from 1600M when `vision` moved out: this no longer holds a
+          # CLIP session, only the Whisper model and its audio buffers.
+          memory: 1100M
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "transcribe", "--concurrency=1"]
     env_file: .env
     environment:
       # Inside containers the media bind always lands at /media;
@@ -196,6 +203,33 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  worker-vision:
+    # Frame sampling and CLIP embeddings. Separate from worker-ai so a long
+    # transcription cannot hold up thousands of sub-second embeddings.
+    # Lighter than worker-ai: ONNX CLIP is ~600 MB resident and there is no
+    # Whisper model here.
+    build: apps/server
+    image: ghcr.io/sixgricks/framefound-server:dev
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 900M
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "vision", "--concurrency=1"]
+    env_file: .env
+    environment:
+      FRAMEFOUND_MEDIA_ROOT: /media
+    volumes:
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
+      - framefound-models:/models
+      - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
+      - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   scanner:
     # Filesystem watcher + periodic reconciliation scans.
