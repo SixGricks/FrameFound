@@ -306,3 +306,109 @@ async def test_relearning_an_unknown_tag_is_a_404(env: dict) -> None:
 async def test_tags_require_a_session(env: dict) -> None:
     await env["client"].post("/api/v1/auth/logout")
     assert (await env["client"].get("/api/v1/tags")).status_code == 401
+
+
+async def test_a_tag_is_searchable(env: dict) -> None:
+    """The gap this closes: a tag you cannot search for is a label, not a
+    search feature."""
+    asset_id = env["assets"][0]
+    await env["client"].post(f"/api/v1/tags/assets/{asset_id}", json={"name": "Power Broom"})
+
+    body = (await env["client"].get("/api/v1/search", params={"q": "power broom"})).json()
+    assert len(body["tag_hits"]) == 1
+    hit = body["tag_hits"][0]
+    assert hit["tag_name"] == "Power Broom"
+    assert hit["confirmed"] is True
+    assert hit["asset_id"] == str(asset_id)
+
+
+async def test_tag_search_matches_partially(env: dict) -> None:
+    await env["client"].post(
+        f"/api/v1/tags/assets/{env['assets'][0]}", json={"name": "Power Broom"}
+    )
+    body = (await env["client"].get("/api/v1/search", params={"q": "broom"})).json()
+    assert len(body["tag_hits"]) == 1
+
+
+async def test_search_marks_unjudged_suggestions_as_unconfirmed(env: dict) -> None:
+    """A suggestion must not arrive in search results wearing the same
+    authority as a decision the operator actually made."""
+    anchor, other = env["assets"][0], env["assets"][1]
+    created = (
+        await env["client"].post(f"/api/v1/tags/assets/{anchor}", json={"name": "Power Broom"})
+    ).json()
+    async with env["factory"]() as db:
+        db.add(
+            AssetTag(
+                asset_id=other,
+                tag_id=uuid.UUID(created[0]["tag_id"]),
+                source="suggested",
+                confidence=0.9,
+            )
+        )
+        await db.commit()
+
+    hits = (await env["client"].get("/api/v1/search", params={"q": "broom"})).json()["tag_hits"]
+    assert len(hits) == 2
+    # Confirmed first, and the distinction is reported.
+    assert [h["confirmed"] for h in hits] == [True, False]
+
+
+async def test_a_rejected_tag_never_appears_in_search(env: dict) -> None:
+    """Resurrecting a rejection in search results would be exactly the nagging
+    the tagging model was built to avoid."""
+    asset_id = env["assets"][0]
+    created = (
+        await env["client"].post(f"/api/v1/tags/assets/{asset_id}", json={"name": "Power Broom"})
+    ).json()
+    await env["client"].delete(f"/api/v1/tags/assets/{asset_id}/{created[0]['tag_id']}")
+
+    body = (await env["client"].get("/api/v1/search", params={"q": "broom"})).json()
+    assert body["tag_hits"] == []
+
+
+async def test_browse_can_filter_to_a_tag(env: dict) -> None:
+    created = (
+        await env["client"].post(
+            f"/api/v1/tags/assets/{env['assets'][0]}", json={"name": "Power Broom"}
+        )
+    ).json()
+    slug = created[0]["slug"]
+
+    page = (await env["client"].get("/api/v1/assets", params={"tag": slug})).json()
+    assert page["total"] == 1
+    assert page["items"][0]["id"] == str(env["assets"][0])
+
+
+async def test_the_browse_filter_excludes_unjudged_suggestions_by_default(env: dict) -> None:
+    anchor, other = env["assets"][0], env["assets"][1]
+    created = (
+        await env["client"].post(f"/api/v1/tags/assets/{anchor}", json={"name": "Power Broom"})
+    ).json()
+    async with env["factory"]() as db:
+        db.add(
+            AssetTag(
+                asset_id=other,
+                tag_id=uuid.UUID(created[0]["tag_id"]),
+                source="suggested",
+                confidence=0.9,
+            )
+        )
+        await db.commit()
+
+    slug = created[0]["slug"]
+    strict = (await env["client"].get("/api/v1/assets", params={"tag": slug})).json()
+    assert strict["total"] == 1, "a suggestion is not a confirmed tag"
+
+    loose = (
+        await env["client"].get(
+            "/api/v1/assets", params={"tag": slug, "include_suggested_tags": True}
+        )
+    ).json()
+    assert loose["total"] == 2
+
+
+async def test_an_unknown_tag_slug_returns_nothing_rather_than_everything(env: dict) -> None:
+    # A filter that silently does nothing is worse than one that returns empty.
+    page = (await env["client"].get("/api/v1/assets", params={"tag": "no-such-tag"})).json()
+    assert page["total"] == 0

@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.sql.elements import UnaryExpression
 
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, Derivative
+from framefound.db.models import Asset, AssetTag, Derivative, Tag
 from framefound.media.signing import SigningError, sign_media_url
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -84,6 +84,12 @@ async def list_assets(
     previewable: bool = Query(
         default=False, description="Only assets that already have a thumbnail"
     ),
+    tag: str | None = Query(
+        default=None, max_length=140, description="Tag slug; confirmed tags only"
+    ),
+    include_suggested_tags: bool = Query(
+        default=False, description="With `tag`, also match assets where it is only suggested"
+    ),
     sort: str = Query(default="recent", pattern="^(recent|captured|name|size)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -102,6 +108,25 @@ async def list_assets(
             Derivative.kind == "thumbnail", Derivative.status == "ready"
         )
         query = query.where(Asset.id.in_(ready_thumbs))
+
+    if tag:
+        # Confirmed by default. A suggestion is a claim awaiting judgement, and
+        # a browse filter that silently mixed the two would make the catalogue
+        # look more certain than it is.
+        wanted = (
+            ("manual", "confirmed", "suggested")
+            if include_suggested_tags
+            else (
+                "manual",
+                "confirmed",
+            )
+        )
+        tagged = (
+            select(AssetTag.asset_id)
+            .join(Tag, Tag.id == AssetTag.tag_id)
+            .where(Tag.slug == tag, AssetTag.source.in_(wanted))
+        )
+        query = query.where(Asset.id.in_(tagged))
 
     orders: dict[str, UnaryExpression[Any]] = {
         "recent": Asset.first_indexed_at.desc(),

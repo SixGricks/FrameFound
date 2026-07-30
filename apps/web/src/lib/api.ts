@@ -248,6 +248,16 @@ export interface SceneFrame {
   url: string;
 }
 
+export interface TagHit {
+  asset_id: string;
+  filename: string;
+  library_id: string;
+  media_type: MediaType;
+  tag_name: string;
+  tag_slug: string;
+  confirmed: boolean;
+}
+
 export interface VisualHit {
   asset_id: string;
   filename: string;
@@ -277,6 +287,7 @@ export interface SearchResponse {
   }>;
   visual_hits: VisualHit[];
   visual_available: boolean;
+  tag_hits: TagHit[];
 }
 
 export interface ProcessingReport {
@@ -384,6 +395,8 @@ export const api = {
     library_id?: string;
     media_type?: string;
     previewable?: boolean;
+    tag?: string;
+    include_suggested_tags?: boolean;
     status?: string;
     sort?: string;
     page?: number;

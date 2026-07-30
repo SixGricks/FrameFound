@@ -6,6 +6,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
@@ -15,6 +16,11 @@ import { duration, resolution, shortDate } from "@/lib/format";
 const PAGE_SIZE = 60;
 
 function BrowsePage() {
+  const params = useSearchParams();
+  // Arriving from a tag hit or a Places card: the filter comes in on the URL so
+  // the view is linkable and survives a reload.
+  const [tag, setTag] = useState(params.get("tag") ?? "");
+  const [includeSuggested, setIncludeSuggested] = useState(false);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [libraryId, setLibraryId] = useState("");
   const [mediaType, setMediaType] = useState("");
@@ -37,6 +43,8 @@ function BrowsePage() {
         library_id: libraryId || undefined,
         media_type: mediaType || undefined,
         previewable: previewable || undefined,
+        tag: tag || undefined,
+        include_suggested_tags: tag && includeSuggested ? true : undefined,
         sort,
         page,
         page_size: PAGE_SIZE,
@@ -46,7 +54,7 @@ function BrowsePage() {
     } finally {
       setBusy(false);
     }
-  }, [libraryId, mediaType, previewable, sort, page]);
+  }, [libraryId, mediaType, previewable, tag, includeSuggested, sort, page]);
 
   useEffect(() => {
     load();
@@ -64,6 +72,35 @@ function BrowsePage() {
         <h2>Browse</h2>
         <span className="faint mono">{total.toLocaleString()} assets</span>
       </div>
+
+      {tag && (
+        <div className="toolbar">
+          <span className="pill" data-tone="ok">
+            tag: {tag}
+            <button
+              className="chipx"
+              aria-label="Clear the tag filter"
+              onClick={() => {
+                setTag("");
+                setPage(1);
+              }}
+            >
+              ×
+            </button>
+          </span>
+          <label className="faint" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={includeSuggested}
+              onChange={(e) => {
+                setIncludeSuggested(e.target.checked);
+                setPage(1);
+              }}
+            />
+            Include suggestions I haven&rsquo;t reviewed
+          </label>
+        </div>
+      )}
 
       <div className="toolbar">
         <select

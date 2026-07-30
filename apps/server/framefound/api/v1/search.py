@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
 from framefound.auth.deps import CurrentUser, DbDep
-from framefound.db.models import Asset, Transcript, TranscriptSegment
+from framefound.db.models import Asset, AssetTag, Tag, Transcript, TranscriptSegment
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -45,6 +45,22 @@ class FilenameHit(BaseModel):
     captured_at: datetime | None
 
 
+class TagHit(BaseModel):
+    """An asset carrying a tag whose name matches the query.
+
+    Ranked above everything else, because a tag is a human judgement about what
+    the thing is. A filename or a CLIP score is a guess; someone typed this.
+    """
+
+    asset_id: uuid.UUID
+    filename: str
+    library_id: uuid.UUID
+    media_type: str
+    tag_name: str
+    tag_slug: str
+    confirmed: bool  # false for a suggestion still awaiting judgement
+
+
 class VisualHit(BaseModel):
     asset_id: uuid.UUID
     filename: str
@@ -60,6 +76,7 @@ class SearchResponse(BaseModel):
     filename_hits: list[FilenameHit]
     visual_hits: list[VisualHit] = []
     visual_available: bool = True  # false when nothing has been indexed yet
+    tag_hits: list[TagHit] = []
 
 
 async def _visual_search(
@@ -159,11 +176,13 @@ async def search(
     name_rows = (await db.execute(name_query.limit(limit))).scalars().all()
 
     visual_hits, visual_available = await _visual_search(db, q, library_id, limit)
+    tag_hits = await _tag_search(db, q, library_id, limit)
 
     return SearchResponse(
         query=q,
         visual_hits=visual_hits,
         visual_available=visual_available,
+        tag_hits=tag_hits,
         transcript_hits=[
             TranscriptHit(
                 asset_id=asset.id,
@@ -187,6 +206,47 @@ async def search(
             for a in name_rows
         ],
     )
+
+
+async def _tag_search(
+    db: DbDep, query: str, library_id: uuid.UUID | None, limit: int
+) -> list["TagHit"]:
+    """Assets carrying a tag whose name matches.
+
+    Confirmed tags come first: a suggestion the operator has not judged yet is
+    a claim, and mixing the two would present a guess with the same authority
+    as a decision.
+
+    Rejected links are excluded — the operator has already said no, and
+    resurrecting it in search results would be the same nagging the tagging
+    model was designed to avoid.
+    """
+    stmt = (
+        select(Asset, Tag, AssetTag.source)
+        .join(AssetTag, AssetTag.asset_id == Asset.id)
+        .join(Tag, Tag.id == AssetTag.tag_id)
+        .where(
+            Tag.name.ilike(f"%{query}%"),
+            AssetTag.source != "rejected",
+            Asset.availability == "online",
+        )
+        .order_by(AssetTag.source == "suggested", Asset.mtime.desc())
+        .limit(limit)
+    )
+    if library_id is not None:
+        stmt = stmt.where(Asset.library_id == library_id)
+    return [
+        TagHit(
+            asset_id=asset.id,
+            filename=asset.filename,
+            library_id=asset.library_id,
+            media_type=asset.media_type,
+            tag_name=tag.name,
+            tag_slug=tag.slug,
+            confirmed=source != "suggested",
+        )
+        for asset, tag, source in (await db.execute(stmt)).all()
+    ]
 
 
 @router.get("/similar/{asset_id}", response_model=list[VisualHit])

@@ -70,6 +70,15 @@ reality rather than the original sequence.
 
 ### Recently landed
 
+- **Tags are searchable** — the QA sweep found the obvious hole: tagging
+  existed but search did not know about it, which made a tag a label rather
+  than a search feature. Tag hits now lead the search page (a tag is a human
+  judgement; a filename or a CLIP score is a guess), Browse filters by tag from
+  the URL, and confirmed tags are kept visually distinct from unreviewed
+  suggestions everywhere they appear.
+- **Nav split at ten items** — four "find" destinations stay visible; the six
+  administrative ones moved behind one Manage menu with click-away, Escape and
+  `aria-haspopup`.
 - **M9 started** — [ADR-0019](adr/0019-premiere-panel.md): UXP over the
   deprecated CEP, with a browser handoff shipping first because it needs no
   Adobe SDK and serves Resolve and Final Cut too. FCP7 XML export is live.

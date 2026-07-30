@@ -68,11 +68,15 @@ function SearchPage() {
   const transcriptHits = results?.transcript_hits ?? [];
   const filenameHits = results?.filename_hits ?? [];
   const visualHits = results?.visual_hits ?? [];
+  const tagHits = results?.tag_hits ?? [];
+  // tagHits counts toward 'found something', or a purely tag-matched query
+  // would render the empty state under a full grid of results.
   const nothing =
     hasResults &&
     transcriptHits.length === 0 &&
     filenameHits.length === 0 &&
-    visualHits.length === 0;
+    visualHits.length === 0 &&
+    tagHits.length === 0;
 
   return (
     <>
@@ -142,6 +146,48 @@ function SearchPage() {
           Nothing matched <strong>{results?.query}</strong>. Transcripts only cover media that
           has finished processing.
         </div>
+      )}
+
+      {tagHits.length > 0 && (
+        <section>
+          <div className="sectionhead">
+            <h2>Tagged</h2>
+            <span className="faint mono">
+              you said these are {tagHits[0]?.tag_name.toLowerCase()}
+            </span>
+            <Link
+              className="navlink"
+              style={{ marginLeft: "auto" }}
+              href={`/browse?tag=${tagHits[0]?.tag_slug}`}
+            >
+              Browse all →
+            </Link>
+          </div>
+          <div className="grid">
+            {tagHits.map((hit, index) => (
+              <Link
+                key={`${hit.asset_id}-${hit.tag_slug}`}
+                href={`/assets/${hit.asset_id}`}
+                className="tile"
+                style={{ animationDelay: `${Math.min(index, 16) * 22}ms` }}
+                title={hit.filename}
+              >
+                <div className="tile-frame">
+                  <Thumb assetId={hit.asset_id} mediaType={hit.media_type} status="ready" />
+                  {/* A suggestion is a claim, not a decision — label it. */}
+                  {!hit.confirmed && <span className="tile-badge">suggested</span>}
+                </div>
+                <div className="tile-meta">
+                  <div className="tile-name">{hit.filename}</div>
+                  <div className="tile-sub">
+                    <span>{hit.tag_name}</span>
+                    <span>{hit.confirmed ? "confirmed" : "unreviewed"}</span>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
       )}
 
       {visualHits.length > 0 && (
