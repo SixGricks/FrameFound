@@ -59,18 +59,20 @@ say "Drill 3 — a full disk stops work instead of corrupting it"
 free_pct=$($COMPOSE exec -T api sh -c "df /data | awk 'NR==2 {print 100-\$5+0}'" | tr -d '\r%')
 note "free space on /data: ${free_pct:-?}%"
 if api python -c "
-from framefound.processing.disk_guard import has_headroom
 import sys
-sys.exit(0 if callable(has_headroom) else 1)
-" 2>/dev/null; then
-  ok "disk guard is present and callable"
+from framefound.processing.derivatives import ensure_space
+sys.exit(0 if callable(ensure_space) else 1)
+"; then
+  ok "disk guard present — derivative work stops before the disk fills"
 else
-  note "disk guard not importable under that name — checking derivative status instead"
-  paused=$(psql "SELECT count(*) FROM derivatives WHERE status = 'paused'")
-  [ -n "$paused" ] && ok "derivative status tracks paused work (${paused} paused)" || bad "cannot read derivative status"
+  bad "disk guard missing: framefound.processing.derivatives.ensure_space"
 fi
+paused=$(psql "SELECT count(*) FROM derivatives WHERE status = 'paused'")
+[ -n "$paused" ] && note "derivatives currently paused for space: $paused"
 
 say "Drill 4 — backup produces a restorable artefact"
+# Checked rather than assumed: all four scripts were committed mode 644 and
+# were never executable from a fresh clone, which this drill is how we found.
 if [ -x ./infrastructure/scripts/manage.sh ]; then
   if ./infrastructure/scripts/manage.sh backup >/tmp/ff-drill-backup.log 2>&1; then
     newest=$(ls -t ./backups/*.tar.gz 2>/dev/null | head -1)
