@@ -19,8 +19,13 @@ COPY migrations ./migrations
 COPY framefound ./framefound
 # pmtiles: a single Go binary used to pull a regional basemap out of the
 # 125 GB planet archive over range requests. ~10 MB, no runtime deps.
-ARG PMTILES_VERSION=1.28.0
-RUN set -eux;     arch="$(dpkg --print-architecture)";     case "$arch" in amd64) pm=x86_64 ;; arm64) pm=arm64 ;; *) pm="" ;; esac;     if [ -n "$pm" ]; then       curl -fsSL "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_${pm}.tar.gz"         | tar -xz -C /usr/local/bin pmtiles && chmod +x /usr/local/bin/pmtiles;     fi
+#
+# Version verified against the releases API rather than guessed — the first
+# attempt pinned a tag that does not exist, and because `curl -f` fails
+# silently into a pipe, tar reported the confusing error instead of curl.
+# Downloaded to a file first so a bad fetch fails where it happens.
+ARG PMTILES_VERSION=1.31.2
+RUN set -eux;     arch="$(dpkg --print-architecture)";     case "$arch" in       amd64) pm=x86_64 ;;       arm64) pm=arm64 ;;       *) echo "no pmtiles build for $arch; basemap extraction unavailable" >&2; exit 0 ;;     esac;     url="https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_${pm}.tar.gz";     curl -fsSL "$url" -o /tmp/pmtiles.tar.gz;     tar -xzf /tmp/pmtiles.tar.gz -C /usr/local/bin pmtiles;     rm -f /tmp/pmtiles.tar.gz;     chmod +x /usr/local/bin/pmtiles;     pmtiles version
 
 RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai]"
 
