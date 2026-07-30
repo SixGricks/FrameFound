@@ -226,6 +226,24 @@ async def _requeue_stuck_assets(db: AsyncSession, enqueue: scan_engine.Enqueue) 
         enqueue(asset_id)
 
 
+async def _start_observer_async(
+    library_id: uuid.UUID,
+    root_path: str,
+    queue: WatchQueue,
+    observers: dict[uuid.UUID, object],
+    starting: set[uuid.UUID],
+) -> None:
+    """Register a filesystem watch without blocking the scanner loop."""
+    try:
+        started = await asyncio.to_thread(start_observer, library_id, Path(root_path), queue)
+        if started is not None:
+            observers[library_id] = started
+    except Exception:
+        log.warning("scanner.observer_failed", root=root_path, exc_info=True)
+    finally:
+        starting.discard(library_id)
+
+
 async def _cluster_new_faces(db: AsyncSession) -> None:
     """Group faces nobody has been assigned to yet.
 
@@ -349,6 +367,9 @@ async def main() -> None:
     factory = session_factory()
     queue = WatchQueue()
     observers: dict[uuid.UUID, object] = {}
+    # Libraries whose observer is still being set up, so the loop does not
+    # start a second one for the same share on the next pass.
+    starting: set[uuid.UUID] = set()
     last_requeue = 0.0
 
     while True:
@@ -369,10 +390,21 @@ async def main() -> None:
                     .all()
                 )
                 for library in watch_libs:
-                    if library.id not in observers:
-                        started = start_observer(library.id, Path(library.root_path), queue)
-                        if started is not None:
-                            observers[library.id] = started
+                    if library.id in observers or library.id in starting:
+                        continue
+                    # Off the event loop. watchdog registers a recursive watch
+                    # by walking the whole tree, and on the 18 TB GELCO share
+                    # over CIFS that never returned — the scanner sat inside
+                    # this call for hours and the maintenance block below never
+                    # ran once. Nothing was retried, no faces were clustered,
+                    # and the only symptom was a log that stopped after two
+                    # lines.
+                    starting.add(library.id)
+                    asyncio.create_task(
+                        _start_observer_async(
+                            library.id, library.root_path, queue, observers, starting
+                        )
+                    )
 
                 await _drain_watch_queue(db, queue, enqueue)
                 await _drain_departures(db, queue)
