@@ -232,9 +232,14 @@ async def _cluster_new_faces(db: AsyncSession) -> None:
     On the maintenance tick rather than per-asset: clustering is only
     meaningful across a batch, and running it after every detection would
     rebuild the same groups thousands of times.
+
+    Deliberately *not* gated on the vision queue being idle. That guard exists
+    elsewhere to stop duplicate requeues of expensive per-asset work; here it
+    was wrong, and observably so — with 1,016 embedding jobs backlogged,
+    clustering never ran and 25 detected faces sat unassigned with the People
+    page empty. Clustering enqueues one cheap task that only touches faces
+    with no person, so running it while other work is in flight costs nothing.
     """
-    if await _queue_busy("vision"):
-        return
     loose = (
         await db.execute(select(func.count()).select_from(Face).where(Face.person_id.is_(None)))
     ).scalar_one()
