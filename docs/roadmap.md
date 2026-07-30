@@ -22,7 +22,8 @@ reality rather than the original sequence.
 | **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
 | **M6** Web UI alpha | ✅ | search, browse, asset detail, places, storage, tags, dashboards |
 | **M7** Remote access | ✅ | 2FA, sealed secrets, DDNS, kill switch, sessions, Tailscale enrolment |
-| **M8** Hardening | 🔶 partial | backup/restore/verify/update, image scanning + SBOMs done; benchmarks pending |
+| **M8** Hardening | ✅ | backup/restore, image scanning + SBOMs, benchmarks, failure drills (9/9) |
+| **M9** Editorial handoff | 🔶 started | ADR-0019 decided; FCP7 XML export shipped |
 
 ### Measured state of the production install — 2026-07-29 17:45 UTC
 
@@ -58,17 +59,30 @@ reality rather than the original sequence.
 
 ### Next up
 
-1. **GELCO processing** — the scan is running; metadata, thumbnails,
-   embeddings and location inference follow behind it. This is the first
-   library at genuine scale and will be the real benchmark.
-2. **Inference tuning** (#34) against places the operator can verify.
-3. **Storage management from the UI** — stages 2 and 3 (see below); stage 1,
-   the read-only view and fstab generator, has shipped.
-4. M8 proper: large-library benchmarks, failure drills, security review.
-5. M9: Adobe Premiere panel research (UXP vs CEP).
+1. **Tag the things you care about.** The mechanism is proven — one DJI aerial
+   produced 52 correct suggestions out of 60. It gets useful once real tags
+   exist.
+2. **Inference tuning** (#34) against places you can verify.
+3. **M9 remaining**: marker export from transcript hits, panel tokens with
+   revocation, then a UXP spike against a current Premiere (ADR-0019).
+4. **Fixture corpus** (#26) — needs real RAW/HEIC samples.
+5. **Next 16 upgrade** as its own piece of work (PRs #8/#11 held together).
 
 ### Recently landed
 
+- **M9 started** — [ADR-0019](adr/0019-premiere-panel.md): UXP over the
+  deprecated CEP, with a browser handoff shipping first because it needs no
+  Adobe SDK and serves Resolve and Final Cut too. FCP7 XML export is live.
+- **M8 complete** — [benchmarks](benchmarks.md) measured on the real install,
+  and `drills.sh` failure drills at 9/9 including a backup verified restorable
+  by `pg_restore`.
+- **Vector search 27x faster** (75.0 ms → 2.8 ms p50). The benchmark found it
+  doing a Sort instead of an HNSW index scan; the cause was stale statistics
+  after a bulk embedding run, not a missing index. The scanner now ANALYZEs on
+  its maintenance tick.
+- **The shell scripts were never executable** from a clone — all four committed
+  mode 644, so backup had only ever worked for people invoking `bash manage.sh`.
+  Found by drill 4 on its first run.
 - **Learning tags** — tag a video "Power Broom" and the system finds the other
   power brooms. CLIP puts words and images in one space, so a new tag works
   zero-shot from its own name, then shifts toward the operator's examples as

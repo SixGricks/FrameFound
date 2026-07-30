@@ -55,6 +55,9 @@ ignore = ["S101"]  # assert in tests is fine
 [tool.ruff.lint.per-file-ignores]
 # Test fixtures use throwaway passwords/tokens by design.
 "tests/*" = ["S105", "S106"]
+# These tests parse XML this codebase just generated, in-process. The
+# untrusted-input concern S314 exists for does not apply.
+"tests/test_fcp7.py" = ["S105", "S106", "S314"]
 
 [tool.mypy]
 python_version = "3.12"

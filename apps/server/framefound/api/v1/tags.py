@@ -12,12 +12,12 @@ import uuid
 from datetime import datetime
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from framefound.auth.deps import CurrentUser, DbDep
-from framefound.db.models import Asset, AssetTag, Tag
+from framefound.db.models import Asset, AssetTag, Library, Tag
 
 log = structlog.get_logger()
 
@@ -270,3 +270,56 @@ async def relearn_tag(tag_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> dict[
         raise HTTPException(status_code=404, detail="No such tag")
     _relearn(tag_id)
     return {"status": "queued"}
+
+
+class ExportRequest(BaseModel):
+    asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    name: str = Field(default="FrameFound results", max_length=120)
+
+
+@router.post("/export/fcp7")
+async def export_fcp7(body: ExportRequest, _user: CurrentUser, db: DbDep) -> Response:
+    """A search result set as FCP7 XML, importable by Premiere, Resolve or FCP.
+
+    Deliberately not Premiere-specific: `.prproj` is undocumented, while FCP7
+    XML is understood by every NLE the target users actually run. See ADR-0019.
+    """
+    from framefound.nle.fcp7 import Clip, build_bin
+
+    rows = (
+        (
+            await db.execute(
+                select(Asset)
+                .join(Library, Library.id == Asset.library_id)
+                .where(Asset.id.in_(body.asset_ids), Asset.availability == "online")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="None of those assets are available")
+
+    libraries = {
+        library.id: library for library in (await db.execute(select(Library))).scalars().all()
+    }
+    clips = [
+        Clip(
+            name=asset.filename,
+            # The path this server sees. A workstation mapping belongs here
+            # eventually; until then the export is honest about what it wrote.
+            path=f"{libraries[asset.library_id].root_path}/{asset.relative_path}",
+            duration_s=asset.duration_s,
+            fps=asset.fps,
+            width=asset.width,
+            height=asset.height,
+            has_audio=asset.audio_codec is not None or asset.media_type == "audio",
+        )
+        for asset in rows
+    ]
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", body.name).strip("-") or "framefound"
+    return Response(
+        content=build_bin(body.name, clips),
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.xml"'},
+    )
