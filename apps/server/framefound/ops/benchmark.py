@@ -177,15 +177,18 @@ async def run(db: AsyncSession) -> Report:
             )
         )
 
+        # `:v::vector` because a bind parameter arrives as text and pgvector's
+        # <=> has no operator for `vector <=> varchar`. The ORM path above
+        # handles this through the type decorator; raw SQL has to say it.
         plan = (
             await db.execute(
                 text(
                     "EXPLAIN SELECT asset_id FROM frames WHERE embedding IS NOT NULL "
-                    "ORDER BY embedding <=> :v LIMIT 40"
+                    "ORDER BY embedding <=> :v::vector LIMIT 40"
                 ).bindparams(v=str(sample))
             )
         ).all()
-        plan_text = " ".join(row[0] for row in plan)
+        plan_text = " ".join(str(row[0]) for row in plan)
         if "Index Scan" not in plan_text:
             # A sequential scan here means the HNSW index is not being used,
             # which is invisible until the library is large enough to hurt.
