@@ -105,9 +105,7 @@ class PanelToken(Base):
     # Null means it does not expire. An editing workstation that is used twice a
     # year should not silently stop working, so this is opt-in rather than
     # imposed — but it is offered, and shown in the list.
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=None
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_used_ip: Mapped[str | None] = mapped_column(String(45), default=None)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)

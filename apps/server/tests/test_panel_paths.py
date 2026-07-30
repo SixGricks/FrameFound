@@ -15,10 +15,7 @@ from framefound.api.v1.panel import _translate
 
 
 def test_a_posix_share_becomes_a_windows_drive() -> None:
-    assert (
-        _translate("/media/gelco/2026/a001.mp4", "/media/gelco", "Z:\\")
-        == "Z:\\2026\\a001.mp4"
-    )
+    assert _translate("/media/gelco/2026/a001.mp4", "/media/gelco", "Z:\\") == "Z:\\2026\\a001.mp4"
 
 
 def test_separators_are_converted_for_windows() -> None:
