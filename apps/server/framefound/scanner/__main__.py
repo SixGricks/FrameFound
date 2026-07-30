@@ -412,6 +412,7 @@ async def main() -> None:
                 if time.time() - last_requeue > 300:
                     await _requeue_stuck_assets(db, enqueue)
                     await _requeue_missing_transcripts(db)
+                    await _cluster_new_faces(db)
                     await _refresh_statistics(db)
                     last_requeue = time.time()
         except Exception:
