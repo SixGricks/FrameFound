@@ -177,14 +177,16 @@ async def run(db: AsyncSession) -> Report:
             )
         )
 
-        # `:v::vector` because a bind parameter arrives as text and pgvector's
-        # <=> has no operator for `vector <=> varchar`. The ORM path above
-        # handles this through the type decorator; raw SQL has to say it.
+        # CAST rather than `::vector`: a bind parameter arrives as text and
+        # pgvector has no `vector <=> varchar` operator, but `:v::vector` also
+        # confuses text()'s own parameter parser. The ORM path immediately
+        # above gets all of this free from the type decorator — this query is
+        # raw only because SQLAlchemy has no EXPLAIN construct.
         plan = (
             await db.execute(
                 text(
                     "EXPLAIN SELECT asset_id FROM frames WHERE embedding IS NOT NULL "
-                    "ORDER BY embedding <=> :v::vector LIMIT 40"
+                    "ORDER BY embedding <=> CAST(:v AS vector) LIMIT 40"
                 ).bindparams(v=str(sample))
             )
         ).all()
