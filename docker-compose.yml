@@ -86,7 +86,10 @@ services:
       resources:
         limits:
           cpus: "2.0"
-          memory: 1300M
+          # Trimmed from 1300M: since large images route through FFmpeg rather
+          # than Pillow, this no longer has to hold a multi-gigabyte raster in
+          # memory to make a thumbnail.
+          memory: 1000M
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=1"]
     env_file: .env
     environment:
@@ -219,7 +222,11 @@ services:
       resources:
         limits:
           cpus: "2.0"
-          memory: 900M
+          # Holds three ONNX sessions now, not one: CLIP vision + text (~350 MB
+          # of weights) and the two face models (~183 MB). 900M killed it on
+          # the first face detection. Paid for by trimming `worker` below
+          # rather than growing the total on an already over-committed host.
+          memory: 1200M
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "vision", "--concurrency=1"]
     env_file: .env
     environment:
