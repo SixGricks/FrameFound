@@ -20,7 +20,7 @@ reality rather than the original sequence.
 | **M3** Proxies & previews | ✅ | thumbnails, posters, H.264 proxies, signed URLs |
 | **M4** Transcription | ✅ | faster-whisper + VAD, sidecar import; a retry sweep now catches work that fails and is forgotten |
 | **M5** Visual search | ✅ | CLIP ViT-B/32 via ONNX, pgvector HNSW, similar-assets |
-| **M6** Web UI alpha | ✅ | search, browse, asset detail, dashboards, security page |
+| **M6** Web UI alpha | ✅ | search, browse, asset detail, places, storage, tags, dashboards |
 | **M7** Remote access | ✅ | 2FA, sealed secrets, DDNS, kill switch, sessions, Tailscale enrolment |
 | **M8** Hardening | 🔶 partial | backup/restore/verify/update, image scanning + SBOMs done; benchmarks pending |
 
@@ -69,6 +69,13 @@ reality rather than the original sequence.
 
 ### Recently landed
 
+- **Learning tags** — tag a video "Power Broom" and the system finds the other
+  power brooms. CLIP puts words and images in one space, so a new tag works
+  zero-shot from its own name, then shifts toward the operator's examples as
+  they accumulate. The match bar is derived per tag, not fixed: low enough to
+  admit the weakest accepted example, high enough to exclude the closest
+  rejected one. Removing a tag is stored as a *rejection*, so a wrong guess is
+  never offered twice — every correction tightens the next round.
 - **Tailscale enrolment** (#30) — guided setup on the Security page, an
   optional sidecar behind the `tailnet` profile, and a tailnet address that is
   *learned* from a request that actually arrived over it rather than assembled

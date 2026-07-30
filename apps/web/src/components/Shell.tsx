@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/libraries", label: "Libraries" },
   { href: "/storage", label: "Storage" },
   { href: "/places", label: "Places" },
+  { href: "/tags", label: "Tags" },
   { href: "/duplicates", label: "Duplicates" },
   { href: "/processing", label: "Processing" },
   { href: "/health", label: "System" },

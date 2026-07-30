@@ -376,3 +376,62 @@ class GeocodeCache(Base):
     cache_key: Mapped[str] = mapped_column(String(40), primary_key=True)
     address: Mapped[str] = mapped_column(String(300), default="")
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+TAG_SOURCES = ("manual", "suggested", "confirmed", "rejected")
+
+
+class Tag(Base):
+    """A label the operator cares about, and what the system has learned it
+    looks like.
+
+    `prototype` is a CLIP vector: the blend of the tag's own words and the mean
+    of the frames the operator tagged. `threshold` is derived per tag, because
+    a fixed cutoff cannot work across subjects — see ai/tagging.py.
+    """
+
+    __tablename__ = "tags"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    slug: Mapped[str] = mapped_column(String(140), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Learned state. Null until the first learn pass runs.
+    prototype: Mapped[list[float] | None] = mapped_column(Embedding(), default=None)
+    threshold: Mapped[float | None] = mapped_column(default=None)
+    threshold_reason: Mapped[str] = mapped_column(String(160), default="")
+    example_count: Mapped[int] = mapped_column(default=0)
+    learned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Suggestions can be turned off per tag without deleting what was learned.
+    suggest_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    asset_links: Mapped[list["AssetTag"]] = relationship(
+        back_populates="tag", cascade="all, delete-orphan"
+    )
+
+
+class AssetTag(Base):
+    """One tag on one asset, and how it got there.
+
+    `source` is the whole point. A manual tag is ground truth and teaches the
+    prototype; a suggestion is a claim awaiting judgement; a rejection is
+    negative evidence that must never be offered again. Collapsing these into
+    a boolean would throw away everything the system learns from.
+    """
+
+    __tablename__ = "asset_tags"
+    __table_args__ = (UniqueConstraint("asset_id", "tag_id", name="uq_asset_tag"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), index=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual", index=True)
+    confidence: Mapped[float | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+    tag: Mapped["Tag"] = relationship(back_populates="asset_links")

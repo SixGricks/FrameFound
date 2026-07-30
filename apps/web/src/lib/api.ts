@@ -147,6 +147,34 @@ export interface DuplicateReport {
   note: string;
 }
 
+export interface AssetTag {
+  tag_id: string;
+  name: string;
+  slug: string;
+  source: "manual" | "confirmed" | "suggested" | "rejected";
+  confidence: number | null;
+}
+
+export interface TagSummary {
+  id: string;
+  name: string;
+  slug: string;
+  example_count: number;
+  asset_count: number;
+  pending_count: number;
+  threshold: number | null;
+  threshold_reason: string;
+  learned_at: string | null;
+  suggest_enabled: boolean;
+}
+
+export interface PendingSuggestion {
+  asset_id: string;
+  filename: string;
+  media_type: MediaType;
+  confidence: number | null;
+}
+
 export interface Mount {
   path: string;
   fstype: string;
@@ -378,6 +406,27 @@ export const api = {
     request<NearbyAsset[]>(
       `/assets/near${query({ lat, lon, radius_km: radiusKm, limit: 120 })}`,
     ),
+
+  tags: () => request<TagSummary[]>("/tags"),
+  assetTags: (assetId: string) => request<AssetTag[]>(`/tags/assets/${assetId}`),
+  addAssetTag: (assetId: string, name: string) =>
+    request<AssetTag[]>(`/tags/assets/${assetId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  removeAssetTag: (assetId: string, tagId: string) =>
+    request<void>(`/tags/assets/${assetId}/${tagId}`, { method: "DELETE" }),
+  decideAssetTag: (assetId: string, tagId: string, accept: boolean) =>
+    request<AssetTag[]>(`/tags/assets/${assetId}/${tagId}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accept }),
+    }),
+  pendingForTag: (tagId: string) =>
+    request<PendingSuggestion[]>(`/tags/${tagId}/pending`),
+  relearnTag: (tagId: string) =>
+    request<{ status: string }>(`/tags/${tagId}/relearn`, { method: "POST" }),
 
   storage: () => request<StorageReport>("/storage"),
   addDrive: (body: Record<string, unknown>) =>

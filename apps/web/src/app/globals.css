@@ -805,6 +805,30 @@ h2 {
   accent-color: var(--amber);
 }
 
+/* Remove control inside a tag chip. Sized for a real target on touch
+   without inflating the chip on a pointer device. */
+.chipx {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0 0 0 4px;
+  margin: -2px -3px -2px 0;
+  cursor: pointer;
+  opacity: 0.65;
+}
+.chipx:hover {
+  opacity: 1;
+}
+@media (pointer: coarse) {
+  .chipx {
+    padding: 6px 4px 6px 8px;
+    margin: -6px -4px;
+  }
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 900px) {

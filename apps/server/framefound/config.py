@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # Anything not listed is treated as a direct client and cannot spoof its
     # address past the public-access gate or the rate limiter.
     trusted_proxies: str = "172.16.0.0/12"
+    # Suggest tags on other assets as soon as one is learned. On by default:
+    # a tag that does not spread is just a label.
+    tag_autosuggest: bool = True
 
     # Sessions: sliding idle expiry with an absolute cap.
     session_idle_minutes: int = 720  # 12 h without activity logs you out

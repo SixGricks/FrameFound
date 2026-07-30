@@ -17,6 +17,7 @@ from framefound.api.v1.remote_access import router as remote_access_router
 from framefound.api.v1.search import router as search_router
 from framefound.api.v1.storage import router as storage_router
 from framefound.api.v1.system import router as system_router
+from framefound.api.v1.tags import router as tags_router
 from framefound.auth.router import router as auth_router
 
 api_v1 = APIRouter()
@@ -30,6 +31,7 @@ api_v1.include_router(remote_access_router)
 api_v1.include_router(storage_router)
 api_v1.include_router(duplicates_router)
 api_v1.include_router(places_router)
+api_v1.include_router(tags_router)
 
 
 class SystemInfo(BaseModel):
