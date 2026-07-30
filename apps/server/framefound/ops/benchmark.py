@@ -25,7 +25,15 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from framefound.config import get_settings
-from framefound.db.models import Asset, AssetTag, Derivative, Frame, Tag, Transcript
+from framefound.db.models import (
+    Asset,
+    AssetTag,
+    Derivative,
+    Frame,
+    Tag,
+    Transcript,
+    TranscriptSegment,
+)
 
 log = structlog.get_logger()
 
@@ -141,10 +149,10 @@ async def run(db: AsyncSession) -> Report:
             await _time(
                 "transcript phrase search",
                 lambda: db.execute(
-                    text(
-                        "SELECT ts.asset_id FROM transcript_segments ts "
-                        "WHERE ts.text ILIKE :q LIMIT 40"
-                    ).bindparams(q="%the%")
+                    select(TranscriptSegment.transcript_id, TranscriptSegment.start_ms)
+                    .join(Transcript, Transcript.id == TranscriptSegment.transcript_id)
+                    .where(TranscriptSegment.text.ilike("%the%"))
+                    .limit(40)
                 ),
             )
         )
