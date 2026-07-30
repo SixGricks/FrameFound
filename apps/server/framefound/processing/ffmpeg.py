@@ -69,7 +69,43 @@ def _run(argv: list[str], timeout_s: int) -> None:
                 "Ran out of memory. This file is too large to process within "
                 "the worker's memory limit."
             )
+        damage = damage_verdict(tail)
+        if damage:
+            raise FfmpegError(damage)
         raise FfmpegError("The file could not be processed")
+
+
+# Signatures that are a verdict about the *file*, not about our processing of
+# it. Found in deployment: 21 assets in one library were interrupted recordings
+# — a drone battery dying mid-flight, a card pulled before the container was
+# finalised — and reporting them as "could not be processed" told the operator
+# nothing they could act on. These files will not open in Premiere either, and
+# some are recoverable with a repair tool, so saying so plainly matters.
+DAMAGE_SIGNATURES = (
+    ("moov atom not found", "unfinished"),
+    ("Invalid data found when processing input", "unreadable"),
+    ("could not find codec parameters", "unreadable"),
+    ("Format not recognised", "unreadable"),
+)
+
+
+def damage_verdict(stderr_tail: str) -> str | None:
+    """A plain-language verdict when ffmpeg says the file itself is broken."""
+    lowered = stderr_tail.lower()
+    for signature, kind in DAMAGE_SIGNATURES:
+        if signature.lower() in lowered:
+            if kind == "unfinished":
+                return (
+                    "This file is damaged: its index is missing, which usually "
+                    "means the recording was interrupted before the camera "
+                    "finished writing it. It will not open in an editor either. "
+                    "Repair tools can sometimes recover the footage."
+                )
+            return (
+                "This file is damaged or in a format ffmpeg cannot read. It is "
+                "unlikely to open in an editor either."
+            )
+    return None
 
 
 @functools.cache

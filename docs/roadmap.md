@@ -49,6 +49,13 @@ reality rather than the original sequence.
 
 ### Needs attention
 
+- **21 damaged files, 127 GB** — found by the QA sweep, not a FrameFound bug.
+  All fail with "moov atom not found": recordings interrupted before the camera
+  finished writing the container. They will not open in Premiere either. One is
+  125 GB (`Brian Job and Promo/2023 11 21 Camera 2`), fifteen are DJI drone
+  clips, and four are 24–48 byte stubs. Repair tools sometimes recover this;
+  FrameFound now says so instead of reporting a generic failure.
+
 - **80 failed derivatives.** Four are the 1–2 GB TIFF panoramas that exceed
   the worker's 1.27 GB memory limit (waiting on the RAM upgrade, and now
   reported honestly as running out of memory). The rest are mostly DJI MP4
