@@ -74,6 +74,15 @@ ever not an index scan again.
 
 ---
 
+## Reading the results
+
+**A single p95 spike is usually a transient — re-run before chasing it.** Seen
+in practice: visual similarity reported a 843 ms p95 while the vision queue was
+draining, then 6.6 ms on an immediate re-run with the same queue depth and
+Postgres at 0% CPU. Twelve samples is enough to see a real tail and few enough
+that one cold page-cache miss moves p95. Two consecutive runs disagreeing means
+the number is noise; two agreeing means it is not.
+
 ## Known scaling limits
 
 Honest about where this will bend first:

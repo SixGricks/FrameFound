@@ -77,6 +77,11 @@ reality rather than the original sequence.
 
 ### Recently landed
 
+- **QA sweep** — twelve data-integrity checks over the live catalogue; eleven
+  clean. The twelfth asked why 72 assets were `ready` with no thumbnail and
+  found 21 damaged files (127 GB): recordings interrupted before the camera
+  finished writing the container. FrameFound now names that plainly instead of
+  reporting a generic failure — 20 of the 21 already updated.
 - **Tags are searchable** — the QA sweep found the obvious hole: tagging
   existed but search did not know about it, which made a tag a label rather
   than a search feature. Tag hits now lead the search page (a tag is a human
