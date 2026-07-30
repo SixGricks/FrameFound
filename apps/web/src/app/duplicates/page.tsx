@@ -117,7 +117,8 @@ export default function DuplicatesPage() {
                 )}
               </div>
 
-              <table className="table">
+              <div className="tablewrap">
+                <table className="table">
                 <tbody>
                   {group.members.map((member) => (
                     <tr key={member.asset_id}>
@@ -145,7 +146,8 @@ export default function DuplicatesPage() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+                </table>
+              </div>
             </div>
           ))}
         </div>

@@ -993,11 +993,34 @@ h2 {
   }
 }
 
-/* Wide tables (processing, sessions) must scroll in their own container
-   rather than pushing the page sideways. */
+/* Wide tables must scroll in their own container rather than pushing the page
+   sideways. Reported in use: the duplicates table went out of view on a
+   narrower window and the whole page scrolled right with it. */
 .tablewrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  /* Without this a grid/flex child refuses to shrink below its content width,
+     so the wrapper grows instead of scrolling — the overflow rule alone does
+     nothing. This is the line that actually fixes it. */
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Defensive, not a substitute for the above: monospace carries paths, URLs and
+   ids — long unbroken strings that will expand any container they sit in. They
+   wrap instead. Short values like timecode are unaffected, because `anywhere`
+   only breaks when it has to. */
+.mono {
+  overflow-wrap: anywhere;
+}
+
+/* Flex and grid children default to a content-derived minimum width, which is
+   how one long filename drags a whole page wide. */
+.card,
+.tile-meta,
+.hit-body,
+.stat {
+  min-width: 0;
 }
 
 @keyframes rise {
