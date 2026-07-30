@@ -116,7 +116,7 @@ def test_example_weight_grows_monotonically() -> None:
 def test_with_no_examples_the_threshold_is_the_floor() -> None:
     threshold = tagging.derive_threshold(unit(1), [], [])
     assert threshold.value == tagging.SIMILARITY_FLOOR
-    assert "floor" in threshold.reason
+    assert "nothing tagged yet" in threshold.reason
 
 
 def test_the_threshold_admits_the_weakest_accepted_example() -> None:
@@ -154,6 +154,22 @@ def test_the_threshold_never_drops_below_the_floor() -> None:
     prototype = unit(1, 0)
     threshold = tagging.derive_threshold(prototype, [rotated(1.5)], [])
     assert threshold.value == tagging.SIMILARITY_FLOOR
+
+
+def test_hitting_the_floor_does_not_claim_there_are_no_examples() -> None:
+    """Found in production on the first real tag: one example whose similarity
+    sat under the floor was reported to the operator as "no examples yet",
+    which is a different and wrong statement about their own data."""
+    reason = tagging.derive_threshold(unit(1, 0), [rotated(1.5)], []).reason
+    assert "1 example" in reason
+    assert "nothing tagged yet" not in reason
+
+
+def test_example_counts_are_not_pluralised_wrongly() -> None:
+    one = tagging.derive_threshold(unit(1, 0), [rotated(0.2)], []).reason
+    two = tagging.derive_threshold(unit(1, 0), [rotated(0.2), rotated(0.25)], []).reason
+    assert "1 tagged example" in one and "examples" not in one
+    assert "2 tagged examples" in two
 
 
 def test_the_threshold_is_capped_so_a_tag_can_still_grow() -> None:

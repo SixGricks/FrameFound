@@ -128,14 +128,14 @@ def derive_threshold(
     Reported with a reason, because an operator who sees an odd suggestion
     deserves to be able to find out why it cleared the bar.
     """
-    floor = Threshold(SIMILARITY_FLOOR, "no examples yet — using the default floor")
     if not positives:
-        return floor
+        return Threshold(SIMILARITY_FLOOR, "nothing tagged yet — using the default match bar")
 
     positive_scores = [cosine(prototype, vector) for vector in positives]
     weakest = min(positive_scores)
     candidate = weakest - POSITIVE_MARGIN
-    reason = f"just below the weakest of {len(positives)} accepted examples"
+    count = len(positives)
+    reason = f"just below the weakest of {count} tagged example{'' if count == 1 else 's'}"
 
     if negatives:
         strongest_wrong = max(cosine(prototype, vector) for vector in negatives)
@@ -144,7 +144,13 @@ def derive_threshold(
             reason = f"just above the closest of {len(negatives)} rejected suggestions"
 
     if candidate < SIMILARITY_FLOOR:
-        return floor
+        # The examples imply a bar below the floor — usually because there are
+        # too few of them to have pulled the prototype close to any of them
+        # yet. Say that, rather than claiming there are no examples.
+        return Threshold(
+            SIMILARITY_FLOOR,
+            f"{count} example{'' if count == 1 else 's'} so far — holding at the default bar",
+        )
     # A tag whose examples are all near-identical would otherwise set a bar so
     # high nothing else could ever clear it.
     return Threshold(min(candidate, 0.98), reason)
