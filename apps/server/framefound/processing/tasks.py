@@ -329,7 +329,8 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
         decode_from = proxy if has_proxy else path
 
         scene_times: list[float] = []
-        if scenes.should_scene_detect(duration, has_proxy):
+        pixels = (asset.width or 0) * (asset.height or 0)
+        if scenes.should_scene_detect(duration, has_proxy, pixels):
             scene_times = await asyncio.to_thread(scenes.detect_scene_timestamps, decode_from)
         else:
             log.info(

@@ -25,14 +25,33 @@ MAX_FRAMES_PER_ASSET = 240
 # scene-detect when a proxy is available, and otherwise fall back to
 # interval sampling — seeks are near-instant even on network storage.
 SCENE_DETECT_MAX_DURATION_S = 120.0
+# ...and duration alone is the wrong measure, because the cost of a full decode
+# is duration *times resolution*. Measured on the reference deployment: three
+# concurrent samplers pinned four cores decoding 4K drone originals over SMB at
+# roughly three minutes each, while the network sat at 3 MB/s and the host was
+# 67% idle. The work was not waiting on the share; it was decoding pixels.
+#
+# 1080p is the line. Above it a full decode stops being worth what it finds —
+# and on drone footage it finds almost nothing, because a continuous aerial
+# shot has no cuts in it. Those clips get interval sampling instead, which is a
+# handful of seeks.
+SCENE_DETECT_MAX_PIXELS = 2_100_000
 
 _SHOWINFO_TS = re.compile(rb"pts_time:([0-9.]+)")
 
 
-def should_scene_detect(duration_s: float, has_proxy: bool) -> bool:
-    """Whether full-decode scene detection is worth its cost for this source."""
+def should_scene_detect(duration_s: float, has_proxy: bool, pixels: int = 0) -> bool:
+    """Whether full-decode scene detection is worth its cost for this source.
+
+    `pixels` is width * height of the original. Zero means unknown, which is
+    treated as small: an asset whose dimensions were never probed is more
+    likely to be an oddity than a 4K master, and the duration gate still
+    applies.
+    """
     if has_proxy:
-        return True  # proxy is local and small; always worth it
+        return True  # proxy is local, 1080p and H.264; always worth it
+    if pixels > SCENE_DETECT_MAX_PIXELS:
+        return False
     return 0 < duration_s <= SCENE_DETECT_MAX_DURATION_S
 
 

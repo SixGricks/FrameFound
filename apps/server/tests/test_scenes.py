@@ -97,3 +97,46 @@ def test_dhash_on_garbage_returns_none(tmp_path: Path) -> None:
     bad = tmp_path / "bad.jpg"
     bad.write_bytes(b"not an image")
     assert dhash(bad) is None
+
+
+# --- resolution, not just duration ----------------------------------------
+#
+# Added after frames became the slowest stage on the reference deployment.
+# Three concurrent samplers pinned four cores decoding 4K drone originals over
+# SMB at roughly three minutes each, while the network sat at 3 MB/s and the
+# host was 67% idle. The work was not waiting on the share, it was decoding
+# pixels — and the guard only ever weighed duration.
+
+
+def test_a_4k_original_is_not_worth_a_full_decode() -> None:
+    """Two minutes of 4K is four times the pixels of two minutes of 1080p, and
+    the old guard let both through on duration alone."""
+    assert not should_scene_detect(90.0, has_proxy=False, pixels=3840 * 2160)
+
+
+def test_a_1080p_original_of_the_same_length_still_is() -> None:
+    assert should_scene_detect(90.0, has_proxy=False, pixels=1920 * 1080)
+
+
+def test_a_proxy_beats_any_resolution() -> None:
+    """The proxy is local, 1080p and H.264 whatever the original was, so the
+    thing being decoded is small by construction."""
+    assert should_scene_detect(2400.0, has_proxy=True, pixels=7680 * 4320)
+
+
+def test_unknown_dimensions_fall_back_to_the_duration_rule() -> None:
+    """An asset whose dimensions were never probed is more likely an oddity
+    than a 4K master, and the duration gate still applies."""
+    assert should_scene_detect(45.0, has_proxy=False, pixels=0)
+    assert not should_scene_detect(2400.0, has_proxy=False, pixels=0)
+
+
+def test_resolution_is_checked_before_duration() -> None:
+    """A short 4K clip is the exact case that was costing three minutes each;
+    being brief must not buy it a full decode."""
+    assert not should_scene_detect(5.0, has_proxy=False, pixels=3840 * 2160)
+
+
+def test_the_old_call_signature_still_works() -> None:
+    """`pixels` is optional so nothing that already calls this breaks."""
+    assert should_scene_detect(45.0, has_proxy=False)
