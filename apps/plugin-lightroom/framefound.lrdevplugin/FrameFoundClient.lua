@@ -26,9 +26,25 @@ function FrameFoundClient.prefs()
   return LrPrefs.prefsForPlugin()
 end
 
+--- Trimmed. A token is pasted, and a paste routinely carries a trailing space
+--  or newline that turns a valid credential into a 401 with nothing to see.
+function FrameFoundClient.trim(value)
+  if value == nil then
+    return ""
+  end
+  return (tostring(value):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+function FrameFoundClient.token()
+  return FrameFoundClient.trim(FrameFoundClient.prefs().token)
+end
+
+function FrameFoundClient.server()
+  return (FrameFoundClient.trim(FrameFoundClient.prefs().server):gsub("/+$", ""))
+end
+
 function FrameFoundClient.configured()
-  local prefs = FrameFoundClient.prefs()
-  return prefs.server ~= nil and prefs.server ~= "" and prefs.token ~= nil and prefs.token ~= ""
+  return FrameFoundClient.server() ~= "" and FrameFoundClient.token() ~= ""
 end
 
 -- Percent-encode a query value. Lightroom has no url-encode helper.
@@ -55,9 +71,10 @@ function FrameFoundClient.get(path)
     )
   end
 
-  local server = prefs.server:gsub("/$", "")
+  local server = FrameFoundClient.server()
+  local token = FrameFoundClient.token()
   local headers = {
-    { field = "Authorization", value = "Bearer " .. prefs.token },
+    { field = "Authorization", value = "Bearer " .. token },
     { field = "Accept", value = "application/json" },
   }
 
@@ -72,9 +89,32 @@ function FrameFoundClient.get(path)
 
   local status = responseHeaders and responseHeaders.status
   if status == 401 then
+    -- Show what was actually sent. A token is 43 characters pasted by hand,
+    -- and "rejected" reads as "revoked" when the real cause is a dropped
+    -- character or a trailing newline. The prefix shown here is the same one
+    -- listed on the Security page, so the two can simply be compared — which
+    -- turns a guess into a two-second check.
+    -- Show both ends and the length. A matching prefix alone proves nothing:
+    -- the first failure of this kind had the right prefix and the right
+    -- length, and was still wrong — the token had been transcribed by eye
+    -- from a screen, and 0/O, l/I/1 and -/_ do not survive that. Showing the
+    -- tail as well is what makes a mid-string error visible.
+    local head = token:sub(1, 10)
+    local tail = token:sub(-4)
     LrErrors.throwUserError(
-      "FrameFound rejected the panel token. It may have been revoked — "
-        .. "create a new one under Security → Panel tokens."
+      "FrameFound rejected this token.\n\n"
+        .. "Sent: "
+        .. head
+        .. "…"
+        .. tail
+        .. "  ("
+        .. tostring(#token)
+        .. " characters; a valid one is 47)\n\n"
+        .. "Most likely it was typed or read by eye rather than pasted — "
+        .. "0/O, l/I/1 and -/_ all look alike in a token. Use the Copy button "
+        .. "on Security → Panel tokens, or create a fresh one and paste it. "
+        .. "A matching prefix is not proof: check the length and the last "
+        .. "four characters too."
     )
   elseif status == 403 then
     LrErrors.throwUserError("This panel token does not have permission for that.")
