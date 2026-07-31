@@ -1146,3 +1146,53 @@ h2 {
   font-size: 0.72rem;
   flex-shrink: 0;
 }
+
+/* Faces drawn over the photograph they were found in. Clicking a box says who
+   it is, which is the moment the operator can actually see the answer. */
+.facephoto {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+.facephoto img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  display: block;
+}
+.facebox {
+  position: absolute;
+  border: 2px solid var(--ember);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+/* Already attributed: quieter, because it needs no attention. */
+.facebox[data-known="true"] {
+  border-color: var(--sage);
+}
+.facebox:hover,
+.facebox:focus-visible {
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.45);
+}
+.facebox[data-open="true"] {
+  border-color: var(--paper);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.6);
+}
+.facebox-name {
+  position: absolute;
+  bottom: -1.35rem;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--paper);
+  background: rgba(0, 0, 0, 0.72);
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 1.4;
+}

@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
+import FacesInPhoto from "@/components/FacesInPhoto";
 import TagEditor from "@/components/TagEditor";
 import Thumb from "@/components/Thumb";
 import {
@@ -199,6 +200,7 @@ function DetailPage() {
         </div>
 
         <aside style={{ display: "grid", gap: 16 }}>
+          <FacesInPhoto assetId={asset.id} />
           <TagEditor assetId={asset.id} />
           <div className="card">
             <p className="eyebrow" style={{ marginBottom: 12 }}>

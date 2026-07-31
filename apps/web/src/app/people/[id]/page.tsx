@@ -81,16 +81,11 @@ export default function PersonPage() {
   }
 
   async function mergeInto(targetId: string, targetName: string) {
-    // Confirmed rather than done on a click: merging folds this person's faces
-    // into another and leaves nothing behind to undo it with.
-    if (
-      !window.confirm(
-        `Move every face from this group into ${targetName}? ` +
-          "This group will be gone afterwards.",
-      )
-    ) {
-      return;
-    }
+    // No confirmation dialog. Picking a specific person from a list and
+    // pressing "Merge into" is already an unambiguous statement of intent —
+    // asking again treats a deliberate choice as if it might have been a slip,
+    // and merging is the single most common correction there is, so the tax is
+    // paid constantly.
     setBusy(true);
     try {
       await api.mergePeople(targetId, personId);

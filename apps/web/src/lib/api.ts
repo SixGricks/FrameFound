@@ -267,6 +267,32 @@ export interface PanelTokenCreated extends PanelToken {
   token: string;
 }
 
+export interface FaceGuess {
+  person_id: string;
+  name: string;
+  similarity: number;
+  confident: boolean;
+}
+
+export interface FaceInPhoto {
+  face_id: string;
+  box_x: number;
+  box_y: number;
+  box_w: number;
+  box_h: number;
+  detection_score: number;
+  source: string;
+  person_id: string | null;
+  person_name: string;
+  guesses: FaceGuess[];
+}
+
+export interface FacesInPhoto {
+  asset_id: string;
+  faces: FaceInPhoto[];
+  note: string;
+}
+
 export interface TagSuggestion {
   id: string;
   name: string;
@@ -671,6 +697,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ asset_ids: assetIds }),
     }),
+
+  facesInAsset: (assetId: string) => request<FacesInPhoto>(`/people/faces/in-asset/${assetId}`),
+  assignFace: (faceId: string, body: { person_id?: string; name?: string }) =>
+    request<{ face_id: string; person_id: string; name: string; created: boolean; confirmed_count: number }>(
+      `/people/faces/${faceId}/assign`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    ),
 
   suggestTags: (q: string) => request<TagSuggestion[]>(`/tags/suggest${query({ q })}`),
   suggestNames: (q: string, exclude?: string) =>

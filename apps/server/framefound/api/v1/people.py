@@ -591,3 +591,213 @@ async def face_crop(  # type: ignore[no-untyped-def]
         # to. Private: it is a picture of somebody.
         headers={"Cache-Control": "private, max-age=86400"},
     )
+
+
+# --- naming faces where you actually see them -----------------------------
+#
+# The People page is a review queue: it shows one person's faces and asks
+# whether they belong. That is the right shape for bulk work and the wrong
+# shape for the moment an operator is *looking at a photograph* and can see
+# who is in it. Making them memorise a face, navigate to People, find the
+# right cluster and confirm is asking them to hold context the picture was
+# already showing them.
+#
+# So: boxes over the photograph, click one, say who it is.
+#
+# Everything here assumes the person is **already known**. A face that matches
+# nobody is the exception, not the default — by the time a catalogue has been
+# used for a week most faces in it belong to someone already named. The
+# suggestion is therefore offered first and naming somebody new is the
+# secondary path, which is the inverse of how the review queue works.
+
+
+class FaceGuess(BaseModel):
+    person_id: uuid.UUID
+    name: str
+    similarity: float
+    # True when the match clears that person's own learned threshold, so the
+    # UI can offer a one-click "yes" instead of a list to choose from.
+    confident: bool
+
+
+class FaceInPhoto(BaseModel):
+    face_id: uuid.UUID
+    box_x: float
+    box_y: float
+    box_w: float
+    box_h: float
+    detection_score: float
+    source: str
+    # Who this face is already attributed to, if anyone.
+    person_id: uuid.UUID | None
+    person_name: str
+    # Best guesses, strongest first. Empty when nobody is named yet.
+    guesses: list[FaceGuess]
+
+
+class FacesInPhoto(BaseModel):
+    asset_id: uuid.UUID
+    faces: list[FaceInPhoto]
+    note: str
+
+
+# How many alternatives to offer under the top guess. Three is enough to catch
+# "it proposed my brother, I want me"; a longer list is a worse experience than
+# typing the name.
+MAX_GUESSES = 3
+
+
+@router.get("/faces/in-asset/{asset_id}", response_model=FacesInPhoto)
+async def faces_in_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> FacesInPhoto:
+    """Every face found in one photograph, with a guess at who each one is.
+
+    Guesses are scored against each *named* person's prototype. Unnamed
+    clusters are deliberately excluded: "is this Unnamed person 7?" is not a
+    question anybody can answer, and offering it would bury the useful options.
+    """
+    faces = (
+        (await db.execute(select(Face).where(Face.asset_id == asset_id).order_by(Face.box_x)))
+        .scalars()
+        .all()
+    )
+    if not faces:
+        return FacesInPhoto(asset_id=asset_id, faces=[], note="No faces were found here.")
+
+    people = (await db.execute(select(Person).where(Person.name != ""))).scalars().all()
+    named = {p.id: p for p in people}
+    with_prototype = [p for p in people if p.prototype]
+
+    out: list[FaceInPhoto] = []
+    for face in faces:
+        guesses: list[FaceGuess] = []
+        if face.embedding:
+            scored = [
+                (people_lib.similarity(face.embedding, person.prototype), person)
+                for person in with_prototype
+            ]
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            guesses = [
+                FaceGuess(
+                    person_id=person.id,
+                    name=person.name,
+                    similarity=round(score, 4),
+                    confident=score >= person.threshold,
+                )
+                for score, person in scored[:MAX_GUESSES]
+                if score > 0
+            ]
+
+        owner = named.get(face.person_id) if face.person_id else None
+        out.append(
+            FaceInPhoto(
+                face_id=face.id,
+                box_x=face.box_x,
+                box_y=face.box_y,
+                box_w=face.box_w,
+                box_h=face.box_h,
+                detection_score=face.detection_score,
+                source=face.source,
+                person_id=face.person_id,
+                person_name=owner.name if owner else "",
+                guesses=guesses,
+            )
+        )
+
+    unknown = sum(1 for f in out if not f.person_id)
+    if not with_prototype:
+        note = "Nobody is named yet, so there is nothing to compare against."
+    elif unknown:
+        note = f"{unknown} of {len(out)} not yet attributed."
+    else:
+        note = "Everyone here is already named."
+    return FacesInPhoto(asset_id=asset_id, faces=out, note=note)
+
+
+class AssignFaceRequest(BaseModel):
+    # Exactly one of these. `person_id` attributes to somebody who exists;
+    # `name` is the escape hatch for a face that belongs to nobody yet, and
+    # matches an existing name rather than making a duplicate.
+    person_id: uuid.UUID | None = None
+    name: str = Field(default="", max_length=120)
+
+
+class AssignFaceResponse(BaseModel):
+    face_id: uuid.UUID
+    person_id: uuid.UUID
+    name: str
+    created: bool
+    confirmed_count: int
+
+
+@router.post("/faces/{face_id}/assign", response_model=AssignFaceResponse)
+async def assign_face(
+    face_id: uuid.UUID, body: AssignFaceRequest, _user: CurrentUser, db: DbDep
+) -> AssignFaceResponse:
+    """Say who a face is, from the photograph.
+
+    Counts as a **confirmation**, not a suggestion: the operator is looking at
+    the picture and naming the person in it, which is the strongest evidence
+    this system ever receives. That is consistent with confirm-before-it-counts
+    rather than a departure from it — the confirmation is the click.
+
+    Every assignment re-learns the person, so the next photograph is guessed
+    better. This is the training loop the operator asked for: correcting it is
+    how it improves, and doing that where the faces are visible is what makes
+    the correction cheap enough to bother with.
+    """
+    face = await db.get(Face, face_id)
+    if face is None:
+        raise HTTPException(status_code=404, detail="No such face")
+
+    created = False
+    if body.person_id is not None:
+        person = await db.get(Person, body.person_id)
+        if person is None:
+            raise HTTPException(status_code=404, detail="No such person")
+    else:
+        wanted = body.name.strip()
+        if not wanted:
+            raise HTTPException(status_code=400, detail="Give a person or a name")
+        # Match on slug so "Dad", "dad" and "DAD" are one person rather than
+        # three — the same rule the naming autocomplete follows.
+        slug = slugify(wanted)
+        person = (
+            await db.execute(select(Person).where(Person.slug == slug, Person.slug != ""))
+        ).scalar_one_or_none()
+        if person is None:
+            person = Person(name=wanted, slug=slug, threshold=people_lib.DEFAULT_THRESHOLD)
+            db.add(person)
+            await db.flush()
+            created = True
+
+    previous = face.person_id
+    face.person_id = person.id
+    face.source = "confirmed"
+    face.similarity = None
+    if person.cover_face_id is None:
+        person.cover_face_id = face.id
+    await db.commit()
+
+    await _relearn(db, person)
+    # The person this face used to belong to has lost evidence, so their
+    # prototype is now wrong until it is recomputed. Skipping this is how a
+    # cluster keeps matching faces it no longer contains.
+    if previous and previous != person.id:
+        stale = await db.get(Person, previous)
+        if stale is not None:
+            await _relearn(db, stale)
+
+    log.info(
+        "people.face_assigned",
+        face_id=str(face_id),
+        person=person.name,
+        created=created,
+        moved_from=str(previous) if previous else None,
+    )
+    return AssignFaceResponse(
+        face_id=face_id,
+        person_id=person.id,
+        name=person.name,
+        created=created,
+        confirmed_count=person.face_count,
+    )
