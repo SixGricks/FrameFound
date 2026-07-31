@@ -270,14 +270,15 @@ async def serve_tile(  # type: ignore[no-untyped-def]
     empty tile and turns a working map into a console full of noise.
     """
     from pmtiles.reader import MmapSource, Reader
-    from pmtiles.tile import zxy_to_tileid
 
     path = _archive(settings, name)
 
     def read() -> bytes | None:
         with open(path, "rb") as handle:
             reader = Reader(MmapSource(handle))
-            tile: bytes | None = reader.get(zxy_to_tileid(z, x, y))
+            # `get(z, x, y)`, not a packed tile id — the id form belongs to
+            # the writer side of this library.
+            tile: bytes | None = reader.get(z, x, y)
             return tile
 
     try:
