@@ -48,7 +48,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 700M
+          memory: 1500M
     # Migrations run before serving; a schema mismatch fails startup loudly.
     command:
       [
@@ -85,12 +85,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          # Trimmed from 1300M: since large images route through FFmpeg rather
-          # than Pillow, this no longer has to hold a multi-gigabyte raster in
-          # memory to make a thumbnail.
-          memory: 1000M
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=1"]
+          cpus: "3.0"
+          # Was 1000M against 5.9 GB installed, when every limit here was carved
+          # out of every other. With 58 GB there is no longer a trade to make.
+          memory: 4G
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=3"]
     env_file: .env
     environment:
       # Inside containers the media bind always lands at /media;
@@ -117,9 +116,12 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 1100M
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media,frames", "--concurrency=1"]
+          cpus: "4.0"
+          # Frames is the long backlog and is IO-bound on a 5.2 MB/s share, so
+          # concurrency buys more here than anywhere else: three samplers wait
+          # on the network in parallel instead of one after another.
+          memory: 8G
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media,frames", "--concurrency=3"]
     env_file: .env
     environment:
       FRAMEFOUND_MEDIA_ROOT: /media
@@ -147,9 +149,10 @@ services:
       resources:
         limits:
           cpus: "3.0"
-          # Trimmed from 1600M when `vision` moved out: this no longer holds a
-          # CLIP session, only the Whisper model and its audio buffers.
-          memory: 1100M
+          # Holds the Whisper model and its audio buffers. Concurrency stays
+          # at one: two models resident is the profile that got this killed,
+          # and RAM has removed the reason to run it close to the edge.
+          memory: 6G
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "transcribe", "--concurrency=1"]
     env_file: .env
     environment:
@@ -221,13 +224,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          # Holds three ONNX sessions now, not one: CLIP vision + text (~350 MB
-          # of weights) and the two face models (~183 MB). 900M killed it on
-          # the first face detection. Paid for by trimming `worker` below
-          # rather than growing the total on an already over-committed host.
-          memory: 1200M
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "vision", "--concurrency=1"]
+          cpus: "3.0"
+          # Holds three ONNX sessions, not one: CLIP vision + text (~350 MB of
+          # weights) and the two face models (~183 MB). 900M killed it on the
+          # first face detection, and 1200M had to be paid for by trimming
+          # `worker`. Two concurrent workers means up to six sessions resident.
+          memory: 6G
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "vision", "--concurrency=2"]
     env_file: .env
     environment:
       FRAMEFOUND_MEDIA_ROOT: /media
@@ -250,7 +253,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 450M
+          memory: 1G
     command: ["python", "-m", "framefound.scanner"]
     env_file: .env
     environment:
@@ -274,7 +277,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 300M
+          memory: 512M
     # -s: beat's state file must land somewhere the non-root user can write.
     command: ["celery", "-A", "framefound.worker", "beat", "-s", "/tmp/celerybeat-schedule"]
     env_file: .env
@@ -288,7 +291,23 @@ services:
     deploy:
       resources:
         limits:
-          memory: 800M
+          memory: 8G
+    # Defaults assume a shared box: 128MB of shared_buffers and a 4GB guess
+    # at the OS cache. Search is pgvector HNSW, which is random-read bound,
+    # and the measured disk does ~320 IOPS at 50 ms — so every page served
+    # from memory rather than that disk is the biggest win available here.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=2GB"
+      - "-c"
+      - "effective_cache_size=6GB"
+      - "-c"
+      - "work_mem=64MB"
+      - "-c"
+      - "maintenance_work_mem=1GB"
+      - "-c"
+      - "max_parallel_workers_per_gather=4"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -310,8 +329,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 700M
-    command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+          memory: 2G
+    command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "1536mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis-data:/data
     networks: [internal]

@@ -73,7 +73,75 @@ performs badly; it is excluded by design. It is also small — the catalog for a
 - If the NAS goes offline, previews stop working and generation pauses, but
   the catalog, search, and metadata keep working entirely.
 
-## Planned: a second drive alongside the RAM upgrade
+## Done: the second drive and the RAM (2026-07-31)
+
+Both landed. 6 GB → **58 GB RAM**, plus a 2.4 TB `sdb`. What follows is what the
+measurements showed, because the plan below was written with a guess in it and
+the guess was wrong.
+
+### Which disk is faster: neither, for reads
+
+The plan said "if the new drive is faster, put Postgres on it". Measured with
+`fio` on real files (4k random, iodepth 16, O_DIRECT):
+
+| | sda (existing) | sdb (new) |
+| --- | --- | --- |
+| random 4k read | 326 IOPS, 49 ms | 315 IOPS, 51 ms |
+| random 4k write | 325 IOPS, 49 ms | 594 IOPS, 27 ms |
+
+Reads are identical within noise, so **Postgres stayed on `sda`** — moving it
+would have been risk for nothing. `sdb` is ~1.8× on writes, which suits
+derivative generation, and its real value is the 2.4 TB.
+
+A first pass against the raw devices reported `sdb` at 54,000 IOPS and 7.5 GB/s
+sequential, which would have been faster than most NVMe. That was an artifact:
+reading never-written blocks on a thin-provisioned virtual disk returns zeros
+without touching physical media. Any benchmark of an empty virtual disk
+measures nothing. Format it and test with real files.
+
+Both disks sit at ~320 IOPS and ~50 ms latency, which is spinning-rust
+territory. Worth knowing before blaming software for a slow query.
+
+### What moved, and what it bought
+
+`/data` (6.6 GB, 36,159 files) moved to `/mnt/ffdata/framefound-data`, verified
+byte-identical, and the old Docker volume was reclaimed — root went from 30 GB
+to 36 GB free. Postgres, models and Redis stayed on `sda`.
+
+Container limits were rewritten against 58 GB rather than 5.9 GB. The old
+numbers were a zero-sum trade — `worker-vision` had to be paid for by trimming
+`worker` — and that constraint is gone:
+
+| service | was | now | concurrency |
+| --- | --- | --- | --- |
+| worker (visuals/metadata) | 1000M | 4G | 1 → 3 |
+| worker-media (media/frames) | 1100M | 8G | 1 → 3 |
+| worker-vision | 1200M | 6G | 1 → 2 |
+| worker-ai (transcribe) | 1100M | 6G | 1 (unchanged) |
+| postgres | 800M | 8G | — |
+| api | 700M | 1500M | — |
+
+Total 37.4 GB of 58, leaving ~20 GB for the host and page cache. Transcription
+concurrency deliberately stays at 1: two Whisper models resident is the profile
+that used to get that container killed, and RAM removes the reason to run near
+the edge rather than the reason to be careful.
+
+Postgres was also given real settings — `shared_buffers=2GB`,
+`effective_cache_size=6GB`, `work_mem=64MB`. The defaults assume a shared box
+(128 MB of shared buffers), and on a disk doing 320 IOPS every page served from
+memory instead is the largest single win available. Measured afterwards:
+pgvector HNSW search at **3.2 ms warm median**, 99.9% buffer cache hit rate.
+
+### Still to do
+
+Health-aware storage — a disconnected-mount alert and per-drive capacity
+warnings on the System page. With one disk "the disk" was unambiguous. With
+two, a full or unmounted `sdb` now presents as unexplained failures spread
+across proxies, renders and basemaps, with no page saying which disk ran out.
+
+---
+
+## The original plan (kept for the reasoning)
 
 Both upgrades are expected together, and they relieve different constraints —
 worth being clear about which is which, because it decides what to do first.
