@@ -116,10 +116,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "4.0"
-          # Frames is the long backlog and is IO-bound on a 5.2 MB/s share, so
-          # concurrency buys more here than anywhere else: three samplers wait
-          # on the network in parallel instead of one after another.
+          # Raised to 6 after measurement: with three samplers running, this
+          # container sat pegged at 4.00 cores while the host was a third idle
+          # and iowait was near zero. Frames is decode-bound, not share-bound.
+          cpus: "6.0"
+          # Frames is the long backlog. Concurrency buys more here than
+          # anywhere else — and the "5.2 MB/s share" that shaped this file
+          # turned out to be a single-stream figure: three parallel readers
+          # pull 15 MB/s from the same NAS.
           memory: 8G
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media,frames", "--concurrency=3"]
     env_file: .env

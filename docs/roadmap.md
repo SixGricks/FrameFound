@@ -77,9 +77,12 @@ reality rather than the original sequence.
   reported honestly as running out of memory). The rest are mostly DJI MP4
   proxy failures and the BRAW proxies deferred until a GPU exists — worth a
   pass to confirm nothing else is hiding in there.
-- **SMB reads at 5.2 MB/s** (measured). This is the binding constraint on
-  every whole-file operation and shapes timeouts throughout — and now that the
-  memory ceiling is gone, it is *the* constraint on the frames backlog.
+- **The "5.2 MB/s share" was a single-stream figure, and it was not the
+  constraint.** Three parallel readers pull **17 MB/s** from the same NAS.
+  Timeouts throughout the codebase are still sized against 5.2 MB/s, which is
+  merely conservative rather than wrong, but the belief that frames was
+  IO-bound sent tuning in the wrong direction for a while — see the frames
+  entry below.
 
 ### Hardware upgrade complete — 2026-07-31
 
@@ -97,9 +100,20 @@ numbers in [storage.md](storage.md); the parts that change decisions:
   it.
 - **Postgres tuned** for the first time (shared_buffers 128MB → 2GB). pgvector
   HNSW search measures 3.2 ms warm median at a 99.9% buffer cache hit rate.
-- Frames now drains with three samplers in parallel (worker-media running at
-  ~416% CPU). ~4,940 remaining, roughly twelve hours at the current rate, and
-  the rate is set by the share rather than by this host.
+- **Frames: 60 -> 1,080 jobs/hour, and the diagnosis was wrong twice.**
+  Raising concurrency moved the bottleneck off the share and onto CPU, at which
+  point the obvious answer ("it's the network") was no longer true — measured
+  mid-run, worker-media was pegged at 405% of a 4-core cap with the host 67%
+  idle and iowait at 1.1%.
+
+  Two changes, measured separately. First, the scene-detect guard weighed
+  duration but not resolution, so a two-minute 4K drone original with no proxy
+  got a complete decode over SMB — about three minutes each, to find no cuts at
+  all, because an aerial shot is one continuous take. Gating on pixels too took
+  it to 330/hour. Then raising the CPU cap 4 -> 6 took it to 1,080/hour, at
+  which point the container sits at ~507% of 600% and is no longer capped.
+
+  Backlog went from roughly ten days to about thirteen hours.
 
 **Follow-up found while verifying:** `delete_slideshow` is admin-only and
 destructive but writes no `audit_log` entry, unlike session and panel-token

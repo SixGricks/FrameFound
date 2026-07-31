@@ -7,8 +7,10 @@ thumbnails by hours):
   metadata  - bulk extraction sweeps (high volume, moderate cost)
   visuals   - thumbnails/posters/waveforms (fast, user-visible)
   media     - proxy transcodes (heavy, long-running)
-  frames    - sampling stills out of video (IO-bound, ~60-100 s each on a
-              5.2 MB/s share) — shares worker-media, which is FFmpeg-shaped
+  frames    - sampling stills out of video. Long assumed IO-bound on a
+              "5.2 MB/s share"; measured otherwise — that was a single-stream
+              figure, three parallel readers pull 17 MB/s from the same NAS,
+              and the stage is decode-bound. Shares worker-media (FFmpeg-shaped)
   vision    - CLIP embeddings (~300 ms each, CPU-bound)
   transcribe- speech to text (minutes each)
   default   - legacy name, still consumed so pre-rename queued jobs drain
