@@ -130,6 +130,31 @@ nil the caller already checks.
   plugins, which is appropriate for a self-hosted tool on machines the operator
   controls.
 
+## Verified from the workstation (2026-07-31)
+
+Before the panels were handed over, the whole path was exercised from the
+Windows machine rather than from inside the VM — which is where three real
+bugs turned up:
+
+- `http://192.168.1.193:8080` reachable, `/panel/profiles` and `/panel/search`
+  200 with a bearer token, **401 without one**.
+- A Grick Family Storage asset resolved end to end:
+  `/media/family/stef's computer files/.../IMG_0334.JPG` →
+  `W:\stef's computer files\...\IMG_0334.JPG`, and `Test-Path` on that PC
+  returned **True**. That is the whole feature in one line.
+
+The three bugs, all invisible from inside the VM:
+
+1. **`media_type` was filtered after the limit**, so asking for six images
+   returned whatever happened to be an image among the six most recent assets
+   of any kind — usually none.
+2. **A path profile was resolved once per search, not per library.** A
+   workstation mounts several shares and `profile_name` is unique per library,
+   so every result outside the one library came back with no path — identical
+   in appearance to a broken profile.
+3. The search note now says how many results fell outside any profile, rather
+   than leaving nulls to be discovered at import time.
+
 ## What has not been tested
 
 The token layer, the path translation and the panel API are covered by tests
