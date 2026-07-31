@@ -68,7 +68,12 @@
         </select>
       </div>
 
+      <!-- Build stamp. A UXP panel can be reloaded without its manifest being
+           re-read, so "I already applied that fix" and "the running panel has
+           the fix" are different claims. This makes the second one checkable
+           at a glance instead of inferred. -->
       <div id="status" class="muted">Not connected. Open Settings below.</div>
+      <div class="muted" style="font-size: 10px">panel build 0.2.0</div>
       <div id="results"></div>
 
       <div class="row">

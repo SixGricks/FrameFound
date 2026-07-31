@@ -38,10 +38,39 @@ foreach ($name in @("manifest.json", "index.html", "main.js")) {
     }
 }
 
-$icons = Join-Path $PSScriptRoot "icons"
-if (Test-Path $icons) {
-    Copy-Item $icons -Destination $dest -Recurse
-    Write-Host "  copied icons"
+# Every asset the manifest names must exist. The first version of this script
+# copied icons only "if (Test-Path)" and skipped in silence — which is how a
+# manifest declaring icons/icon-24.png, a file that has never existed in this
+# repository, got deployed and loaded repeatedly without anyone noticing. A
+# manifest that references a missing asset is a structural defect, and UXP
+# reports structural defects as unrelated-looking permission errors.
+$manifest = Get-Content (Join-Path $PSScriptRoot "manifest.json") -Raw | ConvertFrom-Json
+$missing = @()
+
+if ($manifest.PSObject.Properties.Name -contains "icons") {
+    foreach ($icon in $manifest.icons) {
+        $iconPath = Join-Path $PSScriptRoot $icon.path
+        if (Test-Path $iconPath) {
+            $target = Join-Path $dest (Split-Path $icon.path -Parent)
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Copy-Item $iconPath -Destination $target
+            Write-Host ("  copied {0}" -f $icon.path)
+        } else {
+            $missing += $icon.path
+        }
+    }
+}
+
+if ($manifest.main -and -not (Test-Path (Join-Path $PSScriptRoot $manifest.main))) {
+    $missing += $manifest.main
+}
+
+if ($missing.Count -gt 0) {
+    Write-Host ""
+    Write-Warning "The manifest names files that do not exist:"
+    foreach ($m in $missing) { Write-Warning ("  {0}" -f $m) }
+    Write-Warning "Remove them from manifest.json or add the files. UXP can report"
+    Write-Warning "a dangling reference as a permission error somewhere unrelated."
 }
 
 Write-Host ""

@@ -222,6 +222,79 @@ thing most likely to have moved between Premiere versions — remains untested.
 `apps/panel-premiere/install-dev.ps1` copies the panel to the External plugins
 folder and prints those steps.
 
+## The UXP permission error, investigated properly (2026-07-31)
+
+A second run confirmed the failure survives `https://` as well as `http://`,
+which rules out UXP refusing plain HTTP. Researching Adobe's actual schema then
+overturned most of what had been assumed, including by me.
+
+**What the documentation actually says.** `requiredPermissions` is a root-level
+key (correct here), and `domains` is typed **`string[] | "all"`**. The wildcard
+is a *bare string* — `"domains": "all"`. The array form `["all"]` is a reported
+failure producing this same error. Ports are honoured, origins must be
+scheme-qualified, and loopback IPs are attested working; **bare LAN IPs are
+undocumented entirely** — Adobe's staff examples are all `127.0.0.1` or
+`localhost`, and mostly over WebSocket schemes rather than http.
+
+**Two claims in the earlier write-up were wrong, and one was mine.**
+
+*The "eight entries all failed" framing is unsupported.* Only one URL was ever
+requested — `http://192.168.1.193:8080/api/v1/panel/profiles` — against the
+*three*-entry manifest (1,000 bytes; the eight-entry version is 1,179 and was
+written after the failure). The four `framefound.local` entries could not have
+been exercised: that name does not resolve on the workstation. So there is no
+eight-way failure to explain, and reasoning that assumed one was reasoning
+about a non-event.
+
+*The manifest referenced a file that has never existed.* It declared
+`icons/icon-24.png`, and there is no `icons/` directory anywhere in this
+repository — not now, not in any commit. `install-dev.ps1` copied icons only
+`if (Test-Path)` and skipped in silence, so every deployment carried a dangling
+asset reference into UXP. That is a structural defect regardless of whether it
+caused this bug, and UXP is documented to surface structural defects as
+unrelated-looking permission errors. Removed, and the installer now warns
+loudly instead of skipping quietly.
+
+**What the failing request actually tells us.** The origin was declared
+character-for-character in the loaded manifest and was still refused. That is
+not an entry-matching problem — it means the permission block was not in
+effect. Which is exactly why adding more origin variants was never going to
+help, and why the eight-entry manifest has been withdrawn.
+
+### The state it is now in, and why
+
+`"domains": "all"` — deliberately, as a **diagnostic rather than a shipping
+value**:
+
+- If the panel connects, matching was the problem, and the allowlist can be
+  narrowed one entry at a time starting with `http://192.168.1.193:8080`.
+- If it still fails with `"all"`, no allowlist can fix it — the permission
+  block is not being applied, and the next suspect is the plugin being
+  registered twice under one id (a copy in `%APPDATA%\...\Plugins\External`
+  which Premiere loads at startup, *and* a UDT dev-load of the same id in the
+  same session).
+
+Narrow it once it works. A broad grant is fine for a dev-loaded panel on the
+operator's own machine and is not fine for anything distributed.
+
+**The panel now prints its build number** (`panel build 0.2.0`) under the
+status line. UXP can reload a panel's source without re-reading its manifest,
+so "I applied the fix" and "the running panel has the fix" are different
+claims — this makes the second one checkable at a glance. If the panel shows an
+older build, it is stale: **Unload, then Load** in UDT. Reload and Watch are
+documented not to pick up manifest changes.
+
+### Lightroom: not a revoked token
+
+The auth failure was reported as a revoked token. The row was live with
+`last_used_at` NULL — nothing had ever authenticated with it. The 47-character
+value had been read off a screen by eye, and `0`/`O`, `l`/`I`/`1` and `-`/`_`
+do not survive that: the prefix and the length both matched while the token did
+not. A matching prefix proves nothing. The plugin now reports the head, tail
+and length of what it actually sent, and names transcription as the likely
+cause; server and token are trimmed before use, since a pasted credential
+routinely carries a trailing newline.
+
 ## What has not been tested
 
 The token layer, the path translation and the panel API are covered by tests
