@@ -274,11 +274,14 @@ async def serve_tile(  # type: ignore[no-untyped-def]
     path = _archive(settings, name)
 
     def read() -> bytes | None:
+        # pmtiles ships no type information, so these three calls are an
+        # untyped boundary. Narrowed to the calls themselves rather than
+        # relaxed for the whole module.
         with open(path, "rb") as handle:
-            reader = Reader(MmapSource(handle))
+            reader = Reader(MmapSource(handle))  # type: ignore[no-untyped-call]
             # `get(z, x, y)`, not a packed tile id — the id form belongs to
             # the writer side of this library.
-            tile: bytes | None = reader.get(z, x, y)
+            tile: bytes | None = reader.get(z, x, y)  # type: ignore[no-untyped-call]
             return tile
 
     try:

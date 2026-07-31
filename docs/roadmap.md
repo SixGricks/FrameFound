@@ -107,10 +107,10 @@ revocation. A deleted slideshow currently leaves no trace of who removed it.
 
 ### 2026-07-31 — new library, and the basemap actually draws
 
-**Grick Family Storage** added: `\SixGricksServer\Grick Family Storage`
-(the same NAS as the other shares) mounted read-only at `/mnt/media/family`,
-scanned to completion at **9,392 files**. The catalogue is now **25,349
-assets**. Excludes `#recycle`, `@eaDir` and `ha_backup_home` — Synology
+**Grick Family Storage** added: the `Grick Family Storage` share on
+SixGricksServer (the same NAS as the other shares), mounted read-only at
+`/mnt/media/family`, scanned to completion at **9,392 files**. The catalogue is
+now **25,349 assets**. Excludes `#recycle`, `@eaDir` and `ha_backup_home` — Synology
 plumbing and Home Assistant backups, none of it media. It ships with a path
 profile for `W:\`, so the Premiere and Lightroom panels can hand back a path
 that opens on that machine.
