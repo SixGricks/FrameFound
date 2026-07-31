@@ -688,13 +688,19 @@ async def faces_in_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> 
             ]
 
         owner = named.get(face.person_id) if face.person_id else None
+        # Detectors return boxes that run past the edge of the frame — a face
+        # at the top of a group shot came back at y=-0.03 on real data. Clamped
+        # here so every consumer can treat these as drawable coordinates rather
+        # than each discovering the same thing.
+        box_x = min(max(face.box_x, 0.0), 1.0)
+        box_y = min(max(face.box_y, 0.0), 1.0)
         out.append(
             FaceInPhoto(
                 face_id=face.id,
-                box_x=face.box_x,
-                box_y=face.box_y,
-                box_w=face.box_w,
-                box_h=face.box_h,
+                box_x=box_x,
+                box_y=box_y,
+                box_w=min(face.box_w, 1.0 - box_x),
+                box_h=min(face.box_h, 1.0 - box_y),
                 detection_score=face.detection_score,
                 source=face.source,
                 person_id=face.person_id,
@@ -703,7 +709,11 @@ async def faces_in_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> 
             )
         )
 
-    unknown = sum(1 for f in out if not f.person_id)
+    # Counted on *name*, not on person_id. A face sitting in an unnamed
+    # cluster has been grouped but not identified, and calling that "known"
+    # would tell the operator the work is done when the only thing anyone can
+    # do with it is put a name to it.
+    unknown = sum(1 for f in out if not f.person_name)
     if not with_prototype:
         note = "Nobody is named yet, so there is nothing to compare against."
     elif unknown:

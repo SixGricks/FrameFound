@@ -76,7 +76,10 @@ export default function FacesInPhoto({ assetId }: { assetId: string }) {
             key={face.face_id}
             type="button"
             className="facebox"
-            data-known={Boolean(face.person_id)}
+            // Green means "we know who this is", which is a claim only a *name*
+            // supports. A face grouped into an unnamed cluster still needs the
+            // one thing the operator can supply.
+            data-known={Boolean(face.person_name)}
             data-open={open?.face_id === face.face_id}
             title={face.person_name || "Click to say who this is"}
             style={{
