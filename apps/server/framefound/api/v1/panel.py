@@ -182,7 +182,7 @@ async def panel_search(
     if media_type:
         results = [a for a in results if a.media_type == media_type]
 
-    mapping, library = await _profile(db, profile)
+    profiles = await _profiles(db, profile)
     entries = [
         PanelAsset(
             asset_id=asset.id,
@@ -192,47 +192,60 @@ async def panel_search(
             width=asset.width,
             height=asset.height,
             captured_at=asset.captured_at.isoformat() if asset.captured_at else None,
-            path=(
-                _translate(
-                    f"{library.root_path.rstrip('/')}/{asset.relative_path}",
-                    library.root_path.rstrip("/"),
-                    mapping.mapped_prefix,
-                )
-                if mapping and library and asset.library_id == library.id
-                else None
-            ),
+            path=_translate_for(asset, profiles),
             proxy_url=f"/api/v1/media/{asset.id}/proxy",
             thumbnail_url=f"/api/v1/media/{asset.id}/thumbnail",
         )
         for asset in results[:limit]
     ]
 
-    if mapping is None:
+    if not profiles:
         note = (
             "No path profile selected, so clips will be linked from the server "
             "rather than your local mount."
         )
     else:
-        note = f"Paths translated for {mapping.profile_name}."
+        unmapped = sum(1 for e in entries if e.path is None)
+        note = f"Paths translated for {profile.strip()}."
+        if unmapped:
+            # Naming the gap beats leaving nulls to be discovered on import.
+            note += (
+                f" {unmapped} of {len(entries)} are in a library this workstation "
+                "has no profile for, and will be linked from the server."
+            )
 
-    return PanelSearchResponse(
-        query=q, profile=mapping.profile_name if mapping else None, results=entries, note=note
-    )
+    return PanelSearchResponse(query=q, profile=profile.strip() or None, results=entries, note=note)
 
 
-async def _profile(db: DbDep, name: str) -> tuple[Any, Any]:
+async def _profiles(db: DbDep, name: str) -> dict[uuid.UUID, tuple[Any, Any]]:
+    """Every library this profile name covers, keyed by library.
+
+    A workstation mounts more than one share — this one has Grick Family
+    Storage on W: alongside two others — and `profile_name` is unique per
+    *library*, not globally. Resolving a single mapping for the whole search
+    meant results from any other library came back with no path at all, which
+    looks exactly like a broken profile.
+    """
     if not name.strip():
-        return None, None
-    row = (
+        return {}
+    rows = (
         await db.execute(
             select(PathMapping, Library)
             .join(Library, Library.id == PathMapping.library_id)
             .where(PathMapping.profile_name == name.strip())
         )
-    ).first()
-    if row is None:
-        return None, None
-    return row[0], row[1]
+    ).all()
+    return {library.id: (mapping, library) for mapping, library in rows}
+
+
+def _translate_for(asset: Asset, profiles: dict[uuid.UUID, tuple[Any, Any]]) -> str | None:
+    """This asset's path on the workstation, or None if nothing maps it."""
+    found = profiles.get(asset.library_id)
+    if found is None:
+        return None
+    mapping, library = found
+    root = library.root_path.rstrip("/")
+    return _translate(f"{root}/{asset.relative_path}", root, mapping.mapped_prefix)
 
 
 @router.get("/assets/{asset_id}/paths")
@@ -312,7 +325,7 @@ async def export_fcp7(body: ExportRequest, _user: PanelPrincipal, db: DbDep) -> 
     libraries = {
         library.id: library for library in (await db.execute(select(Library))).scalars().all()
     }
-    mapping, profile_library = await _profile(db, body.profile)
+    profiles = await _profiles(db, body.profile)
 
     clips: list[Clip] = []
     for asset in rows:
@@ -323,13 +336,7 @@ async def export_fcp7(body: ExportRequest, _user: PanelPrincipal, db: DbDep) -> 
         # into the XML is the *workstation's*, not the server's, whenever a
         # profile applies. An XML full of /media/gelco paths imports into
         # Premiere as offline media on every machine that is not this server.
-        path = server_path
-        if (
-            mapping is not None
-            and profile_library is not None
-            and asset.library_id == profile_library.id
-        ):
-            path = _translate(server_path, root, mapping.mapped_prefix)
+        path = _translate_for(asset, profiles) or server_path
         clips.append(
             Clip(
                 name=asset.filename,
