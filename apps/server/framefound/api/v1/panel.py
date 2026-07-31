@@ -152,19 +152,12 @@ async def panel_search(
         except Exception as exc:  # noqa: BLE001 - embeddings unavailable, model missing, ...
             log.info("panel.visual_search_unavailable", error=str(exc)[:200])
 
-        by_name = (
-            (
-                await db.execute(
-                    select(Asset.id)
-                    .where(
-                        Asset.filename.ilike(f"%{term}%") | Asset.relative_path.ilike(f"%{term}%")
-                    )
-                    .limit(limit)
-                )
-            )
-            .scalars()
-            .all()
+        name_query = select(Asset.id).where(
+            Asset.filename.ilike(f"%{term}%") | Asset.relative_path.ilike(f"%{term}%")
         )
+        if media_type:
+            name_query = name_query.where(Asset.media_type == media_type)
+        by_name = (await db.execute(name_query.limit(limit))).scalars().all()
         seen = set(ordered)
         ordered += [aid for aid in by_name if aid not in seen]
 
@@ -177,16 +170,15 @@ async def panel_search(
     else:
         # No query: the most recent material, which is what an editor opening
         # the panel mid-shoot actually wants.
-        results = list(
-            (
-                await db.execute(
-                    select(Asset).order_by(Asset.captured_at.desc().nullslast()).limit(limit)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        recent = select(Asset).order_by(Asset.captured_at.desc().nullslast())
+        if media_type:
+            recent = recent.where(Asset.media_type == media_type)
+        results = list((await db.execute(recent.limit(limit))).scalars().all())
 
+    # Applied in SQL above rather than to the sliced list. Filtering after the
+    # limit meant asking for six images returned whatever happened to be an
+    # image among the six most recent assets of *any* kind — frequently none,
+    # which reads as "the catalogue has no photographs".
     if media_type:
         results = [a for a in results if a.media_type == media_type]
 
