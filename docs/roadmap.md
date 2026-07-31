@@ -78,7 +78,32 @@ reality rather than the original sequence.
   proxy failures and the BRAW proxies deferred until a GPU exists — worth a
   pass to confirm nothing else is hiding in there.
 - **SMB reads at 5.2 MB/s** (measured). This is the binding constraint on
-  every whole-file operation and shapes timeouts throughout.
+  every whole-file operation and shapes timeouts throughout — and now that the
+  memory ceiling is gone, it is *the* constraint on the frames backlog.
+
+### Hardware upgrade complete — 2026-07-31
+
+6 GB → **58 GB RAM** and a 2.4 TB second disk. Full detail and the measured
+numbers in [storage.md](storage.md); the parts that change decisions:
+
+- **Neither disk is faster for random reads** (326 vs 315 IOPS), so Postgres
+  stayed on `sda`. The plan had said to move it if the new drive won; it did
+  not. `/data` moved to `sdb`, root went 30 GB → 36 GB free.
+- **Both disks are ~320 IOPS at ~50 ms** — spinning-rust territory. Worth
+  knowing before blaming software for a slow query.
+- **Container limits rewritten** against real memory. `worker-vision` now sits
+  at 2.2 GB in normal use, which it could never have reached under the old
+  1200M ceiling — that limit was silently shaping behaviour, not just guarding
+  it.
+- **Postgres tuned** for the first time (shared_buffers 128MB → 2GB). pgvector
+  HNSW search measures 3.2 ms warm median at a 99.9% buffer cache hit rate.
+- Frames now drains with three samplers in parallel (worker-media running at
+  ~416% CPU). ~4,940 remaining, roughly twelve hours at the current rate, and
+  the rate is set by the share rather than by this host.
+
+**Follow-up found while verifying:** `delete_slideshow` is admin-only and
+destructive but writes no `audit_log` entry, unlike session and panel-token
+revocation. A deleted slideshow currently leaves no trace of who removed it.
 
 ### Next up
 
