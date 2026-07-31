@@ -686,6 +686,11 @@ export const api = {
       body: JSON.stringify({ name, bbox }),
     }),
   deleteBasemap: (name: string) => request<void>(`/basemaps/${name}`, { method: "DELETE" }),
+  useBasemap: (name: string) =>
+    request<{ provider: string; style_url: string; note: string }>(
+      `/basemaps/${name}/use`,
+      { method: "POST" },
+    ),
 
   slideshowThemes: () => request<SlideshowTheme[]>("/slideshows/themes"),
   proposeSlideshow: (body: Record<string, unknown>) =>

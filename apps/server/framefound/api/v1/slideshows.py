@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.sql.elements import ColumnElement
 
+from framefound.auth import service as auth_service
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.db.models import Asset, Face, Frame, Slideshow
 from framefound.media import slideshow as selector
@@ -412,7 +413,7 @@ async def stream_video(  # type: ignore[no-untyped-def]
 
 @router.delete("/{slideshow_id}", status_code=204, dependencies=[require_admin])
 async def delete_slideshow(
-    slideshow_id: uuid.UUID, _user: CurrentUser, db: DbDep, settings: SettingsDep
+    slideshow_id: uuid.UUID, user: CurrentUser, db: DbDep, settings: SettingsDep
 ) -> None:
     """Delete the row and the rendered file.
 
@@ -429,5 +430,16 @@ async def delete_slideshow(
 
     shutil.rmtree(settings.data_dir / "renders" / "work" / str(show.id), ignore_errors=True)
     await db.execute(delete(Slideshow).where(Slideshow.id == slideshow_id))
+    # Audited, like session and panel-token revocation. This is a destructive
+    # admin action, and without a row here a slideshow that vanishes leaves no
+    # record of who removed it — which turns an ordinary tidy-up into an
+    # afternoon of forensics on `pg_stat_user_tables` to establish that a
+    # delete even happened.
+    await auth_service.audit(
+        db,
+        "slideshow.deleted",
+        actor_user_id=user.id,
+        detail={"title": show.title, "slides": len(show.asset_ids or [])},
+    )
     await db.commit()
     log.info("slideshow.deleted", slideshow_id=str(slideshow_id))

@@ -3,6 +3,7 @@
 import shutil
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter
@@ -27,11 +28,23 @@ class ComponentStatus(BaseModel):
     detail: str | None = None
 
 
+class VolumeStatus(BaseModel):
+    label: str
+    path: str
+    total_gb: float
+    free_gb: float
+    used_percent: float
+    # ok | low | full | unreachable
+    status: str
+    detail: str
+
+
 class HealthReport(BaseModel):
     version: str
     database: ComponentStatus
     queue: ComponentStatus
     data_dir_free_gb: float | None
+    volumes: list[VolumeStatus]
 
 
 @router.get("/health", response_model=HealthReport)
@@ -67,8 +80,100 @@ async def system_health(_user: CurrentUser, db: DbDep, settings: SettingsDep) ->
         free_gb = None
 
     return HealthReport(
-        version=__version__, database=database, queue=queue, data_dir_free_gb=free_gb
+        version=__version__,
+        database=database,
+        queue=queue,
+        data_dir_free_gb=free_gb,
+        volumes=await _volumes(db, settings),
     )
+
+
+async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
+    """Every volume FrameFound depends on, and whether it is actually there.
+
+    Written when the install went from one disk to two. With a single volume
+    "the disk is full" was unambiguous. With derivatives on one disk, the
+    database on another and originals on a pair of network shares, the same
+    condition now surfaces as unrelated-looking failures — proxies pausing,
+    basemap extracts dying, a slideshow render failing partway — and no page
+    said which disk ran out.
+
+    A library root that has become unreachable is the more insidious case: the
+    mount is gone, the directory it was mounted on still exists and is empty,
+    and a scan reports every asset as missing. Distinguishing "the share is
+    down" from "somebody deleted the footage" is the entire point of listing
+    them here.
+    """
+    from framefound.db.models import Library
+
+    floor = settings.min_free_gb
+    targets: list[tuple[str, Path]] = [
+        ("Derivatives", Path(settings.data_dir)),
+        ("Database", Path("/var/lib/postgresql/data")),
+    ]
+    libraries = (await db.execute(select(Library))).scalars().all()
+    for library in libraries:
+        targets.append((library.name, Path(library.root_path)))
+
+    seen: set[str] = set()
+    out: list[VolumeStatus] = []
+    for label, path in targets:
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            out.append(
+                VolumeStatus(
+                    label=label,
+                    path=str(path),
+                    total_gb=0.0,
+                    free_gb=0.0,
+                    used_percent=0.0,
+                    status="unreachable",
+                    detail=(
+                        "This location cannot be read. If it is a network share, it is "
+                        "probably unmounted — the catalogue is intact and will recover "
+                        "when the share comes back."
+                    ),
+                )
+            )
+            continue
+
+        # Two libraries on one share report the same device; showing it twice
+        # would imply two problems where there is one.
+        key = f"{usage.total}:{usage.free}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        free_gb_here = usage.free / 1024**3
+        used_percent = (
+            round(100 * (usage.total - usage.free) / usage.total, 1) if usage.total else 0.0
+        )
+        if free_gb_here < floor:
+            status, detail = (
+                "full",
+                (
+                    f"Below the {floor:.0f} GB floor, so derivative generation is paused. "
+                    "The catalogue and originals are unaffected."
+                ),
+            )
+        elif free_gb_here < floor * 3:
+            status, detail = "low", "Approaching the floor at which generation pauses."
+        else:
+            status, detail = "ok", ""
+
+        out.append(
+            VolumeStatus(
+                label=label,
+                path=str(path),
+                total_gb=round(usage.total / 1024**3, 1),
+                free_gb=round(free_gb_here, 1),
+                used_percent=used_percent,
+                status=status,
+                detail=detail,
+            )
+        )
+    return out
 
 
 class FailedJob(BaseModel):

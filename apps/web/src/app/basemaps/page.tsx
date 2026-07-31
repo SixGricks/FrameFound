@@ -24,6 +24,7 @@ export default function BasemapsPage() {
   const [data, setData] = useState<BasemapList | null>(null);
   const [busy, setBusy] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [note, setNote] = useState<string>("");
   // Names we asked for that are not on disk yet. Extraction writes to a .part
   // file, so "not installed but requested" is the only signal available.
   const [extracting, setExtracting] = useState<string[]>([]);
@@ -67,6 +68,23 @@ export default function BasemapsPage() {
     }
   }
 
+  // Downloading a map and *using* one were two unconnected settings, and
+  // nothing said so: 360 MB arrived, Places looked identical, and there was no
+  // error to go looking for. Someone who downloads a map has already said what
+  // they want.
+  async function use(map: Basemap) {
+    setBusy(map.name);
+    setError("");
+    try {
+      const result = await api.useBasemap(map.name);
+      setNote(result.note);
+    } catch {
+      setError(`Could not switch Places over to ${map.label}.`);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function remove(map: Basemap) {
     setBusy(map.name);
     setError("");
@@ -98,6 +116,11 @@ export default function BasemapsPage() {
       </p>
 
       {error && <div className="empty">{error}</div>}
+      {note && (
+        <div className="card" style={{ borderColor: "var(--sage)" }}>
+          {note} <Link href="/places">Open Places</Link>
+        </div>
+      )}
 
       {!data ? (
         <div className="empty">Loading…</div>
@@ -140,13 +163,22 @@ export default function BasemapsPage() {
                     </td>
                     <td style={{ textAlign: "right" }}>
                       {map.installed ? (
-                        <button
-                          className="btn"
-                          disabled={busy === map.name}
-                          onClick={() => remove(map)}
-                        >
-                          Delete
-                        </button>
+                        <>
+                          <button
+                            className="btn btn-primary"
+                            disabled={busy === map.name}
+                            onClick={() => use(map)}
+                          >
+                            Use this map
+                          </button>{" "}
+                          <button
+                            className="btn"
+                            disabled={busy === map.name}
+                            onClick={() => remove(map)}
+                          >
+                            Delete
+                          </button>
+                        </>
                       ) : (
                         <button
                           className="btn"

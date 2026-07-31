@@ -30,7 +30,7 @@ scanner = ["watchdog>=4.0", "blake3>=0.4"]
 # numpy sits with media, not ai: location inference is core catalogue
 # behaviour and must run (and be tested) without the heavy ONNX/Whisper
 # stack installed.
-media = ["pillow>=10.4", "numpy>=1.26"]
+media = ["pillow>=10.4", "numpy>=1.26", "pmtiles>=3.4"]  # pmtiles: read basemap tiles server-side
 ai = ["faster-whisper>=1.0", "onnxruntime>=1.19"]
 dev = [
     "pytest>=8.3",
@@ -86,6 +86,7 @@ module = [
     "onnxruntime", "onnxruntime.*",
     "huggingface_hub", "tokenizers", "pgvector.*",
     "numpy", "numpy.*",
+    "pmtiles", "pmtiles.*",
 ]
 ignore_missing_imports = true
 
