@@ -105,6 +105,65 @@ numbers in [storage.md](storage.md); the parts that change decisions:
 destructive but writes no `audit_log` entry, unlike session and panel-token
 revocation. A deleted slideshow currently leaves no trace of who removed it.
 
+### 2026-07-31 — new library, and the basemap actually draws
+
+**Grick Family Storage** added: `\SixGricksServer\Grick Family Storage`
+(the same NAS as the other shares) mounted read-only at `/mnt/media/family`,
+scanned to completion at **9,392 files**. The catalogue is now **25,349
+assets**. Excludes `#recycle`, `@eaDir` and `ha_backup_home` — Synology
+plumbing and Home Assistant backups, none of it media. It ships with a path
+profile for `W:\`, so the Premiere and Lightroom panels can hand back a path
+that opens on that machine.
+
+**The retried derivatives mostly worked.** Of 42 requeued after the memory
+upgrade, **40 succeeded** — failures fell 101 → 61. The remaining 61 are the
+59 that were never retried (38 BRAW proxies waiting on a GPU, 20 genuinely
+damaged files) plus 2 real failures. The theory that most of those were the
+memory ceiling rather than bad files held up.
+
+**A downloaded basemap now draws a map.** Reported as "no map on Places
+despite a downloaded basemap", and it was not a configuration slip — the
+feature was half-built. Downloading an archive and *using* one were two
+unconnected settings with nothing linking them, and underneath that FrameFound
+served no style JSON at all, so switching the provider by hand would not have
+helped either. MapLibre cannot render a `.pmtiles` file without a style.
+
+Tiles are now unpacked server-side and served as ordinary `{z}/{x}/{y}` vector
+tiles. The alternative, the `pmtiles://` protocol, needs a second JavaScript
+library from a CDN before a single tile can be read — an odd dependency for a
+feature whose selling point is working without the internet. "Use this map" on
+the Basemaps page wires Places to it in one click.
+
+Labels are deliberately absent: they need font glyphs, which means hosting a
+few megabytes of PBFs or fetching them from someone else's server, and the
+second would undo the promise. Rivers and roads are what a photograph needs
+behind it.
+
+### Geocoding without Google — the options
+
+Asked directly, so recorded here. Reverse geocoding ("which town is this
+photograph in") has three self-hosted shapes, and the cheapest is the one that
+fits this project:
+
+1. **A local place dataset, no service at all.** GeoNames publishes
+   `cities500` (~10 MB) and richer sets up to a few hundred megabytes:
+   name, country, admin region, population, coordinates. Loaded into the
+   Postgres that already exists, a nearest-neighbour lookup answers town,
+   county and state offline, in microseconds, with no new container. This
+   covers essentially everything a photo catalogue asks of a geocoder and is
+   the **recommended** route.
+2. **The basemap already downloaded.** Protomaps v4 carries a `places` layer
+   with named settlements, so the Pennsylvania archive on disk *already*
+   contains the answer for that region. Neat, and worth considering as a
+   refinement, but reading it means querying vector tiles rather than a table.
+3. **Nominatim or Photon** — the real OSM geocoders, both self-hostable and
+   both a genuine service: Nominatim wants PostGIS and a heavy import, Photon
+   wants Elasticsearch. Either would give street-level addresses, which is
+   more than "where was this" needs, and both contradict the no-extra-service
+   posture that made PMTiles the right basemap choice.
+
+Google stays what it is today: optional, off, and one provider among several.
+
 ### Next up
 
 1. **Make a slideshow.** The render pipeline is built and measured; the
