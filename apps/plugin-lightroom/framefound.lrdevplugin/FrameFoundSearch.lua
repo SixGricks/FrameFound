@@ -86,7 +86,12 @@ LrTasks.startAsyncTask(function()
     -- a list cannot mistype it, and a mistyped profile silently yields paths
     -- that do not resolve.
     local profileItems = { { title = "No path profile", value = "" } }
-    local ok, profiles = pcall(Client.profiles)
+    -- LrTasks.pcall throughout: plain pcall is a C-call boundary and Lua 5.1
+    -- cannot yield across one, so it turns a legal LrHttp call into
+    -- "Yielding is not allowed within a C or metamethod call".
+    local ok, profiles = LrTasks.pcall(function()
+      return Client.profiles()
+    end)
     if ok then
       for _, profile in ipairs(profiles) do
         table.insert(profileItems, {
@@ -120,9 +125,11 @@ LrTasks.startAsyncTask(function()
 
     prefs.profile = props.profile
 
-    local searched, results = pcall(Client.search, props.query, props.profile, "image", 60)
+    local searched, results = LrTasks.pcall(function()
+      return Client.search(props.query, props.profile, "image", 60)
+    end)
     if not searched then
-      -- pcall swallows the LrErrors user message, so surface it plainly.
+      -- The error carries the LrErrors user message; surface it plainly.
       LrDialogs.message("FrameFound", tostring(results), "critical")
       return
     end

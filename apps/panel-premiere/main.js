@@ -77,6 +77,31 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+/*
+ * UXP refuses any host not declared in the manifest, and the message it throws
+ * ("Permission denied to the url ... Manifest entry not found") is the same
+ * whether the host is genuinely absent or was declared and then discarded.
+ *
+ * Premiere 26.3.0 rejected `http://192.168.1.193:8080` while that exact string
+ * was in the manifest, which leaves two candidates: UXP matches origins
+ * without the port, or it drops plain-HTTP entries at parse time because it
+ * requires TLS. The manifest now declares both port and port-less forms of
+ * each, so if this still fails the answer is the second one — and switching
+ * the server field to https:// will change the error to a TLS complaint
+ * rather than a permissions one. That difference is the diagnosis.
+ */
+function explainNetworkError(err, url) {
+  const text = String(err && err.message ? err.message : err);
+  if (!/Manifest entry not found|Permission denied/i.test(text)) return text;
+  return (
+    text +
+    " — UXP blocked this host. Try the same address over https:// : if the " +
+    "error changes to a certificate or TLS failure, UXP is refusing plain " +
+    "HTTP and the server needs a certificate this machine trusts. If it stays " +
+    "a permissions error, the host is not matching a manifest entry."
+  );
+}
+
 function status(message, isError = false) {
   const el = $("status");
   el.textContent = message;
@@ -268,7 +293,7 @@ $("save").addEventListener("click", async () => {
     status("Connected.");
     await search();
   } catch (err) {
-    status(err.message, true);
+    status(explainNetworkError(err, state.server), true);
   }
 });
 

@@ -155,11 +155,78 @@ The three bugs, all invisible from inside the VM:
 3. The search note now says how many results fell outside any profile, rather
    than leaving nulls to be discovered at import time.
 
+## First run in the host applications (2026-07-31)
+
+Both were loaded for real. Premiere Pro **26.3.0 (build 93)**, Lightroom
+Classic. The panel installs and the plugin installs; both then failed on their
+first network call, for unrelated reasons.
+
+### Lightroom: `pcall` around a yielding call — fixed
+
+> FrameFound — Yielding is not allowed within a C or metamethod call
+
+Raised by *every* HTTP call: Test connection, Search, and Show paths. The
+tempting diagnosis is a missing `LrTasks.startAsyncTask`, and it is wrong —
+all three were already inside one. The cause is the `pcall` *inside* the async
+task.
+
+Lightroom runs **Lua 5.1**, which cannot yield across a C-call boundary.
+`pcall` is a C function; `LrHttp.get` yields. Wrapping the one in the other
+produces that message from a context where the call is otherwise legal. The
+SDK ships `LrTasks.pcall` for exactly this, and all five call sites now use it.
+
+The lesson generalises: in Lightroom, any yielding SDK call needs
+`LrTasks.pcall`, not `pcall`. The plugin's own docs warned about
+`startAsyncTask` and missed the subtler one a layer down.
+
+### Premiere: UXP refused a declared host — unresolved
+
+> Permission denied to the url http://192.168.1.193:8080/api/v1/panel/profiles.
+> Manifest entry not found.
+
+The string `http://192.168.1.193:8080` was in
+`requiredPermissions.network.domains`, and the copy UXP had loaded was verified
+byte-identical to the repository's. So the host was declared and rejected
+anyway.
+
+Two candidates remain, and they are indistinguishable from the message:
+
+1. **UXP matches origins without the port**, so a ported entry never matches.
+2. **UXP discards plain-HTTP entries at parse time**, requiring TLS — in which
+   case no `http://` entry can ever match, whatever its form.
+
+The manifest now declares both ported and port-less forms over both schemes,
+which settles the first. If the error survives that, it is the second — and the
+test takes two minutes: **change the server field to `https://192.168.1.193`**.
+If the message becomes a certificate or TLS complaint, UXP is refusing plain
+HTTP and the server needs a certificate this machine trusts (Caddy is already
+listening on 443 with a self-signed one, which UXP will also reject). If it
+stays a permissions error, the host still is not matching.
+
+The panel now appends that instruction to the error itself rather than leaving
+the raw refusal on screen.
+
+**Import (step 6) was never reached**, so the `importFiles` signature — the
+thing most likely to have moved between Premiere versions — remains untested.
+
+### Two things worth knowing before a first load
+
+- **Premiere → Edit → Preferences → Plugins → "Enable developer mode"** must be
+  ticked, and it needs a Premiere restart. Without it the UXP Developer Tool
+  reports *"No applications are connected to the service"* and Premiere never
+  appears as a target. This is not in Adobe's quick-start and cost most of the
+  setup time.
+- The UXP Developer Tool is **not** installed with Premiere. It comes from the
+  Creative Cloud app, listed under its own name.
+
+`apps/panel-premiere/install-dev.ps1` copies the panel to the External plugins
+folder and prints those steps.
+
 ## What has not been tested
 
 The token layer, the path translation and the panel API are covered by tests
-and verified against the live deployment. **The two clients have not been run
-inside Premiere or Lightroom** — that needs the applications themselves, and a
-first run should be treated as a first run. The most likely places to need
-adjustment are the UXP `importFiles` signature, which has changed between
-Premiere versions, and Lightroom's `LrHttp` header handling on older releases.
+and verified against the live deployment. Both clients have now been loaded in
+their host applications (see above), but **neither has completed a round trip**:
+Lightroom's fix is written and syntax-checked against Lua 5.1 but not yet re-run
+in Lightroom, and Premiere never got past the network permission to reach
+`importFiles`.

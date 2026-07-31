@@ -30,7 +30,12 @@ LrTasks.startAsyncTask(function()
   local localPath = photo:getRawMetadata("path")
   local filename = LrPathUtils.leafName(localPath or "")
 
-  local ok, results = pcall(Client.search, filename, "", "image", 10)
+  -- LrTasks.pcall: plain pcall is a C-call boundary, and Lua 5.1 cannot yield
+  -- across one, which is what turns a legal LrHttp call into "Yielding is not
+  -- allowed within a C or metamethod call".
+  local ok, results = LrTasks.pcall(function()
+    return Client.search(filename, "", "image", 10)
+  end)
   if not ok then
     LrDialogs.message("FrameFound", tostring(results), "critical")
     return
@@ -56,7 +61,9 @@ LrTasks.startAsyncTask(function()
   end
 
   local hit = results[1]
-  local ok2, detail = pcall(Client.get, "/panel/assets/" .. hit.asset_id .. "/paths")
+  local ok2, detail = LrTasks.pcall(function()
+    return Client.get("/panel/assets/" .. hit.asset_id .. "/paths")
+  end)
   if ok2 then
     local serverPath = detail:match('"server_path"%s*:%s*"(.-)"')
     table.insert(lines, "FrameFound stores it at:")

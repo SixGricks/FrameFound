@@ -57,7 +57,15 @@ function provider.sectionsForTopOfDialog(factory, _properties)
             -- LrHttp blocks; running it on the dialog's task would freeze
             -- Lightroom rather than report a failure.
             LrTasks.startAsyncTask(function()
-              local ok, result = pcall(Client.profiles)
+              -- LrTasks.pcall, not pcall. Lightroom runs Lua 5.1, which cannot
+              -- yield across a C-call boundary, and plain `pcall` is a C
+              -- function. LrHttp.get yields, so wrapping it in pcall raises
+              -- "Yielding is not allowed within a C or metamethod call" — from
+              -- inside an async task, where the call is otherwise perfectly
+              -- legal. The SDK ships this yield-safe pcall for the purpose.
+              local ok, result = LrTasks.pcall(function()
+                return Client.profiles()
+              end)
               if ok then
                 LrDialogs.message(
                   "FrameFound",
