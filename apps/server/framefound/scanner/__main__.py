@@ -333,6 +333,48 @@ async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     log.info("scanner.transcripts_requeued", count=len(candidates))
 
 
+# Jobs a worker started and never finished. Distinct from a failure: nothing
+# wrote an outcome, because the process that was going to write it is gone —
+# an OOM kill, a container restart, a deploy mid-task.
+#
+# Left alone these accumulate forever and quietly corrupt the one dashboard
+# meant to show what the system is doing. This deployment reached 1,100 of
+# them: 699 index_visual_batch, 229 generate_derivatives, 165 transcribe_asset,
+# some three days old and all reported as "running".
+#
+# Generous, because the point is to catch the dead and not the slow: a proxy
+# transcode is allowed four hours and long-form transcription can approach it.
+ORPHAN_JOB_AGE = timedelta(hours=6)
+
+
+async def _reap_orphaned_jobs(db: AsyncSession) -> None:
+    """Close out job rows whose worker died without writing an outcome.
+
+    Marked `abandoned` rather than `failed`: nobody observed a failure, and
+    recording one would invent a verdict. The distinction matters when reading
+    the dashboard — a failure is a thing to investigate, an abandonment is a
+    thing that was interrupted and will be picked up again.
+
+    The work itself is not re-queued here. Every task is idempotent and the
+    other sweeps already find assets that need another pass; re-queueing from
+    two places would double the work whenever both noticed the same asset.
+    """
+    cutoff = datetime.now(UTC) - ORPHAN_JOB_AGE
+    result = await db.execute(
+        update(Job)
+        .where(Job.status == "running", Job.started_at < cutoff)
+        .values(
+            status="abandoned",
+            finished_at=datetime.now(UTC),
+            error="The worker stopped before this finished. It was not retried from here.",
+        )
+    )
+    count = getattr(result, "rowcount", 0) or 0
+    if count:
+        await db.commit()
+        log.info("scanner.jobs_reaped", abandoned=count, older_than_hours=6)
+
+
 async def _refresh_statistics(db: AsyncSession) -> None:
     """ANALYZE the tables that grow in bulk.
 
@@ -413,6 +455,7 @@ async def main() -> None:
                     await _requeue_stuck_assets(db, enqueue)
                     await _requeue_missing_transcripts(db)
                     await _cluster_new_faces(db)
+                    await _reap_orphaned_jobs(db)
                     await _refresh_statistics(db)
                     last_requeue = time.time()
         except Exception:

@@ -28,6 +28,7 @@ REQUIRED_SWEEPS = (
     "_requeue_stuck_assets",
     "_requeue_missing_transcripts",
     "_cluster_new_faces",
+    "_reap_orphaned_jobs",
     "_refresh_statistics",
 )
 

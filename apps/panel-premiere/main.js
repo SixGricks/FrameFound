@@ -1,5 +1,5 @@
 /*
- * FrameFound panel for Premiere Pro (UXP).
+ * FrameFound panel for Premiere Pro (UXP). panel build 0.3.0
  *
  * The panel's whole job: search the catalogue, and put the clips the editor
  * picked into the open project at paths their machine can actually open. That
@@ -65,14 +65,32 @@ async function api(path, options = {}) {
       ...(options.headers || {}),
     },
   });
-  if (response.status === 401) {
-    throw new Error("That token was rejected. It may have been revoked.");
-  }
-  if (response.status === 403) {
-    throw new Error("This token does not have permission for that.");
-  }
   if (!response.ok) {
-    throw new Error("The server returned " + response.status);
+    // Read the body so the server's detail string reaches the status line.
+    // The server returns JSON like {"detail": "..."} on errors, but falls back
+    // to plain text for anything that escapes FastAPI's exception handler.
+    let detail = "";
+    try {
+      const raw = await response.text();
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          detail = parsed.detail || parsed.message || raw;
+        } catch {
+          detail = raw;
+        }
+      }
+    } catch {
+      /* network read failed — detail stays empty */
+    }
+    const suffix = detail ? ` — ${detail}` : "";
+    if (response.status === 401) {
+      throw new Error(`401 Unauthorized${suffix}`);
+    }
+    if (response.status === 403) {
+      throw new Error(`403 Forbidden${suffix}`);
+    }
+    throw new Error(`HTTP ${response.status}${suffix}`);
   }
   return response.json();
 }
@@ -150,10 +168,51 @@ async function search() {
 function render() {
   const list = $("results");
   list.innerHTML = "";
+
+  if (state.results.length === 0) {
+    $("import").disabled = true;
+    $("count").textContent = "";
+    return;
+  }
+
+  // --- select-all / deselect-all bar ----------------------------------------
+  // "All" means every result in the current page, not the whole catalogue.
+  const allSelected = state.results.every((r) => state.selected.has(r.asset_id));
+  const bar = document.createElement("div");
+  bar.className = "select-bar";
+
+  const selectAllBtn = document.createElement("button");
+  selectAllBtn.textContent = allSelected ? "Deselect all" : "Select all";
+  selectAllBtn.addEventListener("click", () => {
+    if (allSelected) {
+      state.selected.clear();
+    } else {
+      for (const r of state.results) state.selected.add(r.asset_id);
+    }
+    render();
+  });
+  bar.appendChild(selectAllBtn);
+  list.appendChild(bar);
+
+  // --- result rows ----------------------------------------------------------
   for (const hit of state.results) {
     const row = document.createElement("div");
     row.className = "hit";
-    row.dataset.selected = state.selected.has(hit.asset_id);
+    const isSelected = state.selected.has(hit.asset_id);
+    row.dataset.selected = isSelected;
+
+    // Checkbox — click is handled separately from the row click so the
+    // stopPropagation keeps both handlers from toggling the same item twice.
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "hit-cb";
+    cb.checked = isSelected;
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (state.selected.has(hit.asset_id)) state.selected.delete(hit.asset_id);
+      else state.selected.add(hit.asset_id);
+      render();
+    });
 
     const img = document.createElement("img");
     // Thumbnails ride the same bearer token, so they are fetched rather than
@@ -164,9 +223,11 @@ function render() {
 
     const body = document.createElement("div");
     body.className = "grow";
+
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = hit.filename;
+
     const sub = document.createElement("div");
     sub.className = "sub";
     const bits = [hit.media_type];
@@ -179,18 +240,33 @@ function render() {
       warn.textContent = " · no local path";
       sub.appendChild(warn);
     }
+
     body.appendChild(name);
     body.appendChild(sub);
 
+    // Show the workstation-mapped path when available.
+    if (hit.path) {
+      const pathEl = document.createElement("div");
+      pathEl.className = "path";
+      pathEl.textContent = hit.path;
+      pathEl.title = hit.path; // full path on hover when truncated
+      body.appendChild(pathEl);
+    }
+
+    row.appendChild(cb);
     row.appendChild(img);
     row.appendChild(body);
+
+    // Clicking anywhere on the row (except the checkbox itself) toggles it.
     row.addEventListener("click", () => {
       if (state.selected.has(hit.asset_id)) state.selected.delete(hit.asset_id);
       else state.selected.add(hit.asset_id);
       render();
     });
+
     list.appendChild(row);
   }
+
   $("import").disabled = state.selected.size === 0;
   $("count").textContent = state.selected.size ? state.selected.size + " selected" : "";
 }
@@ -221,14 +297,18 @@ async function thumbnail(hit) {
  */
 async function importSelected() {
   const chosen = state.results.filter((r) => state.selected.has(r.asset_id));
-  const local = chosen.filter((r) => r.path);
 
-  if (local.length === 0) {
+  // Only clips with a workstation-mapped local path can be imported directly.
+  // The `path` field is null when no path profile covers the asset's library.
+  const withPath = chosen.filter((r) => r.path);
+  const withoutPath = chosen.filter((r) => !r.path);
+
+  if (withPath.length === 0) {
     status("None of those have a local path. Pick a path profile first.", true);
     return;
   }
 
-  status(`Importing ${local.length}…`);
+  status(`Importing ${withPath.length}…`);
   try {
     const ppro = require("premierepro");
     const project = await ppro.Project.getActiveProject();
@@ -237,12 +317,56 @@ async function importSelected() {
       return;
     }
     const root = await project.getRootItem();
-    const paths = local.map((r) => r.path);
+
+    // --- Proxy-first import strategy ----------------------------------------
+    //
+    // FrameFound's search results carry `proxy_url`, which is a *server-streamed*
+    // URL (e.g. /api/v1/media/{id}/proxy). Premiere's attachProxy() and
+    // setProxyEnabled() require a local filesystem path, not a URL, so the
+    // server-side proxy cannot be attached this way.
+    //
+    // The current schema has no `proxy_path` field (a workstation-mapped path
+    // to a locally accessible proxy file). Until the server exposes one —
+    // either by mounting the data volume on the edit bay and adding the field
+    // to PanelAsset, or by allowing the panel to download the proxy to a temp
+    // location — we import the originals directly.
+    //
+    // When `proxy_path` becomes available, the proxy-first flow would be:
+    //
+    //   const proxyPaths = withPath.filter(r => r.proxy_path).map(r => r.proxy_path);
+    //   const directPaths = withPath.filter(r => !r.proxy_path).map(r => r.path);
+    //
+    //   if (proxyPaths.length > 0) {
+    //     await project.importFiles(proxyPaths, true, root, false);
+    //     // Walk the project tree and attach originals as offline sources
+    //     const items = await root.getItems();
+    //     for (const hit of withPath.filter(r => r.proxy_path)) {
+    //       const item = items.find(i => {
+    //         try { return i.getMediaPath() === hit.proxy_path; } catch { return false; }
+    //       });
+    //       if (item) {
+    //         // 1 = OverrideMediaType.Video; use 2 for audio-only clips
+    //         await item.attachProxy(hit.proxy_path, 1);
+    //         await item.setProxyEnabled(true);
+    //       }
+    //     }
+    //   }
+    //   if (directPaths.length > 0) {
+    //     await project.importFiles(directPaths, true, root, false);
+    //   }
+
+    // For now: import originals directly for all clips that have a local path.
+    const paths = withPath.map((r) => r.path);
     // importFiles(paths, suppressWarnings, targetBin, asNumberedStills)
     await project.importFiles(paths, true, root, false);
-    status(`Imported ${paths.length} clip${paths.length === 1 ? "" : "s"}.`);
+
+    let msg = `Imported ${paths.length} clip${paths.length === 1 ? "" : "s"}.`;
+    if (withoutPath.length > 0) {
+      msg += ` ${withoutPath.length} skipped (no local path — check path profile).`;
+    }
+    status(msg);
   } catch (err) {
-    // Any version whose API does not cooperate lands here, and so does a
+    // Any version whose UXP API does not cooperate lands here, and so does a
     // panel running outside Premiere entirely.
     status("Direct import unavailable — writing an XML instead…");
     await exportXml(chosen);

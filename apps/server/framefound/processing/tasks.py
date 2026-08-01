@@ -71,6 +71,11 @@ _ASSET_FIELDS = (
 
 LoadedHandler = Callable[[AsyncSession, Asset, Library, Path], Awaitable[None]]
 
+# The short name callers hand to `_with_asset`, not the Celery route name.
+# Named rather than repeated so the two cannot drift into a comparison that
+# silently never matches.
+METADATA_TASK = "extract_metadata"
+
 
 def _as_epoch(when: datetime | None) -> float:
     """Seconds since the epoch, treating a naive timestamp as UTC.
@@ -125,6 +130,20 @@ async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandle
                 await db.rollback()
                 job.status = "failed"
                 job.error = str(exc)[:500]
+                # Move the asset OUT of "processing". Without this a failed
+                # extraction leaves it there permanently: the status is set on
+                # the way in and only cleared on success, so "processing" comes
+                # to mean both "in flight" and "died and nobody noticed". On
+                # this deployment that hid 230 assets behind a counter that
+                # looked like work in progress for three days, when every one
+                # of them had failed deterministically and been retried to
+                # exhaustion.
+                # `task_name` is the short form the callers pass in
+                # ("extract_metadata"), not the Celery route name.
+                if task_name == METADATA_TASK:
+                    stale = await db.get(Asset, asset_id)
+                    if stale is not None:
+                        stale.processing_status = "metadata_failed"
                 raise
             finally:
                 job.finished_at = datetime.now(UTC)

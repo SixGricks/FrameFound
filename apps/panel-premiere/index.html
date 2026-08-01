@@ -36,6 +36,14 @@
       .hit .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .hit .sub { color: #9a9a9a; font-size: 10px; }
       .offline { color: #ffb74d; }
+      .select-bar {
+        display: flex; align-items: center; gap: 8px; padding: 2px 0 4px 0;
+      }
+      .select-bar button {
+        font-size: 11px; padding: 2px 8px; background: #3a3a3a; border-color: #5a5a5a;
+      }
+      .hit-cb { flex-shrink: 0; width: 14px; height: 14px; accent-color: #2680eb; cursor: pointer; }
+      .hit .path { color: #7a7a7a; font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       input, select, button { font-family: inherit; font-size: 12px; }
       input, select {
         background: #1d1d1d; color: #e8e8e8; border: 1px solid #4a4a4a;
@@ -73,7 +81,7 @@
            the fix" are different claims. This makes the second one checkable
            at a glance instead of inferred. -->
       <div id="status" class="muted">Not connected. Open Settings below.</div>
-      <div class="muted" style="font-size: 10px">panel build 0.2.0</div>
+      <div class="muted" style="font-size: 10px">panel build 0.3.0</div>
       <div id="results"></div>
 
       <div class="row">

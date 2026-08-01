@@ -14,12 +14,14 @@
 --]]
 
 local LrApplication = import "LrApplication"
-local LrBinding = import "LrBinding"
-local LrDialogs = import "LrDialogs"
-local LrFileUtils = import "LrFileUtils"
+local LrBinding     = import "LrBinding"
+local LrColor       = import "LrColor"
+local LrDialogs     = import "LrDialogs"
+local LrFileUtils   = import "LrFileUtils"
 local LrFunctionContext = import "LrFunctionContext"
-local LrTasks = import "LrTasks"
-local LrView = import "LrView"
+local LrPathUtils   = import "LrPathUtils"
+local LrTasks       = import "LrTasks"
+local LrView        = import "LrView"
 
 local Client = require "FrameFoundClient"
 
@@ -76,10 +78,10 @@ LrTasks.startAsyncTask(function()
       return
     end
 
-    local prefs = Client.prefs()
+    local prefs   = Client.prefs()
     local factory = LrView.osFactory()
-    local props = LrBinding.makePropertyTable(context)
-    props.query = ""
+    local props   = LrBinding.makePropertyTable(context)
+    props.query   = ""
     props.profile = prefs.profile or ""
 
     -- Profiles are fetched up front: an editor picking their workstation from
@@ -109,14 +111,14 @@ LrTasks.startAsyncTask(function()
       factory:static_text({ title = "This machine's paths:" }),
       factory:popup_menu({ value = LrView.bind("profile"), items = profileItems }),
       factory:static_text({
-        title = "Photographs are added where they already are. Nothing is copied or moved.",
-        text_color = import("LrColor")(0.5, 0.5, 0.5),
+        title      = "Photographs are added where they already are. Nothing is copied or moved.",
+        text_color = LrColor(0.5, 0.5, 0.5),
       }),
     })
 
     local choice = LrDialogs.presentModalDialog({
-      title = "Search FrameFound",
-      contents = contents,
+      title      = "Search FrameFound",
+      contents   = contents,
       actionVerb = "Search",
     })
     if choice ~= "ok" or props.query == "" then
@@ -139,15 +141,145 @@ LrTasks.startAsyncTask(function()
       return
     end
 
-    local confirm = LrDialogs.confirm(
-      "FrameFound found " .. #results .. " photograph" .. (#results == 1 and "" or "s"),
-      "Add them to this Lightroom catalogue? They stay where they are — Lightroom "
-        .. "will reference them in place.",
-      "Add them",
-      "Cancel"
-    )
-    if confirm == "ok" then
-      addToCatalogue(results)
+    -- ── Preview dialog with per-row selection ────────────────────────────────
+    --
+    -- Each result gets its own boolean property ("sel_1", "sel_2", …) bound to
+    -- a checkbox. All default to true (everything selected). A "Select all"
+    -- master checkbox at the top toggles every row at once via an observer.
+    --
+    -- SDK binding note: property names must exist on the propertyTable *before*
+    -- the dialog is presented — LrView.bind() looks them up at layout time.
+    -- Dynamic keys like "sel_" .. i are fine as long as they are pre-populated.
+    -- The observer on "selectAll" cascades its new value to every "sel_N" key.
+    --
+    -- Colours on the path labels (unchanged from the plain-text version):
+    --   dim grey  → file exists and is reachable
+    --   red       → path resolved but file is absent (drive not mounted, etc.)
+    --   amber     → no path at all (profile did not match this entry)
+
+    local numResults = #results
+
+    -- Initialise selection state before building the view.
+    for i = 1, numResults do
+      props["sel_" .. i] = true
+    end
+    props.selectAll = true
+
+    -- Master toggle: cascade to every individual row.
+    props:addObserver("selectAll", function(tbl, _key, val)
+      for i = 1, numResults do
+        tbl["sel_" .. i] = val
+      end
+    end)
+
+    -- Build one row per result.
+    local previewRows = {
+      fill_horizontal = 1,
+      spacing         = 2,
+    }
+
+    for i, hit in ipairs(results) do
+      local path = hit.path or ""
+      local leaf, pathLabel, pathColor
+
+      if path ~= "" then
+        leaf      = LrPathUtils.leafName(path)
+        pathLabel = path
+        if LrFileUtils.exists(path) then
+          -- Reachable — dim path so the filename stands out.
+          pathColor = LrColor(0.35, 0.35, 0.35)
+        else
+          -- Profile resolved a path but the file is not there.
+          pathColor = LrColor(0.70, 0.18, 0.18)
+          leaf      = leaf .. "  ·  not found on this machine"
+        end
+      else
+        -- No profile match — name the file anyway so the user knows what
+        -- FrameFound found, even though it cannot be imported right now.
+        leaf      = hit.original_filename or hit.filename or "(unknown filename)"
+        pathLabel = "No local path — choose a path profile and search again."
+        pathColor = LrColor(0.55, 0.38, 0.00)
+      end
+
+      table.insert(previewRows, factory:row({
+        fill_horizontal = 1,
+        margin_bottom   = 6,
+        -- Checkbox bound to this row's individual property.
+        -- Title is a thin space so the widget has non-zero width with no label
+        -- text of its own; the color-coded static_texts carry the visible info.
+        factory:checkbox({
+          title = " ",
+          value = LrView.bind("sel_" .. i),
+        }),
+        factory:column({
+          fill_horizontal = 1,
+          factory:static_text({
+            title           = tostring(i) .. ".  " .. leaf,
+            fill_horizontal = 1,
+          }),
+          factory:static_text({
+            title          = "      " .. pathLabel,
+            text_color     = pathColor,
+            width_in_chars = 54,
+          }),
+        }),
+      }))
+    end
+
+    -- Cap the scroll area at ~360 px; each row is roughly 50 px with margin.
+    local scrollHeight = math.min(numResults * 50 + 12, 360)
+
+    local previewContents = factory:column({
+      spacing        = factory:control_spacing(),
+      bind_to_object = props,   -- all LrView.bind() calls inside inherit this
+      factory:static_text({
+        title = numResults
+          .. " photograph"
+          .. (numResults == 1 and "" or "s")
+          .. " found — check the ones you want to add:",
+      }),
+      -- Master toggle sits above the separator so it is always visible even
+      -- when the list is long enough to scroll.
+      factory:row({
+        factory:checkbox({
+          title = "Select all",
+          value = LrView.bind("selectAll"),
+        }),
+      }),
+      factory:separator({ fill_horizontal = 1 }),
+      factory:scroll_view({
+        width  = 600,
+        height = scrollHeight,
+        factory:column(previewRows),
+      }),
+      factory:separator({ fill_horizontal = 1 }),
+      factory:static_text({
+        title      = "Photographs are added by reference — nothing is copied or moved.",
+        text_color = LrColor(0.50, 0.50, 0.50),
+      }),
+    })
+
+    local preview = LrDialogs.presentModalDialog({
+      title      = "FrameFound — Review results",
+      contents   = previewContents,
+      actionVerb = "Add them",
+      cancelVerb = "Cancel",
+    })
+
+    if preview == "ok" then
+      -- Collect only the rows whose checkbox was left ticked.
+      local selected = {}
+      for i, hit in ipairs(results) do
+        if props["sel_" .. i] then
+          table.insert(selected, hit)
+        end
+      end
+
+      if #selected == 0 then
+        LrDialogs.message("FrameFound", "Nothing selected.", "info")
+      else
+        addToCatalogue(selected)
+      end
     end
   end)
 end)
