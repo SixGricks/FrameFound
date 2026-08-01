@@ -122,8 +122,30 @@ async def list_people(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[PersonOut]:
     """People, biggest first. Unnamed clusters are included by default —
-    they are the work queue, not clutter."""
-    stmt = select(Person).order_by(Person.face_count.desc()).limit(limit)
+    they are the work queue, not clutter.
+
+    Ordered by how many faces are actually *in* each group, not by
+    `Person.face_count`, which counts only confirmed ones. That distinction
+    used to make this endpoint useless for its stated purpose: every unnamed
+    cluster has a confirmed count of zero, so on this deployment 2,205 of them
+    tied at zero and the first hundred came back in whatever order the planner
+    chose. The operator was shown a hundred arbitrary clusters rather than the
+    hundred biggest — precisely inverting the triage this page exists for,
+    since naming the group that appears in eighty photographs is worth more
+    than naming one that appears in two.
+    """
+    totals = (
+        select(Face.person_id.label("pid"), func.count().label("total"))
+        .where(Face.person_id.is_not(None), Face.source != "rejected")
+        .group_by(Face.person_id)
+        .subquery()
+    )
+    stmt = (
+        select(Person)
+        .outerjoin(totals, totals.c.pid == Person.id)
+        .order_by(func.coalesce(totals.c.total, 0).desc(), Person.created_at)
+        .limit(limit)
+    )
     if named_only:
         stmt = stmt.where(Person.name != "")
     people = (await db.execute(stmt)).scalars().all()
