@@ -178,6 +178,58 @@ fits this project:
 
 Google stays what it is today: optional, off, and one provider among several.
 
+### 2026-08-01 — the "230 processing" counter, and what it hid
+
+Reported as a hung counter. Nothing was hung: all 230 assets had failed
+deterministically, been retried to exhaustion, and had nowhere to go.
+
+**872 of 876 failures were one error.** ExifTool writes the literal string
+`undef` for a tag it cannot read — even under `-n` — and `probe.py` copied
+every mapped value straight into a `FLOAT` column:
+
+    invalid input for query argument $16: 'undef' (must be real number, not str)
+
+The other four were the same mistake from the opposite side: `fmt["duration"]`
+raises `KeyError` on a container without one, and the suppressor there listed
+only `TypeError` and `ValueError`, so the entire traceback message was
+`'duration'`. Every probed field is now coerced at the boundary, and anything
+that will not coerce is **dropped rather than defaulted** — a missing aperture
+is honest, an aperture of 0.0 is a lie that gets believed.
+
+**Why it read as progress.** `processing_status` is set on the way in and only
+cleared on success, so a failure leaves it at `processing` forever and the word
+comes to mean both "in flight" and "died and nobody noticed". Failures now
+reach a terminal status the UI already had a label for. Re-queued: **230 → 1**,
+and the one is genuinely running.
+
+**1,132 orphaned job rows.** Separately, jobs sat in `running` indefinitely —
+699 `index_visual_batch`, 229 `generate_derivatives`, 165 `transcribe_asset`,
+some three days old — because the process that would have written an outcome
+was gone. A sweep now closes them as **`abandoned`** rather than `failed`:
+nobody observed a failure, and recording one would invent a verdict. Registered
+in `REQUIRED_SWEEPS`, so the wiring test fails if it is ever defined and not
+called.
+
+**The People page was showing the wrong hundred.** It ordered by
+`Person.face_count`, which counts *confirmed* faces only, so all 2,205 unnamed
+clusters tied at zero and the first hundred came back in planner order. That is
+the exact inverse of the triage the page exists for. Now ordered by real group
+size.
+
+One incidental trap worth remembering: a comment line beginning `# type:` is a
+PEP 484 type comment. mypy parsed the prose after it and reported "Invalid
+syntax" on a line that is visibly just a comment, while ruff and CPython both
+accepted the file.
+
+### Still worth attention
+
+- **1,554 online assets have no frame row**, so they are invisible to visual
+  search — about 6% of the catalogue.
+- **59 capture dates are impossible** (12 in the future, 47 before 1990). EXIF
+  garbage that will mis-order any chronological slideshow.
+- **390 videos still have no duration** after re-extraction.
+- **64 failed derivatives** remain, down from 101.
+
 ### Next up
 
 1. **Make a slideshow.** The render pipeline is built and measured; the
