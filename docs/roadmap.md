@@ -327,10 +327,32 @@ negatives: a face the search ranked highly and the operator still rejected is
 the most informative negative there is, and it is exactly the case a threshold
 learned only from cluster members never sees.
 
-Known limitation: one suggestion slot per face, so a face refused for one
-person is not offered to another. At 7,582 candidates and 120 per sweep the
-collision rate is negligible, and a second slot is not worth a migration until
-it bites.
+**Sorting by a column is only a fix if the column is populated.** It was not.
+A face that joined when its *cluster* was named had never been compared to
+anybody, so it carried a NULL score — all 295 of Stef Grick's unreviewed faces,
+which is to say the entire case this work exists to fix. `_relearn` now
+re-scores a person's faces whenever it recomputes their prototype, which is
+also the only honest moment to do it: every confirmation moves the prototype,
+so a score from three corrections ago is stale. That closed a hazard in the
+page too — confirming a prefix sends the boundary face's similarity as a bar,
+and an unscored boundary sent 0, which every pending face clears.
+
+Measured after the operator ran it: Stef Grick 95 → 510 confirmed, the 295
+queue and 120 discovered faces cleared in a handful of gestures, emptying five
+unnamed clusters. 81% of those 510 sit at 0.65+ similarity and only six below
+0.50, so the bulk path is not buying speed with accuracy.
+
+Known limitations:
+- One suggestion slot per face, so a face refused for one person is not offered
+  to another. At 7,582 candidates and 120 per sweep the collision rate is
+  negligible; a second slot is not worth a migration until it bites.
+- **Brian Ley's grouping contradicts itself** — weakest confirmed face at 0.09
+  similarity against rejections up at 0.73, which pins his threshold to the
+  0.75 ceiling. Confirmed before any ranking existed. Worth re-reviewing now
+  that the queue can be sorted; the ranking makes the bad ones obvious.
+- `faces.embedding` has no HNSW index, so a sweep sequentially scans the
+  candidate pool. At 7,582 that is sub-second and the filter would defeat the
+  index anyway. Revisit if the pool reaches six figures.
 
 Design notes worth keeping:
 - **No zero-shot start.** A tag bootstraps from its own words because CLIP
