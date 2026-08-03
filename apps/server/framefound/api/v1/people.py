@@ -777,13 +777,13 @@ async def _relearn(db: DbDep, person: Person) -> None:
     """
     rows = (
         await db.execute(
-            select(Face.embedding, Face.source).where(
+            select(Face.id, Face.embedding, Face.source).where(
                 Face.person_id == person.id, Face.embedding.is_not(None)
             )
         )
     ).all()
-    confirmed = [e for e, s in rows if s == "confirmed" and e]
-    rejected = [e for e, s in rows if s == "rejected" and e]
+    confirmed = [e for _, e, s in rows if s == "confirmed" and e]
+    rejected = [e for _, e, s in rows if s == "rejected" and e]
 
     refused = (
         (
@@ -803,6 +803,27 @@ async def _relearn(db: DbDep, person: Person) -> None:
     person.prototype = people_lib.prototype_for(confirmed)
     person.threshold = people_lib.threshold_for(person.prototype, confirmed, rejected)
     person.face_count = len(confirmed)
+
+    # Re-score this person's faces against the prototype that just changed.
+    #
+    # Without this the review queue has nothing to rank by. A face that joined
+    # when the *cluster* was named was never compared to anybody — on this
+    # deployment all 295 of Stef Grick's unreviewed faces had a NULL
+    # similarity, so ordering by it fell straight back to detection score and
+    # the queue stayed in the arbitrary order that made bulk review impossible.
+    # Learning is also the only honest moment to do it: every confirmation
+    # moves the prototype, so a score from three corrections ago is stale.
+    #
+    # Rejected faces keep their deliberate NULL — `reject_faces` clears the
+    # score to say the question is closed, not open at some low confidence.
+    if person.prototype:
+        rescored = [
+            {"id": face_id, "similarity": people_lib.similarity(person.prototype, embedding)}
+            for face_id, embedding, source in rows
+            if source != "rejected" and embedding
+        ]
+        if rescored:
+            await db.execute(update(Face), rescored)
     await db.commit()
 
 

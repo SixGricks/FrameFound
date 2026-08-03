@@ -137,10 +137,16 @@ export default function PersonPage() {
       }
       // Prefer the threshold form when the selection is a clean prefix and
       // there is more queue than the page is showing.
+      //
+      // Only when the boundary face actually has a score. An unscored face
+      // would send a bar of 0, which every pending face clears — so drawing a
+      // line under ten faces would silently confirm all of them. Falling back
+      // to ids is merely slower; getting this wrong attributes hundreds of
+      // photographs to the wrong person with no record of what was agreed.
       const run = prefixLength(pending, selected);
+      const line = run > 0 ? pending[run - 1]?.similarity : null;
       const beyond = (person?.pending_count ?? 0) > pending.length;
-      if (run > 0 && (beyond || ids.length > ID_BATCH)) {
-        const line = pending[run - 1]?.similarity ?? 0;
+      if (line != null && line > 0 && (beyond || ids.length > ID_BATCH)) {
         const { confirmed: n } = await api.confirmBulk(personId, { minSimilarity: line });
         return `${n} confirmed — everything ${Math.round(line * 100)}% and above.`;
       }

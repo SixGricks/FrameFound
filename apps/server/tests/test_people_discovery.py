@@ -281,6 +281,44 @@ async def test_confirm_above_settles_the_whole_queue_not_just_one_page(env: dict
     assert resp.json() == {"confirmed": 1}, "the rest, and nothing twice"
 
 
+async def test_learning_rescores_the_queue_so_it_can_be_ranked(env: dict) -> None:
+    """A face that joined when the cluster was named was never compared to
+    anyone, so its similarity is NULL and the review queue has nothing to sort
+    by — which is what forced the operator through it one face at a time."""
+    ids = env["ids"]
+    async with env["factory"]() as db:
+        face = await db.get(Face, uuidlib.UUID(ids["clustered"]))
+        assert face is not None
+        assert face.similarity is None, "precondition: unscored"
+
+    await _discover(env)
+    await env["client"].post(
+        f"/api/v1/people/{ids['person']}/suggestions/accept",
+        json={"face_ids": [ids["clustered"]]},
+    )
+
+    async with env["factory"]() as db:
+        scored = await db.get(Face, uuidlib.UUID(ids["clustered"]))
+        assert scored is not None
+        assert scored.similarity is not None, "learning must leave the queue rankable"
+        assert scored.similarity > 0.9, "0.12 rad from the prototype"
+
+        # And every other face of this person, not only the one just accepted.
+        rest = (
+            (
+                await db.execute(
+                    select(Face.similarity).where(
+                        Face.person_id == uuidlib.UUID(ids["person"]),
+                        Face.source == "confirmed",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert all(s is not None for s in rest), "a stale score is as bad as none"
+
+
 async def test_a_bulk_judgement_must_say_which_kind_it_is(env: dict) -> None:
     """Ids and a threshold mean different things; sending both, or neither, is
     a caller bug and confirming the wrong set is unrecoverable by hand."""
