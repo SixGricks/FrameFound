@@ -27,20 +27,11 @@ branch_labels: str | None = None
 depends_on: str | None = None
 
 
+FK_NAME = "fk_faces_suggested_person_id"
+
+
 def upgrade() -> None:
-    op.add_column(
-        "faces",
-        sa.Column(
-            "suggested_person_id",
-            sa.Uuid(),
-            # SET NULL, never CASCADE. These rows are faces, not suggestions —
-            # cascading would make "forget this person" delete every face the
-            # system had merely *wondered* about, which on this deployment is
-            # hundreds of faces belonging to other people entirely.
-            sa.ForeignKey("people.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-    )
+    op.add_column("faces", sa.Column("suggested_person_id", sa.Uuid(), nullable=True))
     # Cosine similarity to that person's prototype at the time of the sweep.
     op.add_column("faces", sa.Column("suggested_similarity", sa.Float(), nullable=True))
     # 'pending' awaits judgement; 'rejected' is remembered so the next sweep
@@ -52,9 +43,29 @@ def upgrade() -> None:
         ["suggested_person_id", "suggestion_state"],
         postgresql_where=sa.text("suggested_person_id IS NOT NULL"),
     )
+    # The foreign key is added separately, and only where it can be: SQLite has
+    # no ALTER for constraints, and the CI smoke test runs this migration
+    # against SQLite. Production is PostgreSQL, which is where the ON DELETE
+    # rule actually has to hold.
+    #
+    # SET NULL, never CASCADE. These rows are faces, not suggestions — cascading
+    # would make "forget this person" delete every face the system had merely
+    # *wondered* about, which on this deployment is hundreds of faces belonging
+    # to other people entirely.
+    if op.get_bind().dialect.name == "postgresql":
+        op.create_foreign_key(
+            FK_NAME,
+            "faces",
+            "people",
+            ["suggested_person_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.drop_constraint(FK_NAME, "faces", type_="foreignkey")
     op.drop_index("ix_faces_suggestion", table_name="faces")
     op.drop_column("faces", "suggestion_state")
     op.drop_column("faces", "suggested_similarity")
