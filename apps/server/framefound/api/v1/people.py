@@ -21,8 +21,8 @@ from typing import Any, cast
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from framefound.ai import people as people_lib
@@ -69,6 +69,8 @@ class PersonOut(BaseModel):
 
 class PersonDetail(PersonOut):
     faces: list[FaceOut]
+    # Faces a catalogue-wide sweep has offered but nobody has judged yet.
+    suggestion_count: int = 0
 
 
 class NameRequest(BaseModel):
@@ -302,13 +304,34 @@ async def get_person(
         .join(Asset, Asset.id == Face.asset_id)
         .where(Face.person_id == person_id)
         # Unreviewed first: the review queue is the reason to open this page.
-        .order_by(Face.source != "detected", Face.detection_score.desc())
+        #
+        # Within the queue, by similarity to this person — not by detection
+        # score, which is what the detector thought of the *box* ("is that a
+        # face at all"), and says nothing about whose face it is. Sorting a
+        # review queue by it scattered the confident matches among the doubtful
+        # ones at random, which is what forced the operator to open every image
+        # in turn: with no usable order, there was no prefix worth confirming
+        # in bulk. Ranked properly, one pass down the grid crosses a single
+        # boundary from yes to no.
+        .order_by(
+            Face.source != "detected",
+            func.coalesce(Face.similarity, 0.0).desc(),
+            Face.detection_score.desc(),
+        )
         .limit(limit)
     )
     if source:
         stmt = stmt.where(Face.source == source)
     rows = (await db.execute(stmt)).all()
     faces = [_face_out(face, asset) for face, asset in rows]
+
+    suggestions = (
+        await db.execute(
+            select(func.count())
+            .select_from(Face)
+            .where(Face.suggested_person_id == person_id, Face.suggestion_state == "pending")
+        )
+    ).scalar_one()
 
     return PersonDetail(
         id=person.id,
@@ -319,6 +342,7 @@ async def get_person(
         pending_count=sum(1 for f in faces if f.source == "detected"),
         cover=faces[0] if faces else None,
         faces=faces,
+        suggestion_count=suggestions,
     )
 
 
@@ -409,6 +433,274 @@ async def reject_faces(
     return {"rejected": _rows(result)}
 
 
+class BulkJudgement(BaseModel):
+    """Either an explicit list of faces, or everything at or above a bar.
+
+    The bar exists because a list cannot express what the operator means when
+    they scroll a ranked grid and say "down to here". Sending ids would make
+    the answer depend on how many faces the page happened to have loaded — 295
+    unreviewed faces were never going to fit in one request, and a bulk action
+    that silently covered only the first 200 is worse than one that refuses.
+    Sending the bar instead lets the server settle every face that qualifies,
+    loaded or not.
+    """
+
+    face_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=500)
+    min_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def exactly_one(self) -> "BulkJudgement":
+        if (self.face_ids is None) == (self.min_similarity is None):
+            raise ValueError("Give either face_ids or min_similarity, not both and not neither")
+        return self
+
+    def restrict(self, id_column: Any, similarity_column: Any) -> Any:
+        """The WHERE clause this judgement means."""
+        if self.face_ids is not None:
+            return id_column.in_(self.face_ids)
+        return func.coalesce(similarity_column, 0.0) >= self.min_similarity
+
+
+@router.post("/{person_id}/confirm-above", status_code=200)
+async def confirm_above(
+    person_id: uuid.UUID, body: BulkJudgement, _user: CurrentUser, db: DbDep
+) -> dict[str, int]:
+    """Agree with every unreviewed face at or above a similarity."""
+    person = await db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="No such person")
+    result = await db.execute(
+        update(Face)
+        .where(
+            Face.person_id == person_id,
+            Face.source == "detected",
+            body.restrict(Face.id, Face.similarity),
+        )
+        .values(source="confirmed")
+    )
+    await db.commit()
+    await _relearn(db, person)
+    confirmed = _rows(result)
+    log.info(
+        "people.confirmed_above",
+        person_id=str(person_id),
+        min_similarity=body.min_similarity,
+        confirmed=confirmed,
+    )
+    return {"confirmed": confirmed}
+
+
+class DiscoverResponse(BaseModel):
+    found: int
+    searched: int
+    threshold: float
+
+
+# One sweep offers at most this many faces. Not a limit on what could be found
+# — a bar that admits 3,000 faces is a bar set wrong, and burying the operator
+# under them would teach them to stop trusting the button. Sweeping again after
+# confirming the good ones finds the next tranche against a better prototype,
+# which is the whole point of learning as you go.
+DISCOVERY_BATCH = 120
+
+
+@router.post("/{person_id}/discover", response_model=DiscoverResponse)
+async def discover_more(
+    person_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    limit: int = Query(default=DISCOVERY_BATCH, ge=1, le=500),
+) -> DiscoverResponse:
+    """Search the whole catalogue for faces that could be this person.
+
+    Clustering only ever compared a face to the group it landed in. This
+    compares every ungrouped and un-named face to what the operator has
+    actually confirmed, so the person's own corrections are what does the
+    finding — and each accepted face sharpens the prototype the next sweep
+    uses.
+    """
+    person = await db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="No such person")
+    if not person.name:
+        raise HTTPException(
+            status_code=400,
+            detail="Name this group first — searching needs somebody to search for.",
+        )
+    if not person.prototype:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirm a few faces first; there is nothing yet to match against.",
+        )
+
+    floor = people_lib.discovery_threshold(person.threshold)
+    unnamed = select(Person.id).where(Person.name == "").scalar_subquery()
+    eligible = (
+        Face.embedding.is_not(None),
+        # Only faces that are nobody yet: loose, or in a cluster no one has
+        # named. A face already attributed to a *named* person is somebody
+        # else's answer and is not up for grabs here.
+        or_(Face.person_id.is_(None), Face.person_id.in_(unnamed)),
+        # Never re-offer what this person has already refused. A face standing
+        # as a suggestion for someone else is left alone too: there is one
+        # suggestion slot per face, and stealing it would silently drop a
+        # review the operator has not done yet.
+        or_(
+            Face.suggested_person_id.is_(None),
+            and_(
+                Face.suggested_person_id == person_id,
+                func.coalesce(Face.suggestion_state, "") != "rejected",
+            ),
+        ),
+    )
+
+    if db.get_bind().dialect.name == "postgresql":
+        # Embeddings are L2-normalised, so cosine distance is 1 - similarity.
+        distance = Face.embedding.cosine_distance(person.prototype)
+        rows = (
+            await db.execute(
+                select(Face.id, distance.label("distance"))
+                .where(*eligible, distance <= 1.0 - floor)
+                .order_by(distance)
+                .limit(limit)
+            )
+        ).all()
+        scored = [(face_id, 1.0 - float(dist)) for face_id, dist in rows]
+    else:  # tests / SQLite, which has no vector operators
+        loose = (await db.execute(select(Face.id, Face.embedding).where(*eligible))).all()
+        scored = sorted(
+            (
+                (face_id, sim)
+                for face_id, vector in loose
+                if (sim := people_lib.similarity(person.prototype, vector)) >= floor
+            ),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )[:limit]
+
+    searched = (
+        await db.execute(
+            select(func.count())
+            .select_from(Face)
+            .where(
+                Face.embedding.is_not(None),
+                or_(Face.person_id.is_(None), Face.person_id.in_(unnamed)),
+            )
+        )
+    ).scalar_one()
+
+    if scored:
+        await db.execute(
+            update(Face),
+            [
+                {
+                    "id": face_id,
+                    "suggested_person_id": person_id,
+                    "suggested_similarity": sim,
+                    "suggestion_state": "pending",
+                }
+                for face_id, sim in scored
+            ],
+        )
+        await db.commit()
+
+    log.info(
+        "people.discovered",
+        person_id=str(person_id),
+        found=len(scored),
+        searched=searched,
+        threshold=floor,
+    )
+    return DiscoverResponse(found=len(scored), searched=searched, threshold=floor)
+
+
+@router.get("/{person_id}/suggestions", response_model=list[FaceOut])
+async def list_suggestions(
+    person_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    limit: int = Query(default=200, ge=1, le=500),
+) -> list[FaceOut]:
+    """Faces a sweep thinks could be this person, best match first."""
+    rows = (
+        await db.execute(
+            select(Face, Asset)
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(Face.suggested_person_id == person_id, Face.suggestion_state == "pending")
+            .order_by(Face.suggested_similarity.desc())
+            .limit(limit)
+        )
+    ).all()
+    out = []
+    for face, asset in rows:
+        item = _face_out(face, asset)
+        item.similarity = face.suggested_similarity
+        item.source = "suggested"
+        out.append(item)
+    return out
+
+
+@router.post("/{person_id}/suggestions/accept", status_code=200)
+async def accept_suggestions(
+    person_id: uuid.UUID, body: BulkJudgement, _user: CurrentUser, db: DbDep
+) -> dict[str, int]:
+    """Take every suggestion at or above a similarity.
+
+    Accepting is the only thing that moves a face: it leaves whatever cluster
+    it was in and becomes a confirmed face of this person.
+    """
+    person = await db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="No such person")
+    result = await db.execute(
+        update(Face)
+        .where(
+            Face.suggested_person_id == person_id,
+            Face.suggestion_state == "pending",
+            body.restrict(Face.id, Face.suggested_similarity),
+        )
+        .values(
+            person_id=person_id,
+            source="confirmed",
+            similarity=Face.suggested_similarity,
+            suggested_person_id=None,
+            suggested_similarity=None,
+            suggestion_state=None,
+        )
+    )
+    await db.commit()
+    await _relearn(db, person)
+    return {"accepted": _rows(result)}
+
+
+@router.post("/{person_id}/suggestions/reject", status_code=200)
+async def reject_suggestions(
+    person_id: uuid.UUID, body: JudgementRequest, _user: CurrentUser, db: DbDep
+) -> dict[str, int]:
+    """Say these suggested faces are not this person.
+
+    The face stays exactly where it was — in its own cluster, or in none. Only
+    the refusal is recorded, so the face remains available to be grouped and
+    named as whoever it actually is, and no sweep offers it here again.
+    """
+    person = await db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="No such person")
+    result = await db.execute(
+        update(Face)
+        .where(
+            Face.id.in_(body.face_ids),
+            Face.suggested_person_id == person_id,
+            Face.suggestion_state == "pending",
+        )
+        .values(suggestion_state="rejected")
+    )
+    await db.commit()
+    # Refusals sharpen the threshold as much as agreements do.
+    await _relearn(db, person)
+    return {"rejected": _rows(result)}
+
+
 @router.post("/{person_id}/merge/{other_id}", status_code=200, dependencies=[require_admin])
 async def merge_people(
     person_id: uuid.UUID, other_id: uuid.UUID, _user: CurrentUser, db: DbDep
@@ -428,6 +720,22 @@ async def merge_people(
 
     moved = await db.execute(
         update(Face).where(Face.person_id == other_id).values(person_id=person_id)
+    )
+    # Pending and refused suggestions follow the same reasoning as rejections:
+    # they are judgements about a face, and the person they were about is now
+    # this person. Leaving them behind would let the FK null them out and hand
+    # every dismissed near-miss straight back on the next sweep.
+    await db.execute(
+        update(Face)
+        .where(Face.suggested_person_id == other_id, Face.person_id.is_distinct_from(person_id))
+        .values(suggested_person_id=person_id)
+    )
+    # Except where the merge already answered the question: a face that is now
+    # in this person's cluster does not need offering to them.
+    await db.execute(
+        update(Face)
+        .where(Face.suggested_person_id.in_((other_id, person_id)), Face.person_id == person_id)
+        .values(suggested_person_id=None, suggested_similarity=None, suggestion_state=None)
     )
     await db.delete(source)
     await db.commit()
@@ -457,7 +765,16 @@ async def forget_person(person_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> 
 
 
 async def _relearn(db: DbDep, person: Person) -> None:
-    """Recompute a person's prototype and threshold from their judgements."""
+    """Recompute a person's prototype and threshold from their judgements.
+
+    Every judgement, including the ones made on faces that never joined this
+    person. A refused suggestion is the most informative negative there is —
+    it is a face the catalogue-wide search ranked *highly* and the operator
+    still said no to, which is exactly the case a threshold learned only from
+    cluster members never sees. Ignoring those would let each sweep re-propose
+    the same kind of near-miss for ever, so the tool would feel like it was not
+    listening.
+    """
     rows = (
         await db.execute(
             select(Face.embedding, Face.source).where(
@@ -467,6 +784,21 @@ async def _relearn(db: DbDep, person: Person) -> None:
     ).all()
     confirmed = [e for e, s in rows if s == "confirmed" and e]
     rejected = [e for e, s in rows if s == "rejected" and e]
+
+    refused = (
+        (
+            await db.execute(
+                select(Face.embedding).where(
+                    Face.suggested_person_id == person.id,
+                    Face.suggestion_state == "rejected",
+                    Face.embedding.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    rejected.extend(e for e in refused if e)
 
     person.prototype = people_lib.prototype_for(confirmed)
     person.threshold = people_lib.threshold_for(person.prototype, confirmed, rejected)

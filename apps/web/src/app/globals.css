@@ -870,6 +870,36 @@ h2 {
   background: var(--amber-soft);
 }
 
+/* "Down to here" turns a ranked grid into a single decision: the operator
+   scrolls to where the faces stop being that person and draws the line. It
+   stays hidden until the tile is hovered or its own button has keyboard
+   focus — visible on every tile at once, forty copies of the same control
+   would read as clutter rather than as an offer. */
+.facepick-wrap {
+  position: relative;
+  display: grid;
+}
+.facepick-downto {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  padding: 2px 0;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+  color: var(--paper);
+  font-family: var(--font-ui);
+  font-size: 0.62rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.facepick-wrap:hover .facepick-downto,
+.facepick-downto:focus-visible {
+  opacity: 1;
+}
+
 /* ---------- nav menu ---------- */
 
 .menu {

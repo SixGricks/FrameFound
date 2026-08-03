@@ -546,6 +546,20 @@ class Face(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Embedding(), default=None)
     source: Mapped[str] = mapped_column(String(20), default="detected", index=True)
     similarity: Mapped[float | None] = mapped_column(Float, default=None)
+    # A person this face might also be, found by searching the whole catalogue
+    # rather than by clustering. Kept separate from `person_id` on purpose: a
+    # suggestion must not disturb the grouping a face already belongs to, or
+    # rejecting one would strand it away from whoever it really is.
+    suggested_person_id: Mapped[uuid.UUID | None] = mapped_column(
+        # SET NULL, never CASCADE: a suggestion is an opinion about a face, and
+        # deleting the opinion must not delete the face.
+        ForeignKey("people.id", ondelete="SET NULL"),
+        default=None,
+    )
+    suggested_similarity: Mapped[float | None] = mapped_column(Float, default=None)
+    # 'pending' | 'rejected'. Rejections are kept so the next sweep does not
+    # offer the same face for the same person again.
+    suggestion_state: Mapped[str | None] = mapped_column(String(16), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

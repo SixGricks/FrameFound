@@ -411,6 +411,22 @@ export interface PersonSummary {
 
 export interface PersonDetail extends PersonSummary {
   faces: FaceRef[];
+  suggestion_count: number;
+}
+
+export interface DiscoverResult {
+  found: number;
+  searched: number;
+  threshold: number;
+}
+
+/** A bulk judgement: these exact faces, or every face this good and better. */
+export type BulkPick = { faceIds: string[] } | { minSimilarity: number };
+
+function bulkBody(pick: BulkPick) {
+  return "faceIds" in pick
+    ? { face_ids: pick.faceIds }
+    : { min_similarity: pick.minSimilarity };
 }
 
 export interface FaceSettings {
@@ -638,7 +654,8 @@ export const api = {
     request<{ status: string }>(`/tags/${tagId}/relearn`, { method: "POST" }),
 
   people: () => request<PersonSummary[]>("/people"),
-  person: (id: string) => request<PersonDetail>(`/people/${id}`),
+  person: (id: string, limit = 600) =>
+    request<PersonDetail>(`/people/${id}?limit=${limit}`),
   namePerson: (id: string, name: string) =>
     request<PersonSummary>(`/people/${id}/name`, {
       method: "PUT",
@@ -653,6 +670,30 @@ export const api = {
     }),
   rejectFaces: (id: string, faceIds: string[]) =>
     request<{ rejected: number }>(`/people/${id}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ face_ids: faceIds }),
+    }),
+  // Either an explicit list, or everything at or above a similarity. The
+  // second form is what lets one gesture settle more faces than the page has
+  // actually loaded.
+  confirmBulk: (id: string, pick: BulkPick) =>
+    request<{ confirmed: number }>(`/people/${id}/confirm-above`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bulkBody(pick)),
+    }),
+  discoverMore: (id: string) =>
+    request<DiscoverResult>(`/people/${id}/discover`, { method: "POST" }),
+  suggestions: (id: string) => request<FaceRef[]>(`/people/${id}/suggestions`),
+  acceptSuggestions: (id: string, pick: BulkPick) =>
+    request<{ accepted: number }>(`/people/${id}/suggestions/accept`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bulkBody(pick)),
+    }),
+  rejectSuggestions: (id: string, faceIds: string[]) =>
+    request<{ rejected: number }>(`/people/${id}/suggestions/reject`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ face_ids: faceIds }),

@@ -29,6 +29,22 @@ MAX_THRESHOLD = 0.75
 # A cluster this small is usually one bad detection. Kept, but not offered for
 # naming until it has corroboration.
 MIN_CLUSTER_SIZE = 2
+# Searching the catalogue for more of a known person casts slightly wider than
+# the bar for believing an unreviewed guess. The two answer different
+# questions: the threshold decides what may be shown as probably-them, while a
+# search only decides what is worth an operator's glance, and every result is
+# ranked and reviewed before it counts. Too tight and the feature finds nothing
+# new — the near-misses are exactly the faces clustering already failed on.
+DISCOVERY_MARGIN = 0.05
+# However weak a person's own threshold is, never trawl below this. A person
+# with two confirmed faces has a threshold near the default, and widening that
+# turns a search into a random sample of the catalogue.
+DISCOVERY_FLOOR = 0.34
+
+
+def discovery_threshold(threshold: float | None) -> float:
+    """The bar for *offering* a face, as opposed to believing it."""
+    return max(DISCOVERY_FLOOR, (threshold or DEFAULT_THRESHOLD) - DISCOVERY_MARGIN)
 
 
 @dataclass

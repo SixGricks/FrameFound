@@ -289,8 +289,48 @@ so far: the `people`/`faces` model, SCRFD + ArcFace via ONNX (the same AVX-free
 path as CLIP, so it runs on the Westmere Xeons), greedy clustering, and
 per-person thresholds derived from corrections. 16 tests on the grouping logic.
 
-API landed (naming, confirm, reject, merge, forget — 13 tests). Still to
-come: the People page and the review UI.
+API landed (naming, confirm, reject, merge, forget — 13 tests), and the People
+page with it.
+
+**Review at the scale the catalogue actually produces.** The first review UI
+asked for one click per face, which is fine for a dozen and absurd for what
+production held: Stef Grick alone had 295 unreviewed faces against 95
+confirmed. Two things were wrong underneath the clicking.
+
+The queue was *sorted by detection score* — the detector's confidence that the
+box contains a face at all, which says nothing about whose face it is. A
+ranked-looking grid in effectively random identity order has no boundary to
+draw a line at, so there was no prefix worth confirming in bulk and the
+operator was forced through it one at a time. Sorting by similarity to the
+person gives the grid a single yes/no boundary, and "down to here" turns the
+whole queue into one gesture. Confirmation sends the *similarity* rather than
+the face ids, so it settles the faces below the fold too — the page holds 600,
+the queue may hold more, and a bulk action that silently covered only what was
+loaded would be worse than one that refused.
+
+The second gap was that nothing ever went *looking*. Clustering compares a face
+only to the group it landed in, so its own near-misses sit in other groups
+forever and no amount of confirming reaches them. `POST /people/{id}/discover`
+scans every face that is nobody yet — 855 loose plus 6,727 across 2,235 unnamed
+clusters — against the person's prototype, which `_relearn` has already
+sharpened from each confirmation. Each sweep is better than the last, which is
+the learning loop the operator asked for.
+
+**A suggestion deliberately does not move a face.** Reaching across the whole
+catalogue means offering faces out of clusters that belong to nobody yet; if
+rejecting one left it attached to the person it is *not*, careful review would
+destroy data. So the suggestion rides alongside on `faces.suggested_person_id`
+and only *accepting* moves anything — and that FK is `SET NULL`, because
+`CASCADE` would make "forget this person" delete every face the system had
+merely wondered about. Refusals are kept and fed back to `_relearn` as
+negatives: a face the search ranked highly and the operator still rejected is
+the most informative negative there is, and it is exactly the case a threshold
+learned only from cluster members never sees.
+
+Known limitation: one suggestion slot per face, so a face refused for one
+person is not offered to another. At 7,582 candidates and 120 per sweep the
+collision rate is negligible, and a second slot is not worth a migration until
+it bites.
 
 Design notes worth keeping:
 - **No zero-shot start.** A tag bootstraps from its own words because CLIP
