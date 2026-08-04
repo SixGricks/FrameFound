@@ -221,14 +221,47 @@ PEP 484 type comment. mypy parsed the prose after it and reported "Invalid
 syntax" on a line that is visibly just a comment, while ruff and CPython both
 accepted the file.
 
+### 2026-08-04 — system review
+
+**The build cache filled the root disk to 80%.** 70 GB of Docker build cache
+from repeated image builds — the 2.4 TB data disk sat at 1% while root
+quietly climbed. Pruned keeping 8 GB of recent layers; root is back to 25%
+(73 GB free). The real fix is a scheduled prune or a disk gauge on the
+dashboard; silent growth to full is currently the default.
+
+**The People loop is being used, hard.** In three days of operator time:
+Stef Grick 95 → 835 confirmed, DJ Grick 0 → 498, five named people total.
+The remaining unnamed work is 2,230 clusters, but the leverage is uneven —
+the 27 clusters of 20+ faces hold 958 faces, while 1,127 tiny clusters hold
+2,661. The People page ordering already surfaces the big ones first.
+
+**"1,554 assets invisible to visual search" was mostly by design.** It
+decomposes: 1,080 audio files (frames are not a thing audio has), 407 BRAW
+(decode waits on the GPU), and only **~67 real gaps** — 33 jpg, 30 mp4, a few
+strays — worth requeuing. The headline number was technically true and
+practically misleading.
+
+**All 62 failed derivatives are now attributed**: 38 BRAW proxies gated on
+the GPU, 22 damaged-file posters/waveforms, 1 no-frame video, 1 BRAW decode
+failure. Nothing else was hiding in there; the "worth a pass" item is closed.
+
+**Transcription coverage is 116 of 3,052 videos** — plausibly correct (b-roll
+has no speech to find, and VAD skips it) but unverifiable, because a
+correctly-skipped video and a never-attempted one look identical. Worth
+recording the skip verdict per asset.
+
+Future work now lives in **[future-features.md](future-features.md)** — a
+reviewed plan grounded in these numbers, split Now / Next / Later.
+
 ### Still worth attention
 
-- **1,554 online assets have no frame row**, so they are invisible to visual
-  search — about 6% of the catalogue.
 - **59 capture dates are impossible** (12 in the future, 47 before 1990). EXIF
-  garbage that will mis-order any chronological slideshow.
+  garbage that will mis-order any chronological slideshow. A repair queue is
+  sketched in future-features.md.
 - **390 videos still have no duration** after re-extraction.
-- **64 failed derivatives** remain, down from 101.
+- **~67 assets genuinely missing frame rows** (see above) — requeue them.
+- **DJ Grick's threshold is 0.325**, near the 0.30 floor: weakest confirmed
+  0.345, zero rejections. His first recorded rejection will tighten it.
 
 ### Next up
 
