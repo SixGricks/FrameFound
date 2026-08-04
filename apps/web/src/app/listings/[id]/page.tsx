@@ -329,14 +329,26 @@ export default function ListingPage() {
                 </option>
               ))}
             </select>
-            <button
-              className="btn"
-              style={{ fontSize: "0.7rem", padding: "2px 8px" }}
-              disabled={busy}
-              onClick={() => act(() => api.removeListingItem(listingId, item.asset_id))}
-            >
-              Remove
-            </button>
+            <div style={{ display: "flex", gap: 4 }}>
+              {item.media_type === "image" && (
+                <Link
+                  className="btn"
+                  style={{ fontSize: "0.7rem", padding: "2px 8px" }}
+                  href={`/edit/${item.asset_id}?listing=${listingId}`}
+                  title={item.edited ? "Edited — click to adjust" : "Colour-correct this photo"}
+                >
+                  {item.edited ? "Edited ✦" : "Edit"}
+                </Link>
+              )}
+              <button
+                className="btn"
+                style={{ fontSize: "0.7rem", padding: "2px 8px" }}
+                disabled={busy}
+                onClick={() => act(() => api.removeListingItem(listingId, item.asset_id))}
+              >
+                Remove
+              </button>
+            </div>
           </div>
         ))}
       </div>

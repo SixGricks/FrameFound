@@ -652,3 +652,25 @@ class ListingItem(Base):
     room_source: Mapped[str] = mapped_column(String(16), default="suggested")
     room_score: Mapped[float | None] = mapped_column(Float, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AssetEdit(Base):
+    """One version of a photograph's develop recipe.
+
+    Append-only: saving writes version N+1, undo reads version N-1, and
+    reverting to the original deletes the rows. Pixels are never stored here
+    and the original is never written - the recipe is applied at render time,
+    which is what lets an edit be changed a month later without loss.
+    """
+
+    __tablename__ = "asset_edits"
+    __table_args__ = (UniqueConstraint("asset_id", "version", name="uq_asset_edits_asset_version"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(default=1)
+    # Slider values - see media/develop.py for the schema and the maths.
+    recipe: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

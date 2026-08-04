@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from framefound.ai import rooms as rooms_lib
 from framefound.ai.embeddings import EmbeddingUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, AuditLog, Frame, Listing, ListingItem
+from framefound.db.models import Asset, AssetEdit, AuditLog, Frame, Listing, ListingItem
 
 log = structlog.get_logger()
 
@@ -46,6 +46,8 @@ class ItemOut(BaseModel):
     room_label: str
     room_source: str
     room_score: float | None
+    # A develop recipe exists for this photograph; the export will apply it.
+    edited: bool = False
 
 
 class ListingOut(BaseModel):
@@ -86,7 +88,7 @@ class ExportRequest(BaseModel):
     quality: int = Field(default=85, ge=60, le=95)
 
 
-def _item_out(item: ListingItem, asset: Asset) -> ItemOut:
+def _item_out(item: ListingItem, asset: Asset, edited: bool = False) -> ItemOut:
     return ItemOut(
         asset_id=item.asset_id,
         filename=asset.filename,
@@ -96,6 +98,7 @@ def _item_out(item: ListingItem, asset: Asset) -> ItemOut:
         room_label=rooms_lib.ROOM_LABELS.get(item.room, ""),
         room_source=item.room_source,
         room_score=item.room_score,
+        edited=edited,
     )
 
 
@@ -174,7 +177,17 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
             .order_by(ListingItem.position, ListingItem.created_at)
         )
     ).all()
-    items = [_item_out(item, asset) for item, asset in rows]
+    edited_ids = {
+        row
+        for row in (
+            await db.execute(
+                select(AssetEdit.asset_id.distinct()).where(
+                    AssetEdit.asset_id.in_([item.asset_id for item, _ in rows])
+                )
+            )
+        ).scalars()
+    }
+    items = [_item_out(item, asset, item.asset_id in edited_ids) for item, asset in rows]
     return ListingDetail(
         id=listing.id,
         name=listing.name,

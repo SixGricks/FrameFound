@@ -271,6 +271,16 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**Phase 2 shipped the same day: the develop editor.** Non-destructive
+colour correction as append-only recipe versions (migration 0017) — eight
+sliders plus bounded auto-levels, rendered by one Pillow/numpy engine that
+serves both the interactive preview and the export, so what the operator
+saw is what the zip contains. "Apply to whole listing" writes one look
+across a shoot in a gesture. Originals are never written; revert deletes
+recipes, which were never pixels. In passing this surfaced a real bug:
+`embed_text` raised a raw `ModuleNotFoundError` on servers without the ai
+extra, so creating a listing would have 500'd instead of degrading.
+
 ### Still worth attention
 
 - **59 capture dates are impossible** (12 in the future, 47 before 1990). EXIF

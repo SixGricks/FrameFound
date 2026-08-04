@@ -1241,9 +1241,10 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
 
     from PIL import Image, ImageCms, ImageOps
 
-    from framefound.db.models import Listing, ListingItem
+    from framefound.db.models import AssetEdit, Listing, ListingItem
+    from framefound.media import develop as develop_lib
 
-    def to_jpeg(path: Path) -> bytes:
+    def to_jpeg(path: Path, recipe: dict[str, Any] | None) -> bytes:
         with Image.open(path) as img:
             # Camera orientation lives in EXIF; a sideways kitchen is not a
             # feature. Then flatten any embedded profile to sRGB — MLS portals
@@ -1268,6 +1269,12 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                 image = image.resize(
                     (round(width * scale), round(height * scale)), Image.Resampling.LANCZOS
                 )
+            # The develop recipe, applied after the resize because every
+            # adjustment is per-pixel and scale-free — same maths, quarter
+            # the pixels. This is the moment "what you saw in the editor"
+            # becomes "what the zip contains".
+            if recipe:
+                image = develop_lib.apply_recipe(image, recipe)
             out = io.BytesIO()
             image.save(out, "JPEG", quality=quality, optimize=True)
             return out.getvalue()
@@ -1302,6 +1309,18 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                     )
                 ).all()
 
+                # Latest develop recipe per asset, one query for the set.
+                edit_rows = (
+                    await db.execute(
+                        select(AssetEdit)
+                        .where(AssetEdit.asset_id.in_([a.id for _, a, _l in rows]))
+                        .order_by(AssetEdit.asset_id, AssetEdit.version)
+                    )
+                ).scalars()
+                recipes: dict[uuid.UUID, dict[str, Any]] = {}
+                for edit in edit_rows:  # ascending versions: last write wins
+                    recipes[edit.asset_id] = develop_lib.clean_recipe(edit.recipe)
+
                 out_dir = settings.data_dir / "exports" / "listings"
                 out_dir.mkdir(parents=True, exist_ok=True)
                 zip_path = out_dir / f"{listing.id}.zip"
@@ -1313,7 +1332,7 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                         for item, asset, library in rows:
                             try:
                                 path = safe_join(Path(library.root_path), asset.relative_path)
-                                data = await asyncio.to_thread(to_jpeg, path)
+                                data = await asyncio.to_thread(to_jpeg, path, recipes.get(asset.id))
                             except Exception:
                                 skipped.append(asset.filename)
                                 log.warning(

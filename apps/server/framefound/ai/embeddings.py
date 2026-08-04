@@ -97,8 +97,18 @@ class ClipOnnxProvider:
 
     def _tok(self) -> Any:
         if self._tokenizer is None:
-            from huggingface_hub import hf_hub_download
-            from tokenizers import Tokenizer
+            # Same conversion _session performs. Without it, embed_text on a
+            # server missing the ai extra raised a raw ModuleNotFoundError
+            # that no caller's EmbeddingUnavailable handling could catch —
+            # found when creating a listing 500'd instead of degrading to
+            # unlabelled items.
+            try:
+                from huggingface_hub import hf_hub_download
+                from tokenizers import Tokenizer
+            except ImportError as err:
+                raise EmbeddingUnavailable(
+                    "Visual search support is not installed on this server"
+                ) from err
 
             self._tokenizer = Tokenizer.from_file(
                 hf_hub_download(MODEL_REPO, "tokenizer.json", cache_dir=self._cache_dir)

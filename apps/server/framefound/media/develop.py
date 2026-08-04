@@ -1,0 +1,135 @@
+"""The develop engine: apply a slider recipe to a photograph.
+
+Everything here is per-pixel float32 arithmetic on a numpy array — no model,
+no network, and deliberately no dependency beyond the Pillow and numpy the
+media extra already carries. The operations are the basic vocabulary every
+photo tool shares (exposure, contrast, white balance, shadow/highlight,
+vibrance), implemented as monotonic, clipped curves so no slider position can
+produce garbage, only a bad-looking photograph.
+
+One engine serves both the interactive preview and the export, which is the
+property that matters: what the operator saw is what the zip contains. The
+adjustments are per-pixel and scale-free, so applying them after downscaling
+(cheap) renders the same image as before (expensive), with the one honest
+exception of auto-levels' percentiles, which differ immeasurably.
+"""
+
+from typing import Any
+
+from PIL import Image
+
+# Rec. 709 luma weights — the standard answer to "how bright is this pixel".
+_LUMA = (0.2126, 0.7152, 0.0722)
+
+# Slider ranges, matched by the API's validation and the UI's slider bounds.
+# exposure is in EV stops; everything else is -1..1 (the UI shows -100..100).
+RECIPE_FIELDS = {
+    "exposure": (-2.0, 2.0),
+    "contrast": (-1.0, 1.0),
+    "temperature": (-1.0, 1.0),
+    "tint": (-1.0, 1.0),
+    "shadows": (-1.0, 1.0),
+    "highlights": (-1.0, 1.0),
+    "vibrance": (-1.0, 1.0),
+    "saturation": (-1.0, 1.0),
+}
+
+
+def clean_recipe(raw: dict[str, Any]) -> dict[str, Any]:
+    """Clamp every known field into range and drop everything else.
+
+    Recipes come back out of a JSON column and go into arithmetic; this is
+    the boundary where "whatever was stored" becomes "numbers the maths can
+    trust", the same lesson the probe module learned from ExifTool.
+    """
+    out: dict[str, Any] = {}
+    for key, (low, high) in RECIPE_FIELDS.items():
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        number = max(low, min(high, float(value)))
+        if number != 0.0:
+            out[key] = number
+    if raw.get("auto") is True:
+        out["auto"] = True
+    return out
+
+
+def is_identity(recipe: dict[str, Any]) -> bool:
+    return not clean_recipe(recipe)
+
+
+def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
+    """Render a recipe onto an image. The input image is not modified."""
+    recipe = clean_recipe(recipe)
+    if not recipe:
+        return image
+
+    import numpy as np
+
+    arr = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+
+    # Auto first: it establishes a sane base the manual sliders then shape,
+    # so toggling it does not invert the meaning of the other adjustments.
+    if recipe.get("auto"):
+        arr = _auto_levels(arr, np)
+
+    if ev := recipe.get("exposure"):
+        arr *= 2.0**ev
+
+    # White balance as channel gains. Positive temperature warms (red up,
+    # blue down); positive tint shifts magenta (green down), matching the
+    # convention every photo tool uses.
+    if temp := recipe.get("temperature"):
+        arr[..., 0] *= 1.0 + 0.25 * temp
+        arr[..., 2] *= 1.0 - 0.25 * temp
+    if tint := recipe.get("tint"):
+        arr[..., 1] *= 1.0 - 0.20 * tint
+
+    if contrast := recipe.get("contrast"):
+        arr = (arr - 0.5) * (1.0 + contrast) + 0.5
+
+    # Shadow/highlight as luminance-masked gains: the mask keeps a shadow
+    # lift from bleaching a sky and a highlight recovery from crushing a
+    # dark hallway. Multiplicative, so the curve stays monotonic.
+    shadows, highlights = recipe.get("shadows"), recipe.get("highlights")
+    if shadows or highlights:
+        luma = arr @ np.asarray(_LUMA, dtype=np.float32)
+        luma = np.clip(luma, 0.0, 1.0)
+        if shadows:
+            mask = (1.0 - luma) ** 2
+            arr *= 1.0 + (0.7 * shadows) * mask[..., None]
+        if highlights:
+            mask = luma**2
+            arr *= 1.0 + (0.5 * highlights) * mask[..., None]
+
+    vibrance, saturation = recipe.get("vibrance"), recipe.get("saturation")
+    if vibrance or saturation:
+        luma = (arr @ np.asarray(_LUMA, dtype=np.float32))[..., None]
+        if saturation:
+            arr = luma + (arr - luma) * (1.0 + saturation)
+        if vibrance:
+            # Chroma-weighted: muted pixels move most, already-vivid ones
+            # barely at all — which is what keeps a vibrance push from
+            # turning a red front door radioactive.
+            chroma = arr.max(axis=-1) - arr.min(axis=-1)
+            factor = 1.0 + vibrance * np.clip(1.0 - 2.0 * chroma, 0.0, 1.0)
+            arr = luma + (arr - luma) * factor[..., None]
+
+    arr = np.clip(arr, 0.0, 1.0)
+    return Image.fromarray((arr * 255.0 + 0.5).astype("uint8"), "RGB")
+
+
+def _auto_levels(arr: Any, np: Any) -> Any:
+    """Gentle per-channel stretch: put the 0.5th percentile near black and
+    the 99.5th near white, per channel, which both opens up a flat exposure
+    and pulls out most colour casts. Gains are bounded so a photograph that
+    is genuinely all one tone (a wall, a sky) is nudged, not shredded."""
+    out = arr.copy()
+    for channel in range(3):
+        low, high = np.percentile(out[..., channel], (0.5, 99.5))
+        low = min(float(low), 0.25)
+        high = max(float(high), 0.75)
+        if high - low > 1e-3:
+            out[..., channel] = (out[..., channel] - low) / (high - low)
+    return out

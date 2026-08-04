@@ -493,6 +493,8 @@ export interface ListingItem {
   room_label: string;
   room_source: "suggested" | "confirmed";
   room_score: number | null;
+  /** A develop recipe exists; the export will apply it. */
+  edited: boolean;
 }
 
 export interface ListingSummary {
@@ -507,6 +509,38 @@ export interface ListingSummary {
 export interface ListingDetail extends ListingSummary {
   items: ListingItem[];
   classified: boolean;
+}
+
+/** Slider values for the develop engine. 0 everywhere = the original. */
+export interface DevelopRecipe {
+  exposure: number;
+  contrast: number;
+  temperature: number;
+  tint: number;
+  shadows: number;
+  highlights: number;
+  vibrance: number;
+  saturation: number;
+  auto: boolean;
+}
+
+export const EMPTY_RECIPE: DevelopRecipe = {
+  exposure: 0,
+  contrast: 0,
+  temperature: 0,
+  tint: 0,
+  shadows: 0,
+  highlights: 0,
+  vibrance: 0,
+  saturation: 0,
+  auto: false,
+};
+
+export interface EditState {
+  asset_id: string;
+  recipe: Partial<DevelopRecipe>;
+  version: number;
+  edited: boolean;
 }
 
 export interface ProcessingReport {
@@ -853,6 +887,22 @@ export const api = {
       body: JSON.stringify({ max_edge: maxEdge, quality }),
     }),
   deleteListing: (id: string) => request<void>(`/listings/${id}`, { method: "DELETE" }),
+
+  developState: (assetId: string) => request<EditState>(`/develop/${assetId}`),
+  saveDevelop: (assetId: string, recipe: DevelopRecipe) =>
+    request<EditState>(`/develop/${assetId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(recipe),
+    }),
+  clearDevelop: (assetId: string) =>
+    request<EditState>(`/develop/${assetId}`, { method: "DELETE" }),
+  applyDevelopToListing: (listingId: string, recipe: DevelopRecipe) =>
+    request<{ applied: number }>(`/develop/listing/${listingId}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(recipe),
+    }),
 
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),

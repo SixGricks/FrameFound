@@ -112,10 +112,37 @@ queued batch step and goes near-live when the GPU arrives.**
   search that reuses catalogue search (visual + filename hits).
 - 9 tests; the export tests build real JPEGs and read the zip back.
 
-### Phase 2 — Non-destructive color editor (medium)
-Edit-recipe table + preview render endpoint + slider panel + auto button.
-**Batch apply** a recipe across a selection — the Imagen.ai move that makes
-30 photos of one property consistent in one gesture. Export honors recipes.
+### Phase 2 — Non-destructive color editor ✅ SHIPPED 2026-08-04
+- **`asset_edits`** (migration 0017): append-only recipe versions per
+  photograph. Undo is the previous row, revert deletes rows; no pixels are
+  stored and no original is written — the media mounts are read-only, so
+  this was the only possible design as well as the right one.
+- **Engine** (`media/develop.py`): exposure (EV), contrast, temperature,
+  tint, shadows/highlights (luminance-masked gains so a shadow lift cannot
+  bleach a sky), vibrance (chroma-weighted), saturation, and bounded
+  auto-levels. Pure Pillow+numpy, monotonic and clipped — no slider
+  position produces garbage, only a bad-looking photograph. Recipes are
+  clamped at the boundary like probe fields: stored JSON is never trusted
+  into arithmetic raw.
+- **One engine, two callers.** The preview endpoint and the export task run
+  the same `apply_recipe`; there is deliberately no client-side
+  approximation of the maths, because two implementations of "+0.4
+  contrast" will disagree and the operator would correct toward a preview
+  the zip contradicts. Adjustments are per-pixel and scale-free, so both
+  apply after downscaling — same look, fraction of the pixels.
+- **API** (`/develop`): GET state, POST preview (JPEG, no-store), PUT save
+  (identical recipe = no new version), DELETE revert, and
+  `/develop/listing/{id}/apply` — one recipe across every photo in a
+  listing, each as its own version so single photos can still diverge.
+- **UI**: `/edit/{assetId}` — sliders + auto toggle, debounced server
+  preview with a race-guard ticket, double-click-to-zero, prev/next through
+  the listing in gallery order, "Apply to whole listing". Listing tiles
+  badge edited photos.
+- Found and fixed in passing: `embed_text` on a server without the ai
+  extra raised raw `ModuleNotFoundError` (`_tok` lacked the conversion
+  `_session` has), so creating a listing 500'd instead of degrading to
+  unlabelled items.
+- 14 engine/API tests; the export test proves the zip is one stop brighter.
 
 ### Phase 3 — Sky replacement (medium)
 Mask from segmentation, composite from the sky library, foreground color
