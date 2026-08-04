@@ -23,12 +23,14 @@ import {
   EMPTY_RECIPE,
   type DevelopRecipe,
   type ListingDetail,
+  type SkyAsset,
+  type SkyInfo,
 } from "@/lib/api";
 
 const DEBOUNCE_MS = 250;
 
 const SLIDERS: Array<{
-  key: keyof Omit<DevelopRecipe, "auto">;
+  key: keyof Omit<DevelopRecipe, "auto" | "sky">;
   label: string;
   min: number;
   max: number;
@@ -60,6 +62,8 @@ export default function EditPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [listing, setListing] = useState<ListingDetail | null>(null);
+  const [skies, setSkies] = useState<SkyAsset[]>([]);
+  const [skyInfo, setSkyInfo] = useState<SkyInfo | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Renders can land out of order; the ticket makes the latest one win.
   const ticket = useRef(0);
@@ -75,6 +79,8 @@ export default function EditPage() {
     if (listingId) {
       api.listing(listingId).then(setListing).catch(() => setListing(null));
     }
+    api.skies().then(setSkies).catch(() => setSkies([]));
+    api.skyInfo(assetId).then(setSkyInfo).catch(() => setSkyInfo(null));
   }, [assetId, listingId]);
 
   const render = useCallback(
@@ -279,6 +285,100 @@ export default function EditPage() {
               />
             </div>
           ))}
+          <div style={{ borderTop: "1px solid var(--line)", marginTop: 12, paddingTop: 10 }}>
+            <div className="mono" style={{ marginBottom: 6 }}>
+              Sky
+              {skyInfo && !skyInfo.available && (
+                <span className="faint"> · unavailable on this server</span>
+              )}
+              {skyInfo && skyInfo.available && !skyInfo.usable && (
+                <span className="faint"> · no sky found — looks like an interior</span>
+              )}
+            </div>
+            {skyInfo?.usable && (
+              <>
+                <select
+                  className="select"
+                  style={{ width: "100%" }}
+                  aria-label="Replacement sky"
+                  value={recipe.sky?.name ?? ""}
+                  onChange={(e) =>
+                    set(
+                      "sky",
+                      e.target.value
+                        ? { name: e.target.value, feather: 0.02, shift: 0, relight: 0.4 }
+                        : null,
+                    )
+                  }
+                >
+                  <option value="">Original sky</option>
+                  {skies.map((sky) => (
+                    <option key={sky.name} value={sky.name}>
+                      {sky.name}
+                    </option>
+                  ))}
+                </select>
+                {recipe.sky && (
+                  <>
+                    {(
+                      [
+                        ["feather", "Blend", 0, 0.2, 0.005],
+                        ["shift", "Height", -0.5, 0.5, 0.01],
+                        ["relight", "Match light", 0, 1, 0.02],
+                      ] as const
+                    ).map(([key, label, min, max, step]) => (
+                      <div key={key} style={{ marginTop: 6 }}>
+                        <div
+                          className="mono"
+                          style={{ display: "flex", justifyContent: "space-between" }}
+                        >
+                          <label htmlFor={`sky-${key}`}>{label}</label>
+                          <span className="faint">{(recipe.sky?.[key] ?? 0).toFixed(2)}</span>
+                        </div>
+                        <input
+                          id={`sky-${key}`}
+                          type="range"
+                          style={{ width: "100%" }}
+                          min={min}
+                          max={max}
+                          step={step}
+                          value={recipe.sky?.[key] ?? 0}
+                          onChange={(e) =>
+                            set("sky", { ...recipe.sky!, [key]: Number(e.target.value) })
+                          }
+                        />
+                      </div>
+                    ))}
+                  </>
+                )}
+                {!skies.length && (
+                  <p className="faint" style={{ fontSize: "0.75rem", marginTop: 6 }}>
+                    No skies yet — add photographs of skies you own below.
+                    FrameFound ships none and fetches none.
+                  </p>
+                )}
+                <label className="btn" style={{ marginTop: 8, display: "inline-block" }}>
+                  Add a sky…
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        await api.uploadSky(file.name, file);
+                        setSkies(await api.skies());
+                        setNotice(`Added ${file.name} to the sky library.`);
+                      } catch {
+                        setError("Could not add that sky.");
+                      }
+                    }}
+                  />
+                </label>
+              </>
+            )}
+          </div>
           <p className="faint" style={{ fontSize: "0.75rem", marginTop: 10 }}>
             The preview and the export run the same maths — what you see here
             is what the zip contains. The original file is never modified.

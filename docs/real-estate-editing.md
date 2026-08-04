@@ -144,10 +144,31 @@ queued batch step and goes near-live when the GPU arrives.**
   unlabelled items.
 - 14 engine/API tests; the export test proves the zip is one stop brighter.
 
-### Phase 3 — Sky replacement (medium)
-Mask from segmentation, composite from the sky library, foreground color
-match, feather/horizon controls in the editor. Runs on `vision` queue;
-seconds-to-a-minute per image on current CPUs is acceptable here.
+### Phase 3 — Sky replacement ✅ SHIPPED 2026-08-04
+- **Segmentation** (`ai/skyseg.py`): SegFormer-b0/ADE20K through the same
+  AVX-free onnxruntime path as CLIP; 15 MB, 0.77 s/image measured. Runs
+  at 512 and the mask upsamples — the full-res horizon comes from
+  feathering, which is how the commercial tools do it too.
+- **Compositor** (`media/sky.py`): cover-fit with vertical overscan so
+  `shift` places the sky, Gaussian-feathered join scaled to image height
+  (preview and export look alike), and **relight** — bounded channel
+  gains pulling the foreground toward the sky's tone, because a dusk sky
+  over a noon-lit house is the tell that ruins every amateur sky swap.
+  Deliberately non-generative: the property must still be the property.
+- **Sky library**: operator photographs in `data/skies/`, uploaded from
+  the editor (raw-body PUT, bytes verified as an image before touching
+  disk). FrameFound ships no skies and fetches none.
+- **One recipe system**: the sky choice lives in the develop recipe, so
+  versioning, batch apply and export support came free. Sky names are
+  clamped to a safe character set at the same boundary as the sliders — a
+  stored recipe is never a path. Below 2% sky fraction compositing is a
+  silent no-op, which is what makes batch-applying a sky across a listing
+  safe for the hallway photos; the editor also reads `/sky-info` and says
+  "looks like an interior" instead of offering the picker.
+- **Degradation**: a deleted sky file or a server without the ONNX
+  runtime renders colour-only rather than failing the export.
+- 9 new tests: composite/relight/no-op behaviour with hand-made masks,
+  traversal refusal, garbage-upload refusal, degraded export.
 
 ### Phase 4 — Object removal (medium, pace set by Phase 0)
 Brush/lasso mask in the editor → queued LaMa inpaint → result appears as
@@ -157,6 +178,42 @@ round-trips. A GPU later makes it near-live without any redesign.
 
 ### Phase 5 — Claude provider (small, optional)
 Room labels/captions/filenames/QA behind the sealed-key provider pattern.
+
+## Quality review — will this edit like Fotello? (2026-08-04)
+
+Asked directly, so answered directly. Fotello and Imagen.ai are a human+AI
+pipeline trained on millions of real-estate edits; what FrameFound has is a
+correct but *global* editor plus scene-aware sky replacement. Where each
+Fotello behaviour stands:
+
+| Fotello does | FrameFound today | Gap |
+|---|---|---|
+| Global colour/exposure correction | ✅ 8 sliders + bounded auto-levels | At parity for competent captures |
+| Batch consistency across a shoot | ✅ Apply-to-listing | At parity |
+| Sky replacement with relighting | ✅ Phase 3 | Close; theirs handles reflections/glass better |
+| **Window pull** (bright windows, dark interiors) | ⚠️ shadows/highlights approximates it | **The big one.** Real answer is exposure-fusing brackets (`enfuse`) or local tonemapping; global sliders cannot fully fake it |
+| **Vertical correction** (keystone) | ❌ | Real-estate table stakes; a manual vertical slider is a day, auto-detect is more |
+| Learned personal style | ❌ | Their moat: trained on your past edits. Presets-per-operator is the honest approximation |
+| Declutter / object removal | 🔜 Phase 4 (LaMa, queued) | Spiked and viable; batch not live on current CPUs |
+| Grass greening, fire-in-fireplace, TV inserts | ❌ | Greening is an easy HSL band op; the inserts are compositing work not planned |
+| Human QC pass | ❌ by design | The operator *is* the QC; optional Claude flag-pass (Phase 5) is the assist |
+
+**Honest summary:** for a well-shot exterior, FrameFound after Phase 3 gets
+you an edit a listing can use — corrected, consistent, sky replaced, named
+and ordered — with zero per-photo fees and nothing leaving the machine. For
+interiors, the window-pull gap is the visible difference from Fotello
+output, and vertical correction is the most conspicuous missing control.
+The two highest-value additions, in order:
+
+1. **Vertical/keystone correction slider** (small) — perspective warp is a
+   single Pillow/numpy transform; recipes already have a place for it.
+2. **Window pull** (medium) — detect bracketed sequences (same scene,
+   ±EV in EXIF, seconds apart) and merge with `enfuse`; single-frame
+   fallback via a stronger luminance-masked local tonemap.
+
+What will *not* close: the learned style. That requires their training
+corpus. The counterweight is that every FrameFound edit is inspectable,
+repeatable, versioned, and free.
 
 ## Sequencing note
 

@@ -63,6 +63,7 @@ services:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data                      # derived files: thumbs, proxies, transcripts
+      - framefound-models:/models                  # sky segmentation + CLIP text caches (develop editor)
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
       - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]
@@ -131,6 +132,7 @@ services:
       FRAMEFOUND_MEDIA_ROOT: /media
     volumes:
       - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
+      - framefound-models:/models                  # sky segmentation runs in listing exports
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
       - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
     networks: [internal]

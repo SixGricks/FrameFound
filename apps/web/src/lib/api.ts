@@ -511,6 +511,13 @@ export interface ListingDetail extends ListingSummary {
   classified: boolean;
 }
 
+export interface SkyChoice {
+  name: string;
+  feather: number;
+  shift: number;
+  relight: number;
+}
+
 /** Slider values for the develop engine. 0 everywhere = the original. */
 export interface DevelopRecipe {
   exposure: number;
@@ -522,6 +529,7 @@ export interface DevelopRecipe {
   vibrance: number;
   saturation: number;
   auto: boolean;
+  sky: SkyChoice | null;
 }
 
 export const EMPTY_RECIPE: DevelopRecipe = {
@@ -534,7 +542,19 @@ export const EMPTY_RECIPE: DevelopRecipe = {
   vibrance: 0,
   saturation: 0,
   auto: false,
+  sky: null,
 };
+
+export interface SkyAsset {
+  name: string;
+  size_bytes: number;
+}
+
+export interface SkyInfo {
+  fraction: number;
+  usable: boolean;
+  available: boolean;
+}
 
 export interface EditState {
   asset_id: string;
@@ -888,6 +908,18 @@ export const api = {
     }),
   deleteListing: (id: string) => request<void>(`/listings/${id}`, { method: "DELETE" }),
 
+  skies: () => request<SkyAsset[]>("/develop/skies"),
+  uploadSky: (name: string, file: File) =>
+    fetch(`/api/v1/develop/skies/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: file,
+    }).then((resp) => {
+      if (!resp.ok) throw new Error("Could not add that sky");
+      return resp.json() as Promise<SkyAsset>;
+    }),
+  deleteSky: (name: string) =>
+    request<void>(`/develop/skies/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  skyInfo: (assetId: string) => request<SkyInfo>(`/develop/${assetId}/sky-info`),
   developState: (assetId: string) => request<EditState>(`/develop/${assetId}`),
   saveDevelop: (assetId: string, recipe: DevelopRecipe) =>
     request<EditState>(`/develop/${assetId}`, {

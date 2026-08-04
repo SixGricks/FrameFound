@@ -1244,6 +1244,27 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
     from framefound.db.models import AssetEdit, Listing, ListingItem
     from framefound.media import develop as develop_lib
 
+    def _load_sky(name: str) -> Any:
+        from PIL import Image
+
+        sky_path = get_settings().data_dir / "skies" / name
+        if "/" in name or "\\" in name or ".." in name or not sky_path.is_file():
+            log.warning("listing.export_sky_missing", name=name)
+            return None
+        return Image.open(sky_path)
+
+    def _mask_for(image: Any) -> Any:
+        from framefound.ai.embeddings import EmbeddingUnavailable
+
+        try:
+            from framefound.ai import skyseg
+
+            return skyseg.sky_mask(image)
+        except EmbeddingUnavailable:
+            # Degrade to colour-only rather than fail the export.
+            log.warning("listing.export_no_segmentation")
+            return None
+
     def to_jpeg(path: Path, recipe: dict[str, Any] | None) -> bytes:
         with Image.open(path) as img:
             # Camera orientation lives in EXIF; a sideways kitchen is not a
@@ -1272,9 +1293,11 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
             # The develop recipe, applied after the resize because every
             # adjustment is per-pixel and scale-free — same maths, quarter
             # the pixels. This is the moment "what you saw in the editor"
-            # becomes "what the zip contains".
+            # becomes "what the zip contains". Sky replacement rides along:
+            # same segmentation, same compositor, same feathering as the
+            # preview the operator approved.
             if recipe:
-                image = develop_lib.apply_recipe(image, recipe)
+                image = develop_lib.render(image, recipe, load_sky=_load_sky, mask_for=_mask_for)
             out = io.BytesIO()
             image.save(out, "JPEG", quality=quality, optimize=True)
             return out.getvalue()

@@ -271,6 +271,18 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**Phase 3 shipped: sky replacement.** SegFormer segmentation through the
+proven AVX-free ONNX path, a deterministic compositor (cover-fit, feathered
+join, bounded relight toward the sky's tone), and an operator-supplied sky
+library — FrameFound ships no skies and fetches none. The sky choice lives
+inside the develop recipe, so versioning, batch apply and export support
+came free; under 2% detected sky the composite is a silent no-op, which is
+what makes batch-applying one look across a listing safe for the hallway
+photos. A quality review against Fotello is recorded in
+[real-estate-editing.md](real-estate-editing.md): global correction and sky
+are at or near parity for exteriors; the visible gaps are window pull
+(needs bracket fusion) and vertical correction (small, next).
+
 **Phase 2 shipped the same day: the develop editor.** Non-destructive
 colour correction as append-only recipe versions (migration 0017) — eight
 sliders plus bounded auto-levels, rendered by one Pillow/numpy engine that

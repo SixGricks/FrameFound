@@ -14,6 +14,8 @@ adjustments are per-pixel and scale-free, so applying them after downscaling
 exception of auto-levels' percentiles, which differ immeasurably.
 """
 
+import re
+from collections.abc import Callable
 from typing import Any
 
 from PIL import Image
@@ -35,6 +37,14 @@ RECIPE_FIELDS = {
 }
 
 
+# The sky entry's numeric fields and their bounds; `name` is a filename in
+# the operator's sky library, allowed only a conservative character set so a
+# stored recipe can never be a path traversal.
+SKY_FIELDS = {"feather": (0.0, 0.2), "shift": (-0.5, 0.5), "relight": (0.0, 1.0)}
+SKY_DEFAULTS = {"feather": 0.02, "shift": 0.0, "relight": 0.4}
+_SKY_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,118}$")
+
+
 def clean_recipe(raw: dict[str, Any]) -> dict[str, Any]:
     """Clamp every known field into range and drop everything else.
 
@@ -52,11 +62,61 @@ def clean_recipe(raw: dict[str, Any]) -> dict[str, Any]:
             out[key] = number
     if raw.get("auto") is True:
         out["auto"] = True
+    sky = raw.get("sky")
+    if isinstance(sky, dict):
+        name = sky.get("name")
+        if isinstance(name, str) and _SKY_NAME_OK.match(name) and ".." not in name:
+            cleaned_sky: dict[str, Any] = {"name": name}
+            for key, (low, high) in SKY_FIELDS.items():
+                value = sky.get(key, SKY_DEFAULTS[key])
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    value = SKY_DEFAULTS[key]
+                cleaned_sky[key] = max(low, min(high, float(value)))
+            out["sky"] = cleaned_sky
     return out
 
 
 def is_identity(recipe: dict[str, Any]) -> bool:
     return not clean_recipe(recipe)
+
+
+def render(
+    image: Image.Image,
+    recipe: dict[str, Any],
+    *,
+    load_sky: Callable[[str], Image.Image | None] | None = None,
+    mask_for: Callable[[Image.Image], Any] | None = None,
+) -> Image.Image:
+    """The full recipe: sky replacement first, then the colour sliders.
+
+    Sky before colour, so the sliders grade the composited photograph — the
+    operator is correcting the image they will export, not the one they
+    started from. The two callables are injected because segmentation needs
+    the ONNX runtime and the sky library lives on disk; the colour maths
+    needs neither, and tests exercise compositing with hand-made masks.
+
+    A recipe that names a sky renders without one when either callable is
+    missing or the sky file is gone — degraded output over a failed export,
+    with the caller told nothing because there is nothing it could do.
+    """
+    cleaned = clean_recipe(recipe)
+    sky = cleaned.get("sky")
+    if sky and load_sky is not None and mask_for is not None:
+        sky_image = load_sky(sky["name"])
+        if sky_image is not None:
+            from framefound.media.sky import composite_sky
+
+            mask = mask_for(image)
+            if mask is not None:
+                image = composite_sky(
+                    image,
+                    mask,
+                    sky_image,
+                    feather=sky["feather"],
+                    shift=sky["shift"],
+                    relight=sky["relight"],
+                )
+    return apply_recipe(image, cleaned)
 
 
 def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:

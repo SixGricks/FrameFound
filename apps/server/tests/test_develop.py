@@ -290,3 +290,149 @@ async def test_batch_apply_reaches_every_image_in_the_listing(env: dict) -> None
 
     state = (await client.get(f"/api/v1/develop/{asset_id}")).json()
     assert state["recipe"] == {"contrast": 0.3}
+
+
+# ---------------------------------------------------------------- sky
+
+
+def _sky_scene(size: int = 64) -> tuple[Image.Image, "list[list[float]]"]:
+    """A scene whose top half is 'sky' (bright) and bottom half ground
+    (dark), with a mask that says exactly that."""
+    image = Image.new("RGB", (size, size))
+    for y in range(size):
+        for x in range(size):
+            image.putpixel((x, y), (200, 200, 220) if y < size // 2 else (60, 50, 40))
+    mask = [[1.0 if y < size // 2 else 0.0 for _ in range(size)] for y in range(size)]
+    return image, mask
+
+
+def test_composite_replaces_sky_and_leaves_the_ground() -> None:
+    import numpy as np
+
+    from framefound.media.sky import composite_sky
+
+    scene, mask_rows = _sky_scene()
+    orange = Image.new("RGB", (64, 64), (240, 120, 30))
+    out = composite_sky(
+        scene, np.asarray(mask_rows, dtype="float32"), orange, feather=0.0, relight=0.0
+    )
+    r, g, b = out.getpixel((32, 8))
+    assert r > 200 and b < 80, "the sky is now the replacement"
+    ground = out.getpixel((32, 56))
+    assert abs(ground[0] - 60) <= 4, "the house is still the house"
+
+
+def test_composite_on_an_interior_is_a_silent_no_op() -> None:
+    """The batch-apply guarantee: one recipe over a listing must not wreck
+    the hallway photos."""
+    import numpy as np
+
+    from framefound.media.sky import composite_sky
+
+    room = Image.new("RGB", (32, 32), (120, 110, 100))
+    none = np.zeros((32, 32), dtype="float32")
+    out = composite_sky(room, none, Image.new("RGB", (32, 32), (255, 0, 0)))
+    assert out is room
+
+
+def test_relight_pulls_the_ground_toward_the_sky_tone() -> None:
+    import numpy as np
+
+    from framefound.media.sky import composite_sky
+
+    scene, mask_rows = _sky_scene()
+    warm = Image.new("RGB", (64, 64), (250, 160, 60))
+    plain = composite_sky(scene, np.asarray(mask_rows, dtype="float32"), warm, relight=0.0)
+    lit = composite_sky(scene, np.asarray(mask_rows, dtype="float32"), warm, relight=1.0)
+    assert lit.getpixel((32, 60))[0] > plain.getpixel((32, 60))[0], (
+        "a warm sky warms the ground it shines on"
+    )
+    assert lit.getpixel((32, 60))[2] <= plain.getpixel((32, 60))[2] + 1
+
+
+def test_clean_recipe_keeps_a_valid_sky_and_refuses_traversal() -> None:
+    good = develop.clean_recipe({"sky": {"name": "dusk.jpg", "feather": 9, "relight": 0.5}})
+    assert good["sky"]["name"] == "dusk.jpg"
+    assert good["sky"]["feather"] == 0.2, "clamped, not trusted"
+    assert good["sky"]["shift"] == 0.0, "defaults fill in"
+    evil = develop.clean_recipe({"sky": {"name": "../../etc/passwd"}})
+    assert "sky" not in evil, "a stored recipe is never a path"
+
+
+def test_render_composites_then_grades() -> None:
+    """Sky first, colour second: the sliders grade the finished picture."""
+    import numpy as np
+
+    scene, mask_rows = _sky_scene()
+    dark_sky = Image.new("RGB", (64, 64), (40, 40, 80))
+
+    out = develop.render(
+        scene,
+        {"exposure": 1.0, "sky": {"name": "night.jpg", "relight": 0.0, "feather": 0.0}},
+        load_sky=lambda name: dark_sky,
+        mask_for=lambda img: np.asarray(mask_rows, dtype="float32"),
+    )
+    r, _g, b = out.getpixel((32, 8))
+    assert 60 < b < 200, "the replaced sky was then pushed a stop brighter"
+
+
+def test_render_degrades_without_segmentation_or_sky_file() -> None:
+    scene, _ = _sky_scene()
+    out = develop.render(
+        scene,
+        {"exposure": 1.0, "sky": {"name": "gone.jpg"}},
+        load_sky=lambda name: None,
+        mask_for=lambda img: None,
+    )
+    assert _mean(out) > _mean(scene), "colour still applies when the sky cannot"
+
+
+async def test_sky_library_upload_list_delete(env: dict) -> None:
+    client = env["client"]
+    buf = io.BytesIO()
+    Image.new("RGB", (80, 40), (120, 160, 230)).save(buf, "JPEG")
+
+    resp = await client.put("/api/v1/develop/skies/test-sky.jpg", content=buf.getvalue())
+    assert resp.status_code == 201, resp.text
+
+    listed = (await client.get("/api/v1/develop/skies")).json()
+    assert [s["name"] for s in listed] == ["test-sky.jpg"]
+
+    resp = await client.get("/api/v1/develop/skies/test-sky.jpg/image")
+    assert resp.status_code == 200
+
+    resp = await client.delete("/api/v1/develop/skies/test-sky.jpg")
+    assert resp.status_code == 204
+    assert (await client.get("/api/v1/develop/skies")).json() == []
+
+
+async def test_sky_upload_refuses_garbage(env: dict) -> None:
+    resp = await env["client"].put(
+        "/api/v1/develop/skies/evil.jpg", content=b"#!/bin/sh\necho pwned"
+    )
+    assert resp.status_code == 400, "the compositor opens these unattended later"
+
+
+async def test_export_with_a_sky_degrades_without_segmentation(env: dict) -> None:
+    """This CI environment has no ONNX runtime, which is exactly the case:
+    a recipe naming a sky must still export colour-only, not fail."""
+    asset_id = env["ids"]["asset"]
+    client = env["client"]
+    await client.put(
+        f"/api/v1/develop/{asset_id}",
+        json={
+            "exposure": 1.0,
+            "sky": {"name": "dusk.jpg", "feather": 0.02, "shift": 0, "relight": 0.4},
+        },
+    )
+    listing = (
+        await client.post("/api/v1/listings", json={"name": "Sky", "asset_ids": [asset_id]})
+    ).json()
+
+    from framefound.processing import tasks as tasks_module
+
+    await asyncio.to_thread(tasks_module.export_listing_zip, listing["id"], 2048, 85)
+    async with env["factory"]() as db:
+        row = await db.get(Listing, uuidlib.UUID(listing["id"]))
+        assert row is not None
+        assert row.export_status == "ready", row.export_error

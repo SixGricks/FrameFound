@@ -14,16 +14,19 @@ the property that makes a preview trustworthy.
 import asyncio
 import io
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 
-from framefound.auth.deps import CurrentUser, DbDep
+from framefound.ai.embeddings import EmbeddingUnavailable
+from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
+from framefound.config import Settings
 from framefound.db.models import Asset, AssetEdit, Library, Listing, ListingItem
 from framefound.media import develop as develop_lib
 from framefound.scanner.paths import PathValidationError, safe_join
@@ -33,6 +36,16 @@ log = structlog.get_logger()
 router = APIRouter(prefix="/develop", tags=["develop"])
 
 PREVIEW_EDGE = 1600
+
+
+class SkyIn(BaseModel):
+    """A sky replacement: which sky from the operator's library, and how it
+    sits. Name characters are restricted so a recipe can never traverse."""
+
+    name: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
+    feather: float = Field(default=0.02, ge=0.0, le=0.2)
+    shift: float = Field(default=0.0, ge=-0.5, le=0.5)
+    relight: float = Field(default=0.4, ge=0.0, le=1.0)
 
 
 class RecipeIn(BaseModel):
@@ -49,6 +62,7 @@ class RecipeIn(BaseModel):
     vibrance: float = Field(default=0.0, ge=-1.0, le=1.0)
     saturation: float = Field(default=0.0, ge=-1.0, le=1.0)
     auto: bool = False
+    sky: SkyIn | None = None
 
 
 class EditState(BaseModel):
@@ -95,6 +109,151 @@ async def _get_image_asset(db: DbDep, asset_id: uuid.UUID) -> Asset:
     return asset
 
 
+# ---------------------------------------------------------------- skies
+#
+# The sky library is operator-supplied photographs in the data directory.
+# FrameFound ships none and fetches none: licensing stays clean and the
+# skies match the light the properties are actually shot in. Declared
+# before the /{asset_id} routes so the literal path wins the match.
+
+MAX_SKY_BYTES = 25 * 1024 * 1024
+
+
+def _skies_dir(settings: Settings) -> Path:
+    path = settings.data_dir / "skies"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _sky_path(settings: Settings, name: str) -> Path:
+    # The pattern in SkyIn already refuses separators; belt and braces here.
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Not a sky name")
+    return _skies_dir(settings) / name
+
+
+class SkyOut(BaseModel):
+    name: str
+    size_bytes: int
+
+
+@router.get("/skies", response_model=list[SkyOut])
+async def list_skies(_user: CurrentUser, settings: SettingsDep) -> list[SkyOut]:
+    skies = [
+        SkyOut(name=p.name, size_bytes=p.stat().st_size)
+        for p in sorted(_skies_dir(settings).iterdir())
+        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+    ]
+    return skies
+
+
+@router.put("/skies/{name}", response_model=SkyOut, status_code=201)
+async def upload_sky(  # type: ignore[no-untyped-def]
+    name: str, request: Request, _user: CurrentUser, settings: SettingsDep
+):
+    """Add a sky photograph. Raw image bytes in the body — no multipart.
+
+    The bytes must decode as an image before anything lands on disk; the sky
+    library is content the compositor will open unattended later, so garbage
+    is refused at the door rather than discovered mid-export.
+    """
+    data = await request.body()
+    if not data or len(data) > MAX_SKY_BYTES:
+        raise HTTPException(status_code=400, detail="Empty or oversized upload")
+
+    def check() -> None:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as img:
+            img.verify()
+
+    try:
+        await asyncio.to_thread(check)
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="Not a readable image") from err
+
+    path = _sky_path(settings, name)
+    path.write_bytes(data)
+    log.info("develop.sky_added", name=name, kilobytes=len(data) // 1024)
+    return SkyOut(name=name, size_bytes=len(data))
+
+
+@router.get("/skies/{name}/image")
+async def sky_image(  # type: ignore[no-untyped-def]
+    name: str, _user: CurrentUser, settings: SettingsDep
+):
+    path = _sky_path(settings, name)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No such sky")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(path)
+
+
+@router.delete("/skies/{name}", status_code=204)
+async def delete_sky(name: str, _user: CurrentUser, settings: SettingsDep) -> None:
+    _sky_path(settings, name).unlink(missing_ok=True)
+    log.info("develop.sky_removed", name=name)
+
+
+# ------------------------------------------------------- segmentation cache
+#
+# The mask depends only on the original pixels, and a slider drag re-renders
+# the preview many times. A tiny per-process LRU means segmentation runs
+# once per photograph per editing session, not once per slider notch.
+
+_mask_cache: "OrderedDict[tuple[uuid.UUID, int, int], Any]" = OrderedDict()
+_MASK_CACHE_MAX = 8
+
+
+def _cached_mask(asset_id: uuid.UUID, image: Any) -> Any:
+    key = (asset_id, image.size[0], image.size[1])
+    if key in _mask_cache:
+        _mask_cache.move_to_end(key)
+        return _mask_cache[key]
+    from framefound.ai import skyseg
+
+    mask = skyseg.sky_mask(image)
+    _mask_cache[key] = mask
+    while len(_mask_cache) > _MASK_CACHE_MAX:
+        _mask_cache.popitem(last=False)
+    return mask
+
+
+class SkyInfo(BaseModel):
+    fraction: float
+    usable: bool
+    available: bool  # False when the segmentation runtime is not installed
+
+
+@router.get("/{asset_id}/sky-info", response_model=SkyInfo)
+async def sky_info(
+    asset_id: uuid.UUID, _user: CurrentUser, db: DbDep, settings: SettingsDep
+) -> SkyInfo:
+    """How much sky this photograph has — the editor greys the sky picker
+    out for interiors instead of letting a replacement silently no-op."""
+    from framefound.media.sky import MIN_SKY_FRACTION
+
+    asset = await _get_image_asset(db, asset_id)
+    path = await _original_path(db, asset)
+
+    def measure() -> float:
+        import numpy as np
+        from PIL import Image, ImageOps
+
+        with Image.open(path) as img:
+            image = ImageOps.exif_transpose(img) or img
+            image = image.convert("RGB")
+            image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+            return float(np.mean(_cached_mask(asset_id, image)))
+
+    try:
+        fraction = await asyncio.to_thread(measure)
+    except EmbeddingUnavailable:
+        return SkyInfo(fraction=0.0, usable=False, available=False)
+    return SkyInfo(fraction=fraction, usable=fraction >= MIN_SKY_FRACTION, available=True)
+
+
 @router.get("/{asset_id}", response_model=EditState)
 async def get_edit(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> EditState:
     await _get_image_asset(db, asset_id)
@@ -102,13 +261,35 @@ async def get_edit(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> EditSt
     return EditState(asset_id=asset_id, recipe=recipe, version=version, edited=version > 0)
 
 
+def sky_loader(settings: Settings) -> Any:
+    """A load-by-name callable for the render pipeline. Returns None for a
+    missing file — a deleted sky degrades the render, never fails it."""
+
+    def load(name: str) -> Any:
+        from PIL import Image
+
+        path = _sky_path(settings, name)
+        if not path.is_file():
+            log.warning("develop.sky_missing", name=name)
+            return None
+        return Image.open(path)
+
+    return load
+
+
 @router.post("/{asset_id}/preview")
 async def preview(  # type: ignore[no-untyped-def]
-    asset_id: uuid.UUID, body: RecipeIn, _user: CurrentUser, db: DbDep
+    asset_id: uuid.UUID, body: RecipeIn, _user: CurrentUser, db: DbDep, settings: SettingsDep
 ):
     """Render the recipe onto a preview-sized copy of the original."""
     asset = await _get_image_asset(db, asset_id)
     path = await _original_path(db, asset)
+
+    def mask_for(image: Any) -> Any:
+        try:
+            return _cached_mask(asset_id, image)
+        except EmbeddingUnavailable:
+            return None
 
     def render() -> bytes:
         from PIL import Image, ImageOps
@@ -117,7 +298,9 @@ async def preview(  # type: ignore[no-untyped-def]
             image = ImageOps.exif_transpose(img) or img
             image = image.convert("RGB")
             image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
-            image = develop_lib.apply_recipe(image, body.model_dump())
+            image = develop_lib.render(
+                image, body.model_dump(), load_sky=sky_loader(settings), mask_for=mask_for
+            )
             out = io.BytesIO()
             image.save(out, "JPEG", quality=80)
             return out.getvalue()
