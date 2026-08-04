@@ -127,7 +127,7 @@ jobs:
           sha256sum release-manifest.json sbom-*.spdx.json > SHA256SUMS
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
