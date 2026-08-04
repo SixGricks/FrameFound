@@ -96,6 +96,16 @@ fact rather than a hope, then requeue whatever was never tried.
 - **Face vector index** — HNSW on `faces.embedding` when the candidate pool
   nears six figures; at 7,582 a scan is sub-second.
 
+## Proposed vertical — real-estate editing & listing export
+
+Scoped separately in **[real-estate-editing.md](real-estate-editing.md)**
+(2026-08-04): Fotello/Imagen-style color correction, sky replacement and
+object removal as non-destructive edit recipes, plus a listing export that
+groups, orders and renames a selection using room labels computed zero-shot
+from the CLIP embeddings the catalogue already stores. Phase 1 (listing
+export) needs no new AI at all; inpainting speed on the AVX-less Xeons is
+the one open feasibility question, spiked first.
+
 ## Explicitly not planned
 
 - Generative motion/AI styling on photographs (decided against, 2026-07-30).
