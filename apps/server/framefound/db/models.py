@@ -603,3 +603,52 @@ class Slideshow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class Listing(Base):
+    """A property shoot being ordered and named for upload.
+
+    The point of a listing is the *sequence*: MLS galleries display in upload
+    order, so the export names files 01_, 02_ ... and the operator's ordering
+    here is the product. Room labels are suggestions from CLIP until someone
+    confirms or overrides them - same contract as tags and faces.
+    """
+
+    __tablename__ = "listings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
+    # none | queued | exporting | ready | failed
+    export_status: Mapped[str] = mapped_column(String(20), default="none")
+    export_relpath: Mapped[str | None] = mapped_column(String(1024), default=None)
+    export_error: Mapped[str | None] = mapped_column(String(500), default=None)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ListingItem(Base):
+    """One photograph's place in a listing.
+
+    A join table rather than a JSON id list (contrast Slideshow.asset_ids)
+    because each item carries editable state - label and position - and
+    correcting one photograph must not rewrite the whole selection.
+    """
+
+    __tablename__ = "listing_items"
+    __table_args__ = (
+        UniqueConstraint("listing_id", "asset_id", name="uq_listing_items_listing_asset"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(default=0)
+    # A key from ai/rooms.py, or "" while unclassified.
+    room: Mapped[str] = mapped_column(String(40), default="")
+    room_source: Mapped[str] = mapped_column(String(16), default="suggested")
+    room_score: Mapped[float | None] = mapped_column(Float, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

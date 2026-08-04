@@ -479,6 +479,36 @@ export interface SearchResponse {
   tag_hits: TagHit[];
 }
 
+export interface RoomOption {
+  key: string;
+  label: string;
+}
+
+export interface ListingItem {
+  asset_id: string;
+  filename: string;
+  media_type: MediaType;
+  position: number;
+  room: string;
+  room_label: string;
+  room_source: "suggested" | "confirmed";
+  room_score: number | null;
+}
+
+export interface ListingSummary {
+  id: string;
+  name: string;
+  item_count: number;
+  export_status: "none" | "queued" | "exporting" | "ready" | "failed";
+  export_error: string | null;
+  cover_asset_id: string | null;
+}
+
+export interface ListingDetail extends ListingSummary {
+  items: ListingItem[];
+  classified: boolean;
+}
+
 export interface ProcessingReport {
   queue_depths: Record<string, number>;
   assets_by_status: Record<string, number>;
@@ -785,9 +815,50 @@ export const api = {
     request<Slideshow>(`/slideshows/${id}/render`, { method: "POST" }),
   deleteSlideshow: (id: string) => request<void>(`/slideshows/${id}`, { method: "DELETE" }),
 
+  rooms: () => request<RoomOption[]>("/listings/rooms"),
+  listings: () => request<ListingSummary[]>("/listings"),
+  listing: (id: string) => request<ListingDetail>(`/listings/${id}`),
+  createListing: (name: string, assetIds: string[]) =>
+    request<ListingDetail>("/listings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, asset_ids: assetIds }),
+    }),
+  addListingItems: (id: string, assetIds: string[]) =>
+    request<ListingDetail>(`/listings/${id}/items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  removeListingItem: (id: string, assetId: string) =>
+    request<ListingDetail>(`/listings/${id}/items/${assetId}`, { method: "DELETE" }),
+  setListingRoom: (id: string, assetId: string, room: string) =>
+    request<ListingDetail>(`/listings/${id}/items/${assetId}/room`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room }),
+    }),
+  arrangeListing: (id: string) =>
+    request<ListingDetail>(`/listings/${id}/arrange`, { method: "POST" }),
+  reorderListing: (id: string, assetIds: string[]) =>
+    request<ListingDetail>(`/listings/${id}/reorder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_ids: assetIds }),
+    }),
+  exportListing: (id: string, maxEdge = 3840, quality = 85) =>
+    request<ListingDetail>(`/listings/${id}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_edge: maxEdge, quality }),
+    }),
+  deleteListing: (id: string) => request<void>(`/listings/${id}`, { method: "DELETE" }),
+
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),
 };
+
+export const listingExportUrl = (id: string) => `/api/v1/listings/${id}/export/download`;
 
 export const mediaUrl = (assetId: string, kind: string) => `/api/v1/media/${assetId}/${kind}`;
 

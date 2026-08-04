@@ -253,6 +253,24 @@ recording the skip verdict per asset.
 Future work now lives in **[future-features.md](future-features.md)** — a
 reviewed plan grounded in these numbers, split Now / Next / Later.
 
+### 2026-08-04 — real-estate vertical: spike measured, listing export shipped
+
+Phases 0–1 of [real-estate-editing.md](real-estate-editing.md) are done.
+The spike settled the open hardware question with numbers: sky segmentation
+runs at **0.77 s/image** on the Westmere Xeons (CPU-viable today) and LaMa
+inpainting at **18.3 s per 512px tile** (a queued batch step until the GPU,
+exactly as scoped). Both execute correctly through the same AVX-free
+onnxruntime path CLIP uses.
+
+**Listings shipped end-to-end**: migration 0016, a 15-room zero-shot
+classifier over embeddings the catalogue already stores, canonical
+walk-through arrangement with drag-to-reorder and per-photo overrides, and
+an export task that writes `01_front_exterior.jpg …` into a zip — EXIF
+orientation fixed, ICC flattened to sRGB, sized to 3840px/q85 by default.
+Room labels are suggestions until confirmed, videos stay out of the photo
+zip, and an unreadable file is skipped *by name* while the numbering closes
+ranks. Deleting a listing audits who did it.
+
 ### Still worth attention
 
 - **59 capture dates are impossible** (12 in the future, 47 before 1990). EXIF

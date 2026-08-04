@@ -28,6 +28,7 @@ const FIND = [
   { href: "/tags", label: "Tags" },
   { href: "/people", label: "People" },
   { href: "/slideshows", label: "Slideshows" },
+  { href: "/listings", label: "Listings" },
 ];
 
 const MANAGE = [

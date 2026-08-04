@@ -71,22 +71,46 @@ CLIP path always works without it. Cost at listing scale is pennies.
 
 ## Phases
 
-### Phase 0 — feasibility spike (small)
-Run LaMa ONNX and a sky-seg ONNX on the VM through the existing
-onnxruntime build; measure seconds/image at 12–24 MP. This decides whether
-object removal ships CPU-now or GPU-gated. (SSE2-only is the risk; the
-models load through the same provider CLIP does, but op coverage and speed
-need numbers, not faith.)
+### Phase 0 — feasibility spike ✅ MEASURED 2026-08-04
+Run inside `worker-ai` on the production VM (E5620, SSE2-only, 4 threads),
+real frames from the catalogue:
 
-### Phase 1 — Listing export (medium) ← highest value, zero new AI
-- **Listings** = named collections of selected assets (new table + UI).
-- Zero-shot room classification over stored frame embeddings against a
-  prompt set (front exterior, living room, kitchen, dining, bedroom,
-  bathroom, garage, backyard, aerial, floor plan…). Instant — it is dot
-  products against vectors already in pgvector.
-- Standard listing order template, drag-to-reorder, per-image override.
-- Export task: sRGB JPEGs sized to MLS norms (e.g. 3840px longest edge,
-  q85), named `01_front_exterior.jpg …`, zipped, delivered by signed URL.
+| Model | Source | Size | Time | Verdict |
+|---|---|---|---|---|
+| SegFormer-b0 ADE20K (sky seg) | `lquint/segformer-b0-finetuned-ade-512-512-onnx` | 15 MB | **0.77 s**/image @512 | CPU-viable now |
+| LaMa fp32 (inpainting) | `Carve/LaMa-ONNX` | 208 MB | **18.3 s**/512px tile | Queued batch on CPU; live with a GPU |
+
+Both execute correctly through the existing onnxruntime
+`CPUExecutionProvider` — no AVX faults, and the inpainted regions carry
+plausible statistics (mean ≈ 105–124, σ ≈ 21–48), not a broken graph's
+flat fill. The LaMa graph takes fixed 512×512 inputs, so Phase 4 uses the
+crop-around-mask-and-blend-back strategy at ~20–40 s per removal region.
+Sky fractions on interior test frames came back 0–1.4%, which is exactly
+right. **Conclusion: Phase 3 ships on current hardware; Phase 4 ships as a
+queued batch step and goes near-live when the GPU arrives.**
+
+### Phase 1 — Listing export ✅ SHIPPED 2026-08-04
+- **Listings** (migration 0016): `listings` + `listing_items`, a join table
+  because label and position are per-item editable state.
+- **Room classification** (`ai/rooms.py`): 15-room taxonomy in canonical
+  walk-through order, 2 averaged prompts per room, zero-shot against the
+  frame embeddings already in pgvector. `MIN_ROOM_SCORE 0.15` keeps "no
+  idea" honest instead of defaulting to the nearest label. Suggestions
+  stay dashed until the operator picks — same contract as tags and faces.
+- **API** (`api/v1/listings.py`): create/add/remove, label override,
+  canonical arrange, partial-safe reorder (ids omitted from a reorder keep
+  their relative order), export queue + zip download. Deleting a listing
+  is admin-only and writes an `audit_log` row — the gap noted against
+  `delete_slideshow` was not repeated.
+- **Export task** (`export_listing_zip`, media queue): EXIF-orientation
+  fix, ICC→sRGB flatten, LANCZOS resize to the requested edge (default
+  3840, q85), `01_front_exterior.jpg …` numbering that closes ranks over
+  unreadable files and names them in `export_error` instead of shipping a
+  gallery with a hole in it. Videos stay out of the photo zip.
+- **UI**: /listings + drag-to-reorder detail page with per-photo room
+  dropdowns, the export number badged on each tile, and an add-photos
+  search that reuses catalogue search (visual + filename hits).
+- 9 tests; the export tests build real JPEGs and read the zip back.
 
 ### Phase 2 — Non-destructive color editor (medium)
 Edit-recipe table + preview render endpoint + slider panel + auto button.

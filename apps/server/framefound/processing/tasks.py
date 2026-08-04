@@ -28,6 +28,7 @@ fresh loop. TODO(perf): persistent-loop workers if task volume demands it.
 
 import asyncio
 import bisect
+import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -1217,3 +1218,144 @@ async def _slideshow_spec(db: AsyncSession, show: Any) -> Any:
             Slide(path=path, seconds=hold, direction=directions[i]) for i, path in enumerate(paths)
         ],
     )
+
+
+@celery_app.task(
+    name="framefound.export_listing_zip",
+    queue="media",
+    # Deterministic work on local files: a failure will fail the same way
+    # again, so retrying automatically would only burn the media queue.
+    max_retries=0,
+)
+def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85) -> None:
+    """Write a listing's images as a numbered, room-named zip.
+
+    The filenames are the product: MLS galleries display in upload order, so
+    `01_front_exterior.jpg` sorting first *is* the feature. Numbering is
+    contiguous over the images that actually export — a gallery with a hole
+    in its sequence reads as a mistake, so an unreadable file is skipped,
+    named in `export_error`, and the rest close ranks.
+    """
+    import io
+    import zipfile
+
+    from PIL import Image, ImageCms, ImageOps
+
+    from framefound.db.models import Listing, ListingItem
+
+    def to_jpeg(path: Path) -> bytes:
+        with Image.open(path) as img:
+            # Camera orientation lives in EXIF; a sideways kitchen is not a
+            # feature. Then flatten any embedded profile to sRGB — MLS portals
+            # assume it, and a ProPhoto JPEG goes dull the moment they do.
+            image = ImageOps.exif_transpose(img) or img
+            icc = image.info.get("icc_profile")
+            if icc:
+                with contextlib.suppress(Exception):
+                    converted = ImageCms.profileToProfile(
+                        image,
+                        ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+                        ImageCms.createProfile("sRGB"),
+                        outputMode="RGB",
+                    )
+                    if converted is not None:
+                        image = converted
+            image = image.convert("RGB")
+            width, height = image.size
+            longest = max(width, height)
+            if longest > max_edge:
+                scale = max_edge / longest
+                image = image.resize(
+                    (round(width * scale), round(height * scale)), Image.Resampling.LANCZOS
+                )
+            out = io.BytesIO()
+            image.save(out, "JPEG", quality=quality, optimize=True)
+            return out.getvalue()
+
+    async def run() -> None:
+        from sqlalchemy import select
+
+        from framefound.ai.rooms import ROOM_LABELS
+
+        settings = get_settings()
+        engine = create_async_engine(settings.db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                listing = await db.get(Listing, uuid.UUID(listing_id))
+                if listing is None:
+                    log.warning("listing.gone", listing_id=listing_id)
+                    return
+                listing.export_status = "exporting"
+                await db.commit()
+
+                rows = (
+                    await db.execute(
+                        select(ListingItem, Asset, Library)
+                        .join(Asset, Asset.id == ListingItem.asset_id)
+                        .join(Library, Library.id == Asset.library_id)
+                        .where(
+                            ListingItem.listing_id == listing.id,
+                            Asset.media_type == "image",
+                        )
+                        .order_by(ListingItem.position, ListingItem.created_at)
+                    )
+                ).all()
+
+                out_dir = settings.data_dir / "exports" / "listings"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                zip_path = out_dir / f"{listing.id}.zip"
+                skipped: list[str] = []
+                written = 0
+                try:
+                    # JPEGs do not compress again; ZIP_STORED skips the wasted CPU.
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
+                        for item, asset, library in rows:
+                            try:
+                                path = safe_join(Path(library.root_path), asset.relative_path)
+                                data = await asyncio.to_thread(to_jpeg, path)
+                            except Exception:
+                                skipped.append(asset.filename)
+                                log.warning(
+                                    "listing.export_skip",
+                                    listing_id=listing_id,
+                                    filename=asset.filename,
+                                )
+                                continue
+                            written += 1
+                            slug = item.room if item.room in ROOM_LABELS else "photo"
+                            archive.writestr(f"{written:02d}_{slug}.jpg", data)
+                    if not written:
+                        raise RuntimeError("No image in this listing could be read")
+                except Exception as exc:
+                    await db.rollback()
+                    zip_path.unlink(missing_ok=True)
+                    listing.export_status = "failed"
+                    listing.export_error = str(exc)[:500]
+                    await db.commit()
+                    log.error("listing.export_failed", listing_id=listing_id, error=str(exc)[:300])
+                    raise
+                else:
+                    listing.export_status = "ready"
+                    listing.export_relpath = f"exports/listings/{listing.id}.zip"
+                    listing.exported_at = datetime.now(UTC)
+                    listing.export_error = (
+                        (
+                            f"{len(skipped)} could not be read and were left out: "
+                            + ", ".join(skipped[:5])
+                        )[:500]
+                        if skipped
+                        else None
+                    )
+                    await db.commit()
+                    log.info(
+                        "listing.exported",
+                        listing_id=listing_id,
+                        images=written,
+                        skipped=len(skipped),
+                        megabytes=round(zip_path.stat().st_size / 1024**2, 1),
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
