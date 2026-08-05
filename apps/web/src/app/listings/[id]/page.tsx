@@ -17,7 +17,11 @@ import Thumb from "@/components/Thumb";
 import {
   api,
   listingExportUrl,
+  type AiEditSettings,
+  type FolderAsset,
+  type SkyAsset,
   type ListingDetail,
+  type ListingFolder,
   type RoomOption,
   type SearchResponse,
 } from "@/lib/api";
@@ -33,10 +37,19 @@ export default function ListingPage() {
   const [rooms, setRooms] = useState<RoomOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [addMode, setAddMode] = useState<"folders" | "search">("folders");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResponse | null>(null);
+  const [folders, setFolders] = useState<ListingFolder[] | null>(null);
+  const [folderAssets, setFolderAssets] = useState<FolderAsset[] | null>(null);
+  const [openFolder, setOpenFolder] = useState<ListingFolder | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [aiSettings, setAiSettings] = useState<AiEditSettings | null>(null);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [skies, setSkies] = useState<SkyAsset[]>([]);
+  const [skyChoice, setSkyChoice] = useState<string>("");
   const dragFrom = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -51,6 +64,8 @@ export default function ListingPage() {
   useEffect(() => {
     load();
     api.rooms().then(setRooms).catch(() => setRooms([]));
+    api.aiEditSettings().then(setAiSettings).catch(() => setAiSettings(null));
+    api.skies().then(setSkies).catch(() => setSkies([]));
   }, [load]);
 
   // Poll only while an export is in flight.
@@ -80,8 +95,61 @@ export default function ListingPage() {
 
   async function search() {
     if (!query.trim()) return;
-    setResults(await api.search(query.trim()));
+    if (addMode === "folders") {
+      setOpenFolder(null);
+      setFolderAssets(null);
+      setFolders(await api.searchFolders(query.trim()));
+    } else {
+      setResults(await api.search(query.trim()));
+    }
   }
+
+  async function browseFolder(folder: ListingFolder) {
+    setOpenFolder(folder);
+    setFolderAssets(await api.folderAssets(folder.library_id, folder.path));
+  }
+
+  async function aiEditAll() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { queued, mode } = await api.aiEditListing(listingId, skyChoice || null);
+      setAiRunning(true);
+      setNotice(
+        mode === "ai"
+          ? `AI editing ${queued} photos — a preview of each goes to the Claude API, ` +
+              `slider values come back, and the full-resolution render happens here.` +
+              (skyChoice ? ` Skies swap in wherever the photo has sky.` : "")
+          : `Auto-editing ${queued} photos with the listing preset, entirely on this ` +
+              `machine.` +
+              (skyChoice ? ` Skies swap in wherever the photo has sky.` : "") +
+              ` Add an Anthropic key on Security for per-photo AI judgment.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start auto-editing");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // While an AI run is in flight, refresh so edited badges appear; stop when
+  // every image is edited or after 15 minutes, whichever comes first.
+  useEffect(() => {
+    if (!aiRunning) return;
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      await load();
+      const all = (listing?.items ?? []).filter((i) => i.media_type === "image");
+      if (
+        (all.length > 0 && all.every((i) => i.edited)) ||
+        Date.now() - started > 15 * 60 * 1000
+      ) {
+        setAiRunning(false);
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiRunning]);
 
   function togglePick(assetId: string) {
     setPicked((current) => {
@@ -153,6 +221,11 @@ export default function ListingPage() {
           {error}
         </div>
       )}
+      {notice && !error && (
+        <div className="card" role="status">
+          {notice}
+        </div>
+      )}
       {listing?.export_status === "failed" && listing.export_error && (
         <div className="card" role="alert" style={{ borderColor: "var(--ember)" }}>
           Export failed: {listing.export_error}
@@ -184,6 +257,33 @@ export default function ListingPage() {
         >
           Arrange by room
         </button>
+        <select
+          className="select"
+          aria-label="Sky replacement for auto-edit"
+          value={skyChoice}
+          disabled={busy || aiRunning}
+          onChange={(e) => setSkyChoice(e.target.value)}
+          title="Composited wherever a photo has sky; interiors pass through untouched"
+        >
+          <option value="">Keep skies as shot</option>
+          {skies.map((sky) => (
+            <option key={sky.name} value={sky.name}>
+              Sky: {sky.name.replace(/-\d+\.(jpg|jpeg|png|webp)$/i, "")}
+            </option>
+          ))}
+        </select>
+        <button
+          className="btn"
+          disabled={busy || aiRunning || !items.some((i) => i.media_type === "image")}
+          onClick={aiEditAll}
+          title={
+            aiSettings?.configured && aiSettings.enabled
+              ? "Per-photo AI judgment via the Claude API; renders happen here at full resolution"
+              : "Tuned listing preset, entirely local. Add an Anthropic key on Security for per-photo AI judgment."
+          }
+        >
+          {aiRunning ? "Auto-editing…" : "Auto-edit photos"}
+        </button>
         <button
           className="btn btn-primary"
           disabled={busy || exporting || !items.some((i) => i.media_type === "image")}
@@ -209,10 +309,30 @@ export default function ListingPage() {
       {adding && (
         <div className="card">
           <div className="toolbar" style={{ marginTop: 0 }}>
+            <button
+              className="btn"
+              data-active={addMode === "folders"}
+              style={addMode === "folders" ? { borderColor: "var(--amber)" } : undefined}
+              onClick={() => setAddMode("folders")}
+            >
+              Folders
+            </button>
+            <button
+              className="btn"
+              data-active={addMode === "search"}
+              style={addMode === "search" ? { borderColor: "var(--amber)" } : undefined}
+              onClick={() => setAddMode("search")}
+            >
+              Search
+            </button>
             <input
               className="input"
               style={{ flex: 1, minWidth: 220 }}
-              placeholder="Search the catalogue — filename, folder, or what's in the photo"
+              placeholder={
+                addMode === "folders"
+                  ? "Folder name — e.g. the property address"
+                  : "Search the catalogue — filename, folder, or what's in the photo"
+              }
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -229,7 +349,89 @@ export default function ListingPage() {
               </button>
             )}
           </div>
-          {results && (
+          {addMode === "folders" && !openFolder && folders && (
+            <div style={{ display: "grid", gap: 6 }}>
+              {folders.length === 0 && (
+                <div className="empty">No folders match that name.</div>
+              )}
+              {folders.map((folder) => (
+                <button
+                  type="button"
+                  key={`${folder.library_id}:${folder.path}`}
+                  className="btn"
+                  style={{ justifyContent: "space-between", display: "flex", gap: 8 }}
+                  onClick={() => browseFolder(folder)}
+                >
+                  <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {folder.path || "(library root)"}
+                  </span>
+                  <span className="faint mono">
+                    {folder.library_name} · {folder.image_count} photos
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          {addMode === "folders" && openFolder && folderAssets && (
+            <>
+              <div className="toolbar" style={{ marginTop: 0 }}>
+                <button className="btn" onClick={() => setOpenFolder(null)}>
+                  ← Folders
+                </button>
+                <span className="faint mono" style={{ flex: 1 }}>
+                  {openFolder.path || "(library root)"} · {folderAssets.length} photos
+                </span>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    const inListing = new Set(items.map((i) => i.asset_id));
+                    setPicked(
+                      new Set(
+                        folderAssets
+                          .filter((a) => !inListing.has(a.asset_id))
+                          .map((a) => a.asset_id),
+                      ),
+                    );
+                  }}
+                >
+                  Select all new
+                </button>
+                <button className="btn" onClick={() => setPicked(new Set())}>
+                  Clear
+                </button>
+              </div>
+              <div className="grid">
+                {folderAssets.map((a) => {
+                  const already = items.some((i) => i.asset_id === a.asset_id);
+                  return (
+                    <button
+                      type="button"
+                      key={a.asset_id}
+                      className="tile"
+                      disabled={already}
+                      style={
+                        picked.has(a.asset_id)
+                          ? { outline: "2px solid var(--amber)" }
+                          : already
+                            ? { opacity: 0.4 }
+                            : undefined
+                      }
+                      onClick={() => togglePick(a.asset_id)}
+                      title={already ? `${a.filename} — already in this listing` : a.filename}
+                    >
+                      <div className="tile-frame">
+                        <Thumb assetId={a.asset_id} mediaType="image" status="ready" />
+                      </div>
+                      <span className="faint mono" style={{ fontSize: "0.7rem" }}>
+                        {a.filename}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          {addMode === "search" && results && (
             <div className="grid">
               {[
                 ...results.visual_hits.map((h) => ({

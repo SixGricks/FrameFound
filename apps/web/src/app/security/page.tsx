@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import MapsSettingsCard from "@/components/MapsSettingsCard";
+import AiEditCard from "@/components/AiEditCard";
 import PanelTokensCard from "@/components/PanelTokensCard";
 import TailnetCard from "@/components/TailnetCard";
 import Shell from "@/components/Shell";
@@ -397,6 +398,8 @@ export default function SecurityPage() {
       <TailnetCard />
 
       <MapsSettingsCard />
+
+      <AiEditCard />
 
       <div className="sectionhead">
         <h2>Signed-in devices</h2>

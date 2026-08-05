@@ -25,7 +25,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 
 from framefound.ai.embeddings import EmbeddingUnavailable
-from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
+from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.config import Settings
 from framefound.db.models import Asset, AssetEdit, AssetInpaint, Library, Listing, ListingItem
 from framefound.media import develop as develop_lib
@@ -64,6 +64,8 @@ class RecipeIn(BaseModel):
     rotate: float = Field(default=0.0, ge=-5.0, le=5.0)
     keystone: float = Field(default=0.0, ge=-1.0, le=1.0)
     window_pull: float = Field(default=0.0, ge=0.0, le=1.0)
+    auto_wb: float = Field(default=0.0, ge=0.0, le=1.0)
+    local_contrast: float = Field(default=0.0, ge=0.0, le=1.0)
     auto: bool = False
     sky: SkyIn | None = None
 
@@ -576,3 +578,53 @@ async def apply_to_listing(
     await db.commit()
     log.info("develop.batch_applied", listing_id=str(listing_id), applied=applied)
     return BatchApplyResponse(applied=applied)
+
+
+# ------------------------------------------------------------ AI settings
+#
+# Same contract as the maps keys: the key is sealed at rest, the API only
+# ever says whether one is present, and nothing is sent anywhere until the
+# operator presses the button that says send.
+
+
+class AiEditSettingsOut(BaseModel):
+    configured: bool
+    enabled: bool
+    model: str
+
+
+class AiEditSettingsIn(BaseModel):
+    # None = leave the stored key alone; "" = clear it; text = replace it.
+    api_key: str | None = Field(default=None, max_length=300)
+    enabled: bool | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+@router.get("/settings/ai", response_model=AiEditSettingsOut)
+async def ai_settings(_user: CurrentUser, db: DbDep) -> AiEditSettingsOut:
+    from framefound.media.maps_store import load_ai_edit_config
+
+    config = await load_ai_edit_config(db)
+    return AiEditSettingsOut(
+        configured=bool(config.api_key_sealed), enabled=config.enabled, model=config.model
+    )
+
+
+@router.put("/settings/ai", response_model=AiEditSettingsOut, dependencies=[require_admin])
+async def update_ai_settings(
+    body: AiEditSettingsIn, _user: CurrentUser, db: DbDep
+) -> AiEditSettingsOut:
+    from framefound.media.maps_store import load_ai_edit_config, save_ai_edit_config
+
+    config = await load_ai_edit_config(db)
+    if body.api_key is not None:
+        config.with_api_key(body.api_key.strip())
+    if body.enabled is not None:
+        config.enabled = body.enabled
+    if body.model is not None:
+        config.model = body.model.strip()
+    await save_ai_edit_config(db, config)
+    log.info("develop.ai_settings_updated", configured=bool(config.api_key_sealed))
+    return AiEditSettingsOut(
+        configured=bool(config.api_key_sealed), enabled=config.enabled, model=config.model
+    )

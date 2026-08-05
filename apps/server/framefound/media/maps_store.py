@@ -164,3 +164,46 @@ async def load_face_config(db: AsyncSession) -> FaceConfig:
 
 async def save_face_config(db: AsyncSession, config: FaceConfig) -> None:
     await _put(db, FACES_KEY, asdict(config))
+
+
+AI_EDIT_KEY = "ai_edit"
+
+
+@dataclass
+class AiEditConfig:
+    """The AI recipe-picker: Claude looks at a small preview and returns
+    slider values; the develop engine renders them locally at full size.
+
+    Off until a key is configured, and even then photographs leave the
+    machine only when the operator presses the button - a 768px preview per
+    photo, to Anthropic, nothing else and nowhere else. The key is sealed
+    like the maps keys: a database dump alone cannot spend it.
+    """
+
+    api_key_sealed: str = ""
+    model: str = "claude-sonnet-5"
+    enabled: bool = True
+
+    @property
+    def ready(self) -> bool:
+        return self.enabled and bool(self.api_key_sealed)
+
+    def api_key(self) -> str:
+        if not self.api_key_sealed:
+            raise SecretUnavailable("No Anthropic API key is configured")
+        return unseal(self.api_key_sealed)
+
+    def with_api_key(self, plaintext: str) -> None:
+        self.api_key_sealed = seal(plaintext) if plaintext else ""
+
+
+async def load_ai_edit_config(db: AsyncSession) -> AiEditConfig:
+    row = await db.get(AppSetting, AI_EDIT_KEY)
+    if row is None:
+        return AiEditConfig()
+    known = set(AiEditConfig().__dict__)
+    return AiEditConfig(**{k: v for k, v in row.value.items() if k in known})
+
+
+async def save_ai_edit_config(db: AsyncSession, config: AiEditConfig) -> None:
+    await _put(db, AI_EDIT_KEY, asdict(config))

@@ -1557,3 +1557,138 @@ def inpaint_asset(inpaint_id: str) -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+@celery_app.task(
+    name="framefound.ai_edit_listing",
+    # media rather than metadata: sky compositing needs the segmentation
+    # model, and worker-media mounts the models cache.
+    queue="media",
+    # Network-bound and idempotent-ish (a rerun writes new recipe versions,
+    # which is the operator pressing the button again). No auto-retry: a
+    # failing API fails the same way, and the per-photo loop already
+    # continues past individual failures.
+    max_retries=0,
+)
+def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "ai") -> None:
+    """Auto-edit a listing's photographs.
+
+    mode "ai": the recipe-picker judges each photograph. mode "preset": the
+    tuned listing preset, no network at all. Either way, when the operator
+    chose a sky it is composited wherever segmentation finds enough sky —
+    interiors pass through untouched, which is what makes one choice safe
+    across a whole shoot.
+
+    Sequential by design: the point is per-photo judgment, not throughput,
+    and one preview in flight at a time keeps the operator's API bill and
+    rate limits boring. Failures on individual photos are logged and
+    skipped - 40 edited and 2 skipped beats 0 edited and an exception.
+    """
+    from PIL import Image, ImageOps
+
+    from framefound.ai import recipe_picker
+    from framefound.db.models import AssetEdit, Listing, ListingItem
+    from framefound.media import develop as develop_lib
+    from framefound.media.maps_store import load_ai_edit_config
+
+    def _sky_fraction_for(source: Path) -> float:
+        """How much sky a photograph has, or 0.0 when segmentation is not
+        installed — the sky is then simply not added, and the colour edit
+        still lands."""
+        try:
+            from framefound.ai import skyseg
+
+            with Image.open(source) as img:
+                image = ImageOps.exif_transpose(img) or img
+                small = image.convert("RGB")
+                small.thumbnail((768, 768), Image.Resampling.BILINEAR)
+                return skyseg.sky_fraction(small)
+        except Exception:
+            return 0.0
+
+    async def run() -> None:
+        from sqlalchemy import func, select
+
+        settings = get_settings()
+        engine = create_async_engine(settings.db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                listing = await db.get(Listing, uuid.UUID(listing_id))
+                if listing is None:
+                    log.warning("ai_edit.listing_gone", listing_id=listing_id)
+                    return
+                config = await load_ai_edit_config(db)
+                use_ai = mode == "ai" and config.ready
+                api_key = config.api_key() if use_ai else ""
+
+                rows = (
+                    await db.execute(
+                        select(ListingItem, Asset, Library)
+                        .join(Asset, Asset.id == ListingItem.asset_id)
+                        .join(Library, Library.id == Asset.library_id)
+                        .where(
+                            ListingItem.listing_id == listing.id,
+                            Asset.media_type == "image",
+                        )
+                        .order_by(ListingItem.position)
+                    )
+                ).all()
+
+                edited = skipped = 0
+                for _item, asset, library in rows:
+                    try:
+                        path = safe_join(Path(library.root_path), asset.relative_path)
+
+                        def build_preview(source: Path = path) -> bytes:
+                            with Image.open(source) as img:
+                                image = ImageOps.exif_transpose(img) or img
+                                return recipe_picker.preview_bytes(image)
+
+                        if use_ai:
+                            preview = await asyncio.to_thread(build_preview)
+                            picked = await asyncio.to_thread(
+                                recipe_picker.pick_recipe, preview, api_key, config.model
+                            )
+                            recipe = dict(picked["recipe"])
+                        else:
+                            recipe = dict(develop_lib.LISTING_PRESET)
+
+                        if sky_name:
+                            fraction = await asyncio.to_thread(_sky_fraction_for, path)
+                            if fraction >= 0.04:
+                                recipe["sky"] = {"name": sky_name}
+                        version = (
+                            await db.execute(
+                                select(func.coalesce(func.max(AssetEdit.version), 0)).where(
+                                    AssetEdit.asset_id == asset.id
+                                )
+                            )
+                        ).scalar_one() + 1
+                        db.add(
+                            AssetEdit(
+                                asset_id=asset.id,
+                                version=version,
+                                recipe=develop_lib.clean_recipe(recipe),
+                            )
+                        )
+                        await db.commit()
+                        edited += 1
+                    except Exception as exc:
+                        await db.rollback()
+                        skipped += 1
+                        log.warning(
+                            "ai_edit.photo_skipped",
+                            filename=asset.filename,
+                            error=str(exc)[:200],
+                        )
+                log.info(
+                    "ai_edit.finished",
+                    listing_id=listing_id,
+                    edited=edited,
+                    skipped=skipped,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())

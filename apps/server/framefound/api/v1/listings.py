@@ -12,9 +12,10 @@ then explicit reorder wins and nothing shuffles it afterwards.
 
 import asyncio
 import uuid
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete as sql_delete
@@ -204,6 +205,111 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
 async def list_rooms(_user: CurrentUser) -> list[RoomOut]:
     """The taxonomy, in canonical listing order — the UI's label dropdown."""
     return [RoomOut(key=room.key, label=room.label) for room in rooms_lib.ROOMS]
+
+
+# --------------------------------------------------------------- folders
+#
+# A shoot is a folder. The operator dumps a card to the NAS as
+# "00-00 5096 Old Philadelphia Pike Kinzers/", the scanner indexes it, and
+# building the listing should start from that folder — not from a search
+# that happens to hit some of its filenames.
+
+
+class FolderOut(BaseModel):
+    library_id: uuid.UUID
+    library_name: str
+    # Folder path relative to the library root; "" is the root itself.
+    path: str
+    image_count: int
+
+
+class FolderAssetOut(BaseModel):
+    asset_id: uuid.UUID
+    filename: str
+    media_type: str
+
+
+def _dirname(relative_path: str) -> str:
+    head, _, _tail = relative_path.rpartition("/")
+    return head
+
+
+@router.get("/folders", response_model=list[FolderOut])
+async def search_folders(
+    _user: CurrentUser,
+    db: DbDep,
+    q: str = Query(min_length=1, max_length=200),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> list[FolderOut]:
+    """Folders whose path matches, with how many photos each holds.
+
+    Grouping happens here rather than in SQL because "the folder" is a
+    substring operation on relative_path, and the portable way to do that
+    identically on PostgreSQL and the SQLite suite is to not ask SQL at all —
+    at this catalogue's size the whole image-path column is a cheap scan.
+    """
+    from framefound.db.models import Library as LibraryModel
+
+    rows = (
+        await db.execute(
+            select(Asset.library_id, Asset.relative_path)
+            .where(Asset.media_type == "image", Asset.relative_path.ilike(f"%{q}%"))
+            .limit(20_000)
+        )
+    ).all()
+    counts: dict[tuple[uuid.UUID, str], int] = {}
+    lowered = q.lower()
+    for library_id, relative_path in rows:
+        folder = _dirname(relative_path)
+        # Match on the folder path, not the filename: a query of "5096"
+        # should find the shoot folder even if no filename contains it.
+        if lowered not in folder.lower():
+            continue
+        counts[(library_id, folder)] = counts.get((library_id, folder), 0) + 1
+
+    names = {
+        lib.id: lib.name
+        for lib in (
+            (
+                await db.execute(
+                    select(LibraryModel).where(LibraryModel.id.in_({k[0] for k in counts}))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    }
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0][1]))[:limit]
+    return [
+        FolderOut(
+            library_id=library_id,
+            library_name=names.get(library_id, ""),
+            path=folder,
+            image_count=count,
+        )
+        for (library_id, folder), count in ranked
+    ]
+
+
+@router.get("/folders/assets", response_model=list[FolderAssetOut])
+async def folder_assets(
+    _user: CurrentUser,
+    db: DbDep,
+    library_id: uuid.UUID,
+    path: str = Query(default="", max_length=1024),
+    limit: int = Query(default=500, ge=1, le=1000),
+) -> list[FolderAssetOut]:
+    """Every image directly inside one folder — no recursion into
+    subfolders, because "MLS/" and "RAW/" siblings are different deliveries
+    of the same shoot and mixing them would double every photograph."""
+    stmt = select(Asset).where(Asset.library_id == library_id, Asset.media_type == "image")
+    rows = (await db.execute(stmt.limit(20_000))).scalars().all()
+    picked = [a for a in rows if _dirname(a.relative_path) == path]
+    picked.sort(key=lambda a: a.filename)
+    return [
+        FolderAssetOut(asset_id=a.id, filename=a.filename, media_type=a.media_type)
+        for a in picked[:limit]
+    ]
 
 
 @router.post("", response_model=ListingDetail, status_code=201)
@@ -433,6 +539,64 @@ async def export_listing(
         max_edge=body.max_edge,
     )
     return await _detail(db, listing, classified=True)
+
+
+class ProcessRequest(BaseModel):
+    # A sky from the library to composite onto photographs that have sky, or
+    # None to leave every sky as shot. The operator chooses; nothing decides
+    # for them.
+    sky_name: str | None = Field(default=None, max_length=120)
+
+
+@router.post("/{listing_id}/ai-edit", status_code=202)
+async def ai_edit(
+    listing_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    body: ProcessRequest | None = None,
+) -> dict[str, Any]:
+    """Auto-edit every photograph in the listing.
+
+    With an Anthropic key configured this is the AI recipe-picker — one
+    768px preview per photograph leaves for the API, slider values come
+    back. Without a key it applies the tuned listing preset, entirely
+    locally. Either way the renders happen here at full resolution, the
+    chosen sky is composited wherever segmentation finds sky, results land
+    as ordinary recipe versions, and the operator tweaks from there.
+    """
+    from framefound.media.maps_store import load_ai_edit_config
+
+    body = body or ProcessRequest()
+    await _get(db, listing_id)
+    config = await load_ai_edit_config(db)
+    mode = "ai" if config.ready else "preset"
+    if body.sky_name and ("/" in body.sky_name or "\\" in body.sky_name or ".." in body.sky_name):
+        raise HTTPException(status_code=400, detail="Not a sky name")
+    images = (
+        await db.execute(
+            select(func.count())
+            .select_from(ListingItem)
+            .join(Asset, Asset.id == ListingItem.asset_id)
+            .where(ListingItem.listing_id == listing_id, Asset.media_type == "image")
+        )
+    ).scalar_one()
+    if not images:
+        raise HTTPException(status_code=400, detail="No photographs to edit")
+
+    try:
+        from framefound.processing.tasks import ai_edit_listing
+
+        ai_edit_listing.delay(str(listing_id), body.sky_name, mode)
+    except Exception:
+        raise HTTPException(status_code=503, detail="The processing queue is unavailable") from None
+    log.info(
+        "listing.ai_edit_queued",
+        listing_id=str(listing_id),
+        images=images,
+        mode=mode,
+        sky=body.sky_name or "",
+    )
+    return {"queued": images, "mode": mode}
 
 
 @router.get("/{listing_id}/export/download")

@@ -197,6 +197,63 @@ queued batch step and goes near-live when the GPU arrives.**
 ### Phase 5 — Claude provider (small, optional)
 Room labels/captions/filenames/QA behind the sealed-key provider pattern.
 
+## Integration reviews (2026-08-05, operator-requested)
+
+**Cloudinary** (cloudinary.com/pricing): a media-CDN with transform credits
+($99/mo Plus = 225 credits; 1 credit ≈ 1,000 transformations or 1 GB).
+Its colour correction is generic auto-enhance — roughly the tier of our
+local auto-levels, with none of the real-estate specials (window pull,
+perspective, sky), and it requires hosting the photos in their cloud.
+**Verdict: wrong tool for this; not adopted.**
+
+**Imagen AI API** (api-docs.imagen-ai.com, real-estate guide): purpose-built
+and directly relevant. Upload originals → full-resolution edited JPEGs
+back, with HDR bracket merge, perspective correction, window pull and sky
+replacement as flags; three built-in real-estate presets (Elegant / Modern /
+Natural Home) or a **Personal AI Profile trained on the operator's own past
+edits** — which closes the "learned style" gap this document previously
+called unclosable. Timing: a 42-image bracketed project runs 30–40 minutes.
+Trades: full photographs leave the machine, per-photo credits, and the edit
+is theirs rather than an inspectable recipe. **Verdict: worth adding as a
+selectable premium backend for final MLS delivery, behind the same
+sealed-key + explicit-button pattern as the Claude picker. Not yet built.**
+
+The resulting three-tier picture:
+
+| Tier | Cost | What leaves | Quality ceiling |
+|---|---|---|---|
+| Local engine + presets | free | nothing | good corrected |
+| Claude recipe-picker | ~fractions of a cent/photo | 768px preview | near-MLS, inspectable |
+| Imagen API (proposed) | per-photo credits | full originals | MLS-final incl. HDR + trained style |
+
+## Parity study — published IntelAuctions listings vs the engine (2026-08-05)
+
+Method: eleven published photographs from intelauctions.com (the Delightful
+Denver Dwelling gallery) paired with their NAS originals by filename — the
+site keeps original names, so pairing is exact — then measured three ways:
+original, our engine, published. Statistics on brightness, red-blue cast and
+mean chroma; side-by-side strips for the eyes.
+
+Results, averaged: brightness original 99 → published 113; the engine lands
+at **113.0** (dead on). Chroma original 11.3 → published 20.0 (they nearly
+double it); the engine reaches 16.7 at vibrance 0.42. Residual cast delta
++7 on golden-hour aerials, where the published grade keeps warmth but tames
+it — per-photo territory, exactly what the AI picker exists for. The tuned
+values are recorded as `develop.LISTING_PRESET`.
+
+**The visible difference on overcast shots is not colour at all: it is sky
+replacement.** The published version of `dji_20260707000320_0016` has a blue
+sky composited over a flat grey one. Which settles the workflow: the
+operator picks the folder, picks a sky (or none), presses Auto-edit, and
+tweaks what comes back.
+
+That workflow shipped the same day: `POST /listings/{id}/ai-edit` takes an
+optional `sky_name`; with an Anthropic key it runs the recipe-picker,
+without one it applies `LISTING_PRESET` entirely locally — the button works
+on day one, and upgrades itself when a key appears. The chosen sky is
+composited only where segmentation finds ≥4% sky, which is what makes one
+choice safe across a whole shoot: interiors pass through untouched.
+
 ## Quality review — will this edit like Fotello? (2026-08-04)
 
 Asked directly, so answered directly. Fotello and Imagen.ai are a human+AI

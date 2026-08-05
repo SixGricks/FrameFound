@@ -43,6 +43,15 @@ RECIPE_FIELDS = {
     # luminance, so a bright window darkens as a region while its own
     # detail keeps its contrast.
     "window_pull": (0.0, 1.0),
+    # Measured white-balance neutralisation, by strength. Unlike the
+    # temperature/tint sliders (a fixed shove), this measures the cast in
+    # the photograph's own likely-neutral surfaces and removes that much of
+    # it — the single biggest difference between a camera JPEG interior and
+    # an MLS final.
+    "auto_wb": (0.0, 1.0),
+    # Large-radius local contrast: the "even but punchy" light of an edited
+    # interior. Midtone separation without moving global exposure.
+    "local_contrast": (0.0, 1.0),
 }
 
 
@@ -212,6 +221,11 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     if recipe.get("auto"):
         arr = _auto_levels(arr, np)
 
+    # Auto white balance before the manual temperature/tint, so those stay
+    # a creative nudge on top of a neutral base rather than fighting a cast.
+    if wb := recipe.get("auto_wb"):
+        arr = _neutralise(arr, wb, np)
+
     if ev := recipe.get("exposure"):
         arr *= 2.0**ev
 
@@ -260,6 +274,21 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
         gain = 1.0 - (0.75 * pull) * excess**1.3
         arr *= gain[..., None]
 
+    if punch := recipe.get("local_contrast"):
+        from PIL import ImageFilter
+
+        luma = np.clip(arr @ np.asarray(_LUMA, dtype=np.float32), 1e-4, 1.0)
+        blur_img = Image.fromarray((luma * 255.0).astype("uint8"), "L")
+        radius = max(4.0, arr.shape[0] / 16.0)
+        blurred = (
+            np.asarray(blur_img.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32) / 255.0
+        )
+        # Unsharp on luminance at a large radius: push each region away from
+        # its neighbourhood average, then carry the colour along by ratio so
+        # hues do not shift.
+        lifted = np.clip(luma + (0.55 * punch) * (luma - blurred), 1e-4, 1.0)
+        arr *= (lifted / luma)[..., None]
+
     vibrance, saturation = recipe.get("vibrance"), recipe.get("saturation")
     if vibrance or saturation:
         luma = (arr @ np.asarray(_LUMA, dtype=np.float32))[..., None]
@@ -277,6 +306,30 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     return Image.fromarray((arr * 255.0 + 0.5).astype("uint8"), "RGB")
 
 
+def _neutralise(arr: Any, strength: float, np: Any) -> Any:
+    """Remove the measured colour cast, by strength.
+
+    The cast is measured on the mid-to-bright band (40th–95th luminance
+    percentile) — in an interior that band is walls and ceilings, the
+    surfaces that are usually *meant* to be neutral. Gray-world over the
+    whole frame would try to neutralise the oak floor; this does not. Gains
+    are bounded so a photograph that is legitimately one colour (a sunset,
+    a red barn wall) is nudged, never bleached.
+    """
+    luma = arr @ np.asarray(_LUMA, dtype=np.float32)
+    low, high = np.percentile(luma, (40.0, 95.0))
+    band = (luma >= low) & (luma <= high)
+    if not band.any():
+        return arr
+    means = arr[band].reshape(-1, 3).mean(axis=0)
+    target = float(means.mean())
+    if target <= 1e-4:
+        return arr
+    gains = np.clip(target / np.maximum(means, 1e-4), 0.7, 1.4)
+    applied = 1.0 + (gains - 1.0) * strength
+    return arr * applied[None, None, :]
+
+
 def _auto_levels(arr: Any, np: Any) -> Any:
     """Gentle per-channel stretch: put the 0.5th percentile near black and
     the 99.5th near white, per channel, which both opens up a flat exposure
@@ -290,3 +343,19 @@ def _auto_levels(arr: Any, np: Any) -> Any:
         if high - low > 1e-3:
             out[..., channel] = (out[..., channel] - low) / (high - low)
     return out
+
+
+# The listing preset: the deterministic auto-edit used when no AI key is
+# configured, and the base the AI picker's judgment refines. Tuned against
+# published IntelAuctions listings vs their NAS originals (2026-08-05,
+# eleven pairs): brightness landed within half a point of the published
+# average, saturation within ~15%, with the remaining visible difference
+# being sky replacement - which is a separate, operator-chosen step.
+LISTING_PRESET: dict[str, Any] = {
+    "auto_wb": 1.0,
+    "exposure": 0.22,
+    "shadows": 0.30,
+    "window_pull": 0.30,
+    "local_contrast": 0.30,
+    "vibrance": 0.42,
+}

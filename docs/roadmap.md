@@ -271,6 +271,30 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**2026-08-06: parity measured against the operator's own published work.**
+Eleven photographs from a live intelauctions.com gallery paired with their
+NAS originals by filename. Brightness parity is exact (engine 113.0 vs
+published 113.2); chroma reaches 84% of the published push; the visible gap
+on overcast shots turned out to be sky replacement, not colour. The tuned
+values live as `develop.LISTING_PRESET`, and the auto-edit flow now takes a
+sky choice and works with or without an API key — folder in, near-final
+photos out, operator tweaks last. Full numbers in real-estate-editing.md.
+
+**2026-08-05, evening: the operator's field test came back.** Three findings
+from real use, all addressed the same day: listings now build from **shoot
+folders** (search the address, tick the photos, direct children only so an
+MLS/ sibling folder cannot double a shoot); the develop engine gained
+**auto-WB neutralisation** (measured on the photo's own likely-neutral
+surfaces, bounded so a sunset survives) and **large-radius local contrast**;
+and **AI auto-edit** landed — Claude vision reads a 768px preview per photo
+and returns slider values, the engine renders them locally at full
+resolution. Key sealed on the Security page, presence-only in the API,
+photos leave only when the button is pressed. Eight licensed Adobe Stock
+skies were named and installed into the sky library. Reviewed on request:
+Cloudinary (wrong tool), Imagen AI API (strong; proposed as a premium
+backend — see real-estate-editing.md). Reference target recorded: the
+professionally-edited MLS finals of 5096 Old Philadelphia Pike.
+
 **2026-08-05, later: object removal shipped (Phase 4).** Brush over the
 object in the editor, press Remove; LaMa runs crop-around-the-mask at 512
 on the media queue (~20-40 s per region, measured), and the result becomes

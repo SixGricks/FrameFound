@@ -531,6 +531,8 @@ export interface DevelopRecipe {
   rotate: number;
   keystone: number;
   window_pull: number;
+  auto_wb: number;
+  local_contrast: number;
   auto: boolean;
   sky: SkyChoice | null;
 }
@@ -547,6 +549,8 @@ export const EMPTY_RECIPE: DevelopRecipe = {
   rotate: 0,
   keystone: 0,
   window_pull: 0,
+  auto_wb: 0,
+  local_contrast: 0,
   auto: false,
   sky: null,
 };
@@ -560,6 +564,25 @@ export interface SkyInfo {
   fraction: number;
   usable: boolean;
   available: boolean;
+}
+
+export interface ListingFolder {
+  library_id: string;
+  library_name: string;
+  path: string;
+  image_count: number;
+}
+
+export interface FolderAsset {
+  asset_id: string;
+  filename: string;
+  media_type: MediaType;
+}
+
+export interface AiEditSettings {
+  configured: boolean;
+  enabled: boolean;
+  model: string;
 }
 
 export interface InpaintVersion {
@@ -926,6 +949,25 @@ export const api = {
       body: JSON.stringify({ max_edge: maxEdge, quality }),
     }),
   deleteListing: (id: string) => request<void>(`/listings/${id}`, { method: "DELETE" }),
+  searchFolders: (q: string) =>
+    request<ListingFolder[]>(`/listings/folders?q=${encodeURIComponent(q)}`),
+  folderAssets: (libraryId: string, path: string) =>
+    request<FolderAsset[]>(
+      `/listings/folders/assets?library_id=${libraryId}&path=${encodeURIComponent(path)}`,
+    ),
+  aiEditListing: (id: string, skyName: string | null) =>
+    request<{ queued: number; mode: "ai" | "preset" }>(`/listings/${id}/ai-edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sky_name: skyName }),
+    }),
+  aiEditSettings: () => request<AiEditSettings>("/develop/settings/ai"),
+  updateAiEditSettings: (patch: { api_key?: string; enabled?: boolean; model?: string }) =>
+    request<AiEditSettings>("/develop/settings/ai", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
 
   skies: () => request<SkyAsset[]>("/develop/skies"),
   uploadSky: (name: string, file: File) =>
