@@ -89,6 +89,14 @@ ROOMS: tuple[Room, ...] = (
         ("a home office with a desk",),
     ),
     Room(
+        "rec_room",
+        "Rec room",
+        (
+            "a recreation room with a pool table or game tables",
+            "a family game room in a house",
+        ),
+    ),
+    Room(
         "laundry",
         "Laundry",
         ("a laundry room with a washer and dryer",),
@@ -115,6 +123,44 @@ ROOMS: tuple[Room, ...] = (
         "pool",
         "Pool",
         ("a swimming pool at a house",),
+    ),
+    Room(
+        "barn",
+        "Barn",
+        (
+            "a large barn on a farm",
+            "the inside of a barn with stalls and hay",
+        ),
+    ),
+    Room(
+        "shed",
+        "Shed",
+        ("a storage shed or outbuilding on a property", "a small utility shed"),
+    ),
+    Room(
+        "pasture",
+        "Pasture / field",
+        (
+            "a fenced pasture with farmland",
+            "an open field or meadow on a rural property",
+        ),
+    ),
+    Room(
+        "hunting",
+        "Hunting land",
+        (
+            "wooded hunting land with a deer stand",
+            "a food plot clearing in the woods",
+            "a hunting blind at the edge of a forest",
+        ),
+    ),
+    Room(
+        "outdoor",
+        "Outdoor (other)",
+        (
+            "the grounds of a rural property",
+            "an outdoor feature of a country home",
+        ),
     ),
     Room(
         "floor_plan",

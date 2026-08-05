@@ -353,3 +353,51 @@ async def test_ai_edit_task_writes_a_recipe_per_photo(
 
     detail = (await client.get(f"/api/v1/listings/{listing['id']}")).json()
     assert all(item["edited"] for item in detail["items"])
+
+
+# --------------------------------------------------------------- curation
+
+
+def test_suggest_removals_keeps_the_sharpest_of_a_duplicate_group() -> None:
+    from framefound.media import curate
+
+    vec = [0.0] * 512
+    vec[0] = 1.0
+    near = [0.0] * 512
+    near[0] = 0.999
+    near[1] = 0.04
+
+    items = [
+        {"id": "a", "room": "kitchen", "sharpness": 9.0, "embedding": vec},
+        {"id": "b", "room": "kitchen", "sharpness": 4.0, "embedding": near},
+        {"id": "c", "room": "kitchen", "sharpness": 8.0, "embedding": None},
+    ]
+    out = curate.suggest_removals(items)
+    assert [s["id"] for s in out] == ["b"], "the softer twin goes, the sharp one stays"
+    assert out[0]["keep_instead"] == "a"
+
+
+def test_suggest_removals_never_empties_a_room() -> None:
+    from framefound.media import curate
+
+    blurry_barn = {"id": "barn1", "room": "barn", "sharpness": 0.5, "embedding": None}
+    sharp_kitchens = [
+        {"id": f"k{i}", "room": "kitchen", "sharpness": 10.0, "embedding": None} for i in range(4)
+    ]
+    out = curate.suggest_removals([blurry_barn, *sharp_kitchens])
+    assert all(s["id"] != "barn1" for s in out), (
+        "a blurry photo of the only barn is still the only barn"
+    )
+
+
+def test_sharpness_orders_blur_correctly() -> None:
+    from PIL import ImageFilter
+
+    from framefound.media import curate
+
+    detailed = Image.new("RGB", (128, 128))
+    for x in range(128):
+        for y in range(128):
+            detailed.putpixel((x, y), ((x * 7 + y * 13) % 256,) * 3)
+    blurred = detailed.filter(ImageFilter.GaussianBlur(4))
+    assert curate.sharpness(detailed) > curate.sharpness(blurred) * 2

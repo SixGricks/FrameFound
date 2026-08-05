@@ -579,6 +579,13 @@ export interface FolderAsset {
   media_type: MediaType;
 }
 
+export interface RemovalSuggestion {
+  asset_id: string;
+  filename: string;
+  reason: string;
+  keep_instead: string | null;
+}
+
 export interface AiEditSettings {
   configured: boolean;
   enabled: boolean;
@@ -955,6 +962,10 @@ export const api = {
     request<FolderAsset[]>(
       `/listings/folders/assets?library_id=${libraryId}&path=${encodeURIComponent(path)}`,
     ),
+  reclassifyListing: (id: string) =>
+    request<ListingDetail>(`/listings/${id}/classify`, { method: "POST" }),
+  curateListing: (id: string) =>
+    request<RemovalSuggestion[]>(`/listings/${id}/curate`, { method: "POST" }),
   aiEditListing: (id: string, skyName: string | null) =>
     request<{ queued: number; mode: "ai" | "preset" }>(`/listings/${id}/ai-edit`, {
       method: "POST",

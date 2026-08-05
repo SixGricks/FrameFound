@@ -66,10 +66,15 @@ def sky_mask(image: Any) -> Any:
     batch = arr.transpose(2, 0, 1)[None]
 
     (logits,) = session.run(None, {session.get_inputs()[0].name: batch})
-    classes = logits[0].argmax(axis=0)  # (h, w) at the model's output stride
-    mask = (classes == ADE_SKY_CLASS).astype(np.float32)
+    # Softmax probability of sky rather than a hard argmax: the compositor
+    # needs a matte, and the model's own uncertainty at foliage boundaries
+    # is exactly the softness a matte should have there.
+    scores = logits[0].astype(np.float32)
+    scores -= scores.max(axis=0, keepdims=True)
+    exp = np.exp(scores)
+    prob = exp[ADE_SKY_CLASS] / exp.sum(axis=0)
 
-    mask_img = Image.fromarray((mask * 255.0).astype("uint8"), "L")
+    mask_img = Image.fromarray((np.clip(prob, 0.0, 1.0) * 255.0).astype("uint8"), "L")
     mask_img = mask_img.resize(image.size, Image.Resampling.BILINEAR)
     return np.asarray(mask_img, dtype=np.float32) / 255.0
 

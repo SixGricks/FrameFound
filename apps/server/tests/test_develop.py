@@ -676,3 +676,30 @@ async def test_inpaint_task_runs_and_export_uses_the_result(
     resp = await client.delete(f"/api/v1/develop/{asset_id}/inpaint/1")
     assert resp.status_code == 200
     assert not result_path.exists(), "undo deletes the invented pixels"
+
+
+def test_sky_matte_keeps_dark_branches() -> None:
+    """Segmentation at 512 cannot resolve twigs; their darkness gives them
+    away. A dark branch inside the matte must survive the swap instead of
+    being painted over with sky."""
+    import numpy as np
+
+    from framefound.media.sky import composite_sky
+
+    size = 96
+    image = Image.new("RGB", (size, size), (60, 50, 40))
+    for y in range(size // 2):  # bright sky above
+        for x in range(size):
+            image.putpixel((x, y), (210, 215, 225))
+    for x in range(20, 76):  # a dark branch crossing the sky
+        for y in range(20, 24):
+            image.putpixel((x, y), (35, 30, 25))
+    mask = np.zeros((size, size), dtype="float32")
+    mask[: size // 2] = 1.0  # segmentation says: all of it is sky
+
+    red = Image.new("RGB", (size, size), (240, 40, 40))
+    out = composite_sky(image, mask, red, feather=0.0, relight=0.0)
+    r, g, b = out.getpixel((48, 22))
+    assert r < 120, "the branch stayed a branch"
+    sky_r = out.getpixel((48, 8))[0]
+    assert sky_r > 180, "open sky was still replaced"

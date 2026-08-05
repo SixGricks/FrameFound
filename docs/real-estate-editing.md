@@ -254,6 +254,39 @@ on day one, and upgrades itself when a key appears. The chosen sky is
 composited only where segmentation finds ≥4% sky, which is what makes one
 choice safe across a whole shoot: interiors pass through untouched.
 
+## Field-test round 2 (2026-08-05, operator testing live)
+
+Seven findings from real use, six addressed the same session:
+
+- **Per-photo progress.** Auto-edit tiles now show a spinner that flips to
+  "✓ edited" as each photograph lands, with an n-of-m counter on the button
+  — the Fotello affordance the flow was missing.
+- **Farm & rural categories**: Barn, Shed, Pasture/field, Hunting land
+  (deer stands, food plots, blinds), Outdoor (other), and Rec room join the
+  taxonomy — 21 rooms now, tuned for the Lancaster market.
+- **Sky matte rebuilt for trees.** Segmentation now yields a soft
+  probability matte (the model's own uncertainty at foliage is exactly the
+  softness a matte wants), eroded before feathering so sky never bleeds
+  into leaf edges, then luminance-keyed: pixels much darker than the sky's
+  own brightness are branches, and they survive the swap. Relight also
+  gained a global component — a third of the ground correction applied to
+  the whole frame, because a real scene is lit by its sky and that whisper
+  is what makes a composite read as one photograph.
+- **Listing controls moved to a right rail**: Auto-edit (sky choice +
+  progress), Rooms & order (arrange + re-suggest), Curate, Export (size and
+  quality selects at last exposed), Delete. The grid is the work surface;
+  the rail is what happens to the whole shoot.
+- **Curation.** "Suggest removals" finds near-duplicate groups via the CLIP
+  embeddings already stored (≥0.92 cosine = interchangeable), keeps the
+  sharpest frame per group (mean |Laplacian| at 384px), and flags markedly
+  soft outliers — with a coverage guard: a room never loses its last
+  photograph, because a blurry photo of the only barn is still the only
+  barn. Suggestions cap at 40% of the listing and nothing is removed until
+  the operator says so.
+- **Bracket merge acknowledged, not yet built**: the operator spotted
+  frames that should have been exposure-merged. That is the enfuse work
+  already on the plan; it moves up the queue.
+
 ## Quality review — will this edit like Fotello? (2026-08-04)
 
 Asked directly, so answered directly. Fotello and Imagen.ai are a human+AI

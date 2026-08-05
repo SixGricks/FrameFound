@@ -271,6 +271,17 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**2026-08-06, continued: live-testing feedback, six fixes same session.**
+Per-photo auto-edit progress (spinner → ✓ per tile, n/m on the button);
+six farm/rural room categories for the Lancaster market; the sky matte
+rebuilt for trees (soft probability matte, erode-then-feather, luminance
+keying so branches survive) plus global relight harmonisation; listing
+controls moved to a right rail with export size/quality finally exposed;
+and curation — near-duplicate detection over stored embeddings plus a
+sharpness ranking, guarded so no room loses its last photograph. Bracket
+fusion (enfuse) moves up the queue after the operator caught frames that
+deserved a merge. Details in real-estate-editing.md.
+
 **2026-08-06: parity measured against the operator's own published work.**
 Eleven photographs from a live intelauctions.com gallery paired with their
 NAS originals by filename. Brightness parity is exact (engine 113.0 vs

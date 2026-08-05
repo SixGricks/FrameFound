@@ -54,16 +54,33 @@ def composite_sky(
     y0 = round((sky_h - height) * min(1.0, max(0.0, 0.5 + shift)))
     sky = sky.crop((0, y0, width, y0 + height))
 
-    # Feather the mask so the horizon is a blend, not a scissor line. The
-    # blur radius scales with the image, which keeps the preview and the
-    # full-resolution export looking alike.
-    mask_img = Image.fromarray((np.clip(mask, 0.0, 1.0) * 255.0).astype("uint8"), "L")
-    radius = max(1.0, feather * height)
-    mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius))
-    soft = np.asarray(mask_img, dtype=np.float32)[..., None] / 255.0
-
+    # Build the matte in three steps, all aimed at trees:
+    #
+    # 1. Erode before feathering. A matte that reaches the last classified
+    #    pixel bleeds sky colour into leaf edges; pulling it in first means
+    #    the feather blends *inward* from safely-sky territory.
+    # 2. Feather, scaled with the image so preview and export look alike.
+    # 3. Luminance keying: within the matte, pixels much darker than the
+    #    sky's own brightness are branches and twigs, not sky — segmentation
+    #    at 512 cannot resolve them, but their darkness gives them away.
+    #    Suppressing the matte there keeps the tree's silhouette crisp over
+    #    the new sky instead of haloed.
     fg = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
     bg = np.asarray(sky, dtype=np.float32) / 255.0
+
+    mask_img = Image.fromarray((np.clip(mask, 0.0, 1.0) * 255.0).astype("uint8"), "L")
+    erode = max(3, (round(0.004 * height) * 2) + 1)  # odd kernel, ~0.4% of height
+    mask_img = mask_img.filter(ImageFilter.MinFilter(erode))
+    radius = max(1.0, feather * height)
+    mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius))
+    soft = np.asarray(mask_img, dtype=np.float32) / 255.0
+
+    luma = fg @ np.asarray([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    core = soft > 0.7
+    sky_luma = float(np.median(luma[core])) if core.any() else 0.8
+    # 1.0 at sky brightness, fading to 0 for pixels ~0.35 darker.
+    darkness_key = np.clip((luma - (sky_luma - 0.35)) / 0.25, 0.0, 1.0)
+    soft = (soft * darkness_key)[..., None]
 
     if relight > 0.0:
         fg = _relight(fg, bg, soft, relight, np)
@@ -74,19 +91,24 @@ def composite_sky(
 
 
 def _relight(fg: Any, bg: Any, soft: Any, strength: float, np: Any) -> Any:
-    """Nudge the foreground toward the sky's colour temperature.
+    """Make the whole photograph agree with its new sky.
 
-    A dusk sky over a noon-lit house is the tell that ruins every amateur
-    sky swap. The correction is bounded channel gains toward the sky's mean
-    tone — enough that the light agrees, never enough to repaint the house.
+    Two parts. The ground gets bounded channel gains toward the sky's mean
+    tone — a dusk sky over a noon-lit house is the tell that ruins every
+    amateur swap. Then the *entire* frame gets the same correction at a
+    third of the strength: a real scene is lit by its sky, so every surface
+    carries a trace of its colour, and that global whisper is what makes a
+    composite read as one photograph instead of two.
     """
-    ground = soft[..., 0] < 0.5
-    if not ground.any():
-        return fg
     sky_mean = bg.reshape(-1, 3).mean(axis=0)
     tone = sky_mean / max(float(sky_mean.mean()), 1e-4)  # colour, not brightness
-    # At most ±12% per channel at full strength.
+    # At most ±12% per channel at full strength on the ground...
     gains = 1.0 + (np.clip(tone, 0.7, 1.3) - 1.0) * 0.4 * strength
+    ground = soft[..., 0] < 0.5
     out = fg.copy()
-    out[ground] = fg[ground] * gains[None, :]
-    return out
+    if ground.any():
+        out[ground] = fg[ground] * gains[None, :]
+    # ...and a global third of that everywhere, so the harmonisation has no
+    # visible seam of its own at the matte boundary.
+    global_gains = 1.0 + (gains - 1.0) * (1.0 / 3.0)
+    return out * global_gains[None, None, :]

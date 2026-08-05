@@ -599,6 +599,89 @@ async def ai_edit(
     return {"queued": images, "mode": mode}
 
 
+class RemovalSuggestion(BaseModel):
+    asset_id: uuid.UUID
+    filename: str
+    reason: str
+    keep_instead: uuid.UUID | None
+
+
+@router.post("/{listing_id}/curate", response_model=list[RemovalSuggestion])
+async def curate(listing_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list[RemovalSuggestion]:
+    """Which photographs this listing can afford to lose.
+
+    Near-duplicate groups keep their sharpest frame; markedly soft frames
+    are offered up — but a room never loses its last photograph, because
+    coverage beats polish. Suggestions only: nothing is removed until the
+    operator says so.
+    """
+    from pathlib import Path as PathLib
+
+    from PIL import Image, ImageOps
+
+    from framefound.db.models import Library as LibraryModel
+    from framefound.media import curate as curate_lib
+    from framefound.scanner.paths import PathValidationError, safe_join
+
+    rows = (
+        await db.execute(
+            select(ListingItem, Asset, LibraryModel)
+            .join(Asset, Asset.id == ListingItem.asset_id)
+            .join(LibraryModel, LibraryModel.id == Asset.library_id)
+            .where(ListingItem.listing_id == listing_id, Asset.media_type == "image")
+        )
+    ).all()
+    if not rows:
+        return []
+
+    embedding_rows = (
+        await db.execute(
+            select(Frame.asset_id, Frame.embedding).where(
+                Frame.asset_id.in_([a.id for _i, a, _l in rows]),
+                Frame.embedding.is_not(None),
+            )
+        )
+    ).all()
+    embeddings: dict[uuid.UUID, list[float] | None] = {aid: emb for aid, emb in embedding_rows}
+
+    def measure(path: PathLib) -> float:
+        with Image.open(path) as img:
+            image = ImageOps.exif_transpose(img) or img
+            small = image.convert("RGB")
+            small.thumbnail((384, 384), Image.Resampling.BILINEAR)
+            return curate_lib.sharpness(small)
+
+    items = []
+    names = {}
+    for item, asset, library in rows:
+        names[str(asset.id)] = asset.filename
+        try:
+            path = safe_join(PathLib(library.root_path), asset.relative_path)
+            sharp = await asyncio.to_thread(measure, path)
+        except (PathValidationError, OSError):
+            continue
+        items.append(
+            {
+                "id": str(asset.id),
+                "room": item.room or "",
+                "sharpness": sharp,
+                "embedding": embeddings.get(asset.id),
+            }
+        )
+
+    suggestions = curate_lib.suggest_removals(items)
+    log.info("listing.curated", listing_id=str(listing_id), suggestions=len(suggestions))
+    return [
+        RemovalSuggestion(
+            asset_id=uuid.UUID(s["id"]),
+            filename=names.get(s["id"], ""),
+            reason=s["reason"],
+            keep_instead=uuid.UUID(s["keep_instead"]) if s["keep_instead"] else None,
+        )
+        for s in suggestions
+    ]
+
+
 @router.get("/{listing_id}/export/download")
 async def download_export(  # type: ignore[no-untyped-def]
     listing_id: uuid.UUID, _user: CurrentUser, db: DbDep, settings: SettingsDep
