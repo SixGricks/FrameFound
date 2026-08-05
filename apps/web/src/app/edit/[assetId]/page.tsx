@@ -18,6 +18,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
+import SkyPicker from "@/components/SkyPicker";
 import {
   api,
   EMPTY_RECIPE,
@@ -478,27 +479,16 @@ export default function EditPage() {
             </div>
             {skyInfo?.usable && (
               <>
-                <select
-                  className="select"
-                  style={{ width: "100%" }}
-                  aria-label="Replacement sky"
+                <SkyPicker
+                  skies={skies}
                   value={recipe.sky?.name ?? ""}
-                  onChange={(e) =>
+                  onChange={(name) =>
                     set(
                       "sky",
-                      e.target.value
-                        ? { name: e.target.value, feather: 0.02, shift: 0, relight: 0.4 }
-                        : null,
+                      name ? { name, feather: 0.02, shift: 0, relight: 0.4 } : null,
                     )
                   }
-                >
-                  <option value="">Original sky</option>
-                  {skies.map((sky) => (
-                    <option key={sky.name} value={sky.name}>
-                      {sky.name}
-                    </option>
-                  ))}
-                </select>
+                />
                 {recipe.sky && (
                   <>
                     {(

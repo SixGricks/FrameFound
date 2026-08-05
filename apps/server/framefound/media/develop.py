@@ -241,38 +241,38 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     if contrast := recipe.get("contrast"):
         arr = (arr - 0.5) * (1.0 + contrast) + 0.5
 
-    # Shadow/highlight as luminance-masked gains: the mask keeps a shadow
-    # lift from bleaching a sky and a highlight recovery from crushing a
-    # dark hallway. Multiplicative, so the curve stays monotonic.
+    # Shadow lift and window pull both read the room's ILLUMINATION - the
+    # edge-aware large-scale lighting map - rather than raw or blurred
+    # luminance. That distinction is the whole game for interiors: a
+    # Gaussian mask darkens "near the window" (the smudge), an edge-aware
+    # map darkens "the window", and lifts "the dim corner" without lifting
+    # the dark leather sofa that is dark because it is leather.
     shadows, highlights = recipe.get("shadows"), recipe.get("highlights")
-    if shadows or highlights:
-        luma = arr @ np.asarray(_LUMA, dtype=np.float32)
-        luma = np.clip(luma, 0.0, 1.0)
-        if shadows:
+    pull = recipe.get("window_pull")
+    if shadows or highlights or pull:
+        luma = np.clip(arr @ np.asarray(_LUMA, dtype=np.float32), 1e-4, 1.0)
+        illum = np.clip(_illumination(luma, np), 1e-4, 1.0)
+        if shadows and shadows > 0:
+            # Even the lighting: raise regions the ROOM lights dimly toward
+            # a mid target, leaving intrinsically dark objects their depth
+            # (their edges are preserved in the map, so they do not read as
+            # dim lighting).
+            deficit = np.clip(0.55 - illum, 0.0, 0.55) / 0.55
+            arr *= (1.0 + (0.85 * shadows) * deficit)[..., None]
+        elif shadows:
             mask = (1.0 - luma) ** 2
             arr *= 1.0 + (0.7 * shadows) * mask[..., None]
         if highlights:
-            mask = luma**2
+            mask = illum**2
             arr *= 1.0 + (0.5 * highlights) * mask[..., None]
-
-    # Window pull: the gain is driven by *blurred* luminance, so a bright
-    # window darkens as a region while the detail inside it keeps its own
-    # contrast — which is what separates this from just pulling highlights,
-    # and is the single-frame approximation of what bracket fusion does.
-    # It reveals whatever the file still holds; a sensor-clipped pane has
-    # nothing left to reveal, and no slider can honestly invent it.
-    if pull := recipe.get("window_pull"):
-        from PIL import ImageFilter
-
-        luma = np.clip(arr @ np.asarray(_LUMA, dtype=np.float32), 0.0, 1.0)
-        blur_img = Image.fromarray((luma * 255.0).astype("uint8"), "L")
-        radius = max(2.0, arr.shape[0] / 24.0)
-        blurred = (
-            np.asarray(blur_img.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32) / 255.0
-        )
-        excess = np.clip((blurred - 0.5) * 2.0, 0.0, 1.0)
-        gain = 1.0 - (0.75 * pull) * excess**1.3
-        arr *= gain[..., None]
+        if pull:
+            # The window darkens as a pane-bounded region; the wall beside
+            # it, on the other side of an edge the guide preserved, does
+            # not move. Detail inside the pane keeps its own contrast
+            # because the gain is per-region, not per-pixel.
+            excess = np.clip((illum - 0.55) * 2.2, 0.0, 1.0)
+            gain = 1.0 - (0.75 * pull) * excess**1.2
+            arr *= gain[..., None]
 
     if punch := recipe.get("local_contrast"):
         from PIL import ImageFilter
@@ -359,3 +359,43 @@ LISTING_PRESET: dict[str, Any] = {
     "local_contrast": 0.30,
     "vibrance": 0.42,
 }
+
+
+def _box_mean(arr: Any, radius: int) -> Any:
+    """Mean over a (2r+1) box via integral image - O(N) regardless of radius,
+    which is what makes a large-radius illumination map affordable per
+    preview keystroke."""
+    import numpy as np
+
+    height, width = arr.shape
+    padded = np.pad(arr, radius + 1, mode="edge")
+    integral = padded.cumsum(axis=0).cumsum(axis=1)
+    size = 2 * radius + 1
+    total = (
+        integral[size:, size:]
+        - integral[:-size, size:]
+        - integral[size:, :-size]
+        + integral[:-size, :-size]
+    )
+    return (total / (size * size))[:height, :width]
+
+
+def _illumination(luma: Any, np: Any) -> Any:
+    """The room's lighting, without its contents: a self-guided filter.
+
+    A Gaussian blur of luminance bleeds across edges - darken "the bright
+    region" and the wall beside the window darkens too, which is exactly
+    the smudge the operator called out. The guided filter's per-window
+    linear model (a*I + b) keeps strong edges in the guide, so the
+    illumination map follows the window frame instead of blurring across
+    it. Self-guided (guide = luma itself), radius ~1/8 of height,
+    eps tuned so window frames and doorways count as edges but wall
+    texture does not.
+    """
+    radius = max(8, luma.shape[0] // 8)
+    eps = 0.02
+    mean_i = _box_mean(luma, radius)
+    var_i = _box_mean(luma * luma, radius) - mean_i * mean_i
+    a = var_i / (var_i + eps)
+    b = (1.0 - a) * mean_i
+    return _box_mean(a, radius) * luma + _box_mean(b, radius)

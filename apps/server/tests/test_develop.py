@@ -72,15 +72,39 @@ def test_temperature_warms_reds_and_cools_blues() -> None:
     assert r > 120 and b < 120
 
 
-def test_shadow_lift_touches_shadows_not_highlights() -> None:
-    image = Image.new("RGB", (2, 1))
-    image.putpixel((0, 0), (30, 30, 30))
-    image.putpixel((1, 0), (220, 220, 220))
+def test_shadow_lift_evens_the_room_not_the_leather() -> None:
+    """Positive shadows now reads the ILLUMINATION map: the dim end of the
+    room lifts toward even, the bright end stays, and the guided filter is
+    what keeps a dark object on the bright side from being mistaken for
+    dim lighting."""
+    size = 96
+    image = Image.new("RGB", (size, size))
+    for y in range(size):
+        for x in range(size):
+            image.putpixel((x, y), (40, 40, 40) if x < 48 else (200, 200, 200))
     out = develop.apply_recipe(image, {"shadows": 1.0})
-    lifted = out.getpixel((0, 0))[0]
-    untouched = out.getpixel((1, 0))[0]
-    assert lifted > 40, "shadows rise"
-    assert abs(untouched - 220) <= 3, "highlights barely move"
+    dim_side = out.getpixel((12, 48))[0]
+    bright_side = out.getpixel((84, 48))[0]
+    assert dim_side > 55, f"the dim end of the room lifted ({dim_side})"
+    assert abs(bright_side - 200) <= 8, "the lit end barely moves"
+
+
+def test_window_pull_stops_at_the_window_frame() -> None:
+    """The regression the operator reported: a Gaussian mask darkened the
+    wall AROUND the window - a grey smudge. The guided map must hold the
+    darkening inside the pane and leave the adjacent wall alone."""
+    size = 96
+    image = Image.new("RGB", (size, size), (110, 110, 110))
+    for y in range(24, 72):  # a bright window in the middle of the wall
+        for x in range(32, 64):
+            image.putpixel((x, y), (250, 250, 250))
+    out = develop.apply_recipe(image, {"window_pull": 1.0})
+    inside = out.getpixel((48, 48))[0]
+    wall_beside = out.getpixel((26, 48))[0]  # 6px from the frame
+    assert inside < 200, f"the pane came down ({inside})"
+    assert abs(wall_beside - 110) <= 10, (
+        f"the wall beside the window must not smudge ({wall_beside})"
+    )
 
 
 def test_saturation_zero_is_not_grayscale_but_minus_one_is() -> None:

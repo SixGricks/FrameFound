@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 
 import Shell from "@/components/Shell";
+import SkyPicker from "@/components/SkyPicker";
 import Thumb from "@/components/Thumb";
 import {
   api,
@@ -654,22 +655,12 @@ export default function ListingPage() {
         >
           <div className="card">
             <div className="mono" style={{ marginBottom: 6 }}>Auto-edit</div>
-            <select
-              className="select"
-              style={{ width: "100%" }}
-              aria-label="Sky replacement for auto-edit"
+            <SkyPicker
+              skies={skies}
               value={skyChoice}
               disabled={busy || aiRunning}
-              onChange={(e) => setSkyChoice(e.target.value)}
-              title="Composited wherever a photo has sky; interiors pass through untouched"
-            >
-              <option value="">Keep skies as shot</option>
-              {skies.map((sky) => (
-                <option key={sky.name} value={sky.name}>
-                  Sky: {sky.name.replace(/-\d+\.(jpg|jpeg|png|webp)$/i, "")}
-                </option>
-              ))}
-            </select>
+              onChange={setSkyChoice}
+            />
             <button
               className="btn btn-primary"
               style={{ width: "100%", marginTop: 6 }}

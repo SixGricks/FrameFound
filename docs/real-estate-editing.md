@@ -254,6 +254,40 @@ on day one, and upgrades itself when a key appears. The chosen sky is
 composited only where segmentation finds ≥4% sky, which is what makes one
 choice safe across a whole shoot: interiors pass through untouched.
 
+## Interior tonemapping v2 — the guided filter (2026-08-05, round 3)
+
+The operator's verdict on interiors was exact: window pulls looked like "a
+dark mask applied to the center" and lighting was not even. Both were the
+same bug — Gaussian-blurred luminance bleeds across edges, so darkening
+"the bright region" also darkened the wall beside the window, and lifting
+"the dim corner" lifted the leather sofa.
+
+The fix is a self-guided **guided filter**: an O(N) edge-aware
+illumination map (integral-image box means, radius h/8, eps 0.02) that
+follows window frames and doorways instead of blurring across them.
+Window pull now darkens the pane as a frame-bounded region — the wall
+6px away moves nothing (regression-tested at the pixel). Positive
+`shadows` becomes true even-lighting: it raises what the *room lights
+dimly* toward a mid target while intrinsically dark objects keep their
+depth, because their edges survive in the map. Saved recipes render
+through the new maths automatically.
+
+Verified on the 5096 kitchen (IMG_1188) against the professional MLS
+final: even counters, visible window view, no smudge. Remaining gap: ~⅓
+stop of brightness (per-photo AI territory) and blue sky *through* the
+panes, which a single frame cannot recover once the sensor clipped it —
+bracket fusion is the ceiling, again, and moves next.
+
+**Sky choice is now visual**: a thumbnail grid (SkyPicker) in both the
+listing rail and the editor, replacing the filename dropdown.
+
+**AutoEnhance.ai reviewed** (operator asked for integration options):
+same category as Imagen — HDR merge, sky replacement, relighting,
+perspective, RAW in — with free watermarked previews and pay-per-download.
+Either would slot into the premium-backend pattern; Imagen remains the
+stronger real-estate fit (trained profiles), AutoEnhance the cheaper
+trial. Both stay deferred at the operator's direction.
+
 ## Field-test round 2 (2026-08-05, operator testing live)
 
 Seven findings from real use, six addressed the same session:
