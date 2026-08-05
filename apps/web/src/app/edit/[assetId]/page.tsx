@@ -23,6 +23,7 @@ import {
   EMPTY_RECIPE,
   type DevelopRecipe,
   type ListingDetail,
+  type InpaintState,
   type SkyAsset,
   type SkyInfo,
 } from "@/lib/api";
@@ -67,6 +68,14 @@ export default function EditPage() {
   const [listing, setListing] = useState<ListingDetail | null>(null);
   const [skies, setSkies] = useState<SkyAsset[]>([]);
   const [skyInfo, setSkyInfo] = useState<SkyInfo | null>(null);
+  const [marking, setMarking] = useState(false);
+  const [brush, setBrush] = useState(24);
+  const [marked, setMarked] = useState(false);
+  const [inpaint, setInpaint] = useState<InpaintState | null>(null);
+  const paintRef = useRef<HTMLCanvasElement | null>(null);
+  const maskRef = useRef<HTMLCanvasElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const painting = useRef(false);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Renders can land out of order; the ticket makes the latest one win.
   const ticket = useRef(0);
@@ -84,6 +93,7 @@ export default function EditPage() {
     }
     api.skies().then(setSkies).catch(() => setSkies([]));
     api.skyInfo(assetId).then(setSkyInfo).catch(() => setSkyInfo(null));
+    api.inpaintState(assetId).then(setInpaint).catch(() => setInpaint(null));
   }, [assetId, listingId]);
 
   const render = useCallback(
@@ -112,6 +122,32 @@ export default function EditPage() {
     },
     [assetId],
   );
+
+  // While a removal runs, poll; when it lands, the base image changed, so
+  // re-render the preview and drop the marks.
+  useEffect(() => {
+    if (!inpaint?.busy) return;
+    const timer = setTimeout(async () => {
+      try {
+        const state = await api.inpaintState(assetId);
+        setInpaint(state);
+        if (!state.busy) {
+          clearMarks();
+          render(recipe);
+          const failed = state.versions.at(-1);
+          setNotice(
+            failed?.status === "failed"
+              ? `Removal failed: ${failed.error ?? "unknown error"}`
+              : "Removal finished.",
+          );
+        }
+      } catch {
+        /* poll again next tick */
+      }
+    }, 3000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inpaint, assetId, recipe]);
 
   // First render + re-render on every recipe change, debounced.
   useEffect(() => {
@@ -171,6 +207,102 @@ export default function EditPage() {
       setBusy(false);
     }
   }
+
+  function canvasPoint(e: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = paintRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
+      y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+    };
+  }
+
+  function dab(x: number, y: number) {
+    const canvas = paintRef.current;
+    const mask = maskRef.current;
+    if (!canvas || !mask) return;
+    const scale = canvas.width / (canvas.getBoundingClientRect().width || canvas.width);
+    const radius = (brush / 2) * scale;
+    for (const [ctx, style] of [
+      [canvas.getContext("2d"), "rgba(255,60,60,0.55)"],
+      [mask.getContext("2d"), "#ffffff"],
+    ] as const) {
+      if (!ctx) continue;
+      ctx.fillStyle = style;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    setMarked(true);
+  }
+
+  function syncCanvases() {
+    const img = imgRef.current;
+    if (!img || !img.naturalWidth) return;
+    for (const ref of [paintRef, maskRef]) {
+      const canvas = ref.current;
+      if (!canvas) continue;
+      if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        if (ref === maskRef) {
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.fillStyle = "#000000";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+        }
+      }
+    }
+  }
+
+  function clearMarks() {
+    for (const ref of [paintRef, maskRef]) {
+      const canvas = ref.current;
+      const ctx = canvas?.getContext("2d");
+      if (!canvas || !ctx) continue;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (ref === maskRef) {
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+    setMarked(false);
+  }
+
+  async function submitRemoval() {
+    const mask = maskRef.current;
+    if (!mask || !marked) return;
+    setBusy(true);
+    try {
+      const b64 = mask.toDataURL("image/png").split(",")[1] ?? "";
+      setInpaint(await api.requestInpaint(assetId, b64));
+      setNotice("Removing — this takes about a minute on this hardware.");
+      setMarking(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not queue the removal");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function undoRemoval() {
+    const latest = inpaint?.versions.filter((v) => v.status === "ready").at(-1);
+    if (!latest) return;
+    setBusy(true);
+    try {
+      setInpaint(await api.undoInpaint(assetId, latest.version));
+      render(recipe);
+      setNotice("Removal undone.");
+    } catch {
+      setError("Could not undo");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const readyRemovals = inpaint?.versions.filter((v) => v.status === "ready").length ?? 0;
 
   // Prev/next within the listing's images, in gallery order.
   const siblings = (listing?.items ?? [])
@@ -238,6 +370,21 @@ export default function EditPage() {
         )}
         <button
           className="btn"
+          disabled={busy || inpaint?.busy}
+          onClick={() => {
+            setMarking((v) => !v);
+            if (!marking) setNotice("Paint over what should disappear, then press Remove.");
+          }}
+        >
+          {marking ? "Cancel marking" : "Remove objects"}
+        </button>
+        {readyRemovals > 0 && !inpaint?.busy && (
+          <button className="btn" disabled={busy} onClick={undoRemoval}>
+            Undo removal
+          </button>
+        )}
+        <button
+          className="btn"
           style={{ marginLeft: "auto" }}
           disabled={busy || (savedVersion === 0 && !dirty)}
           onClick={reset}
@@ -245,6 +392,33 @@ export default function EditPage() {
           Reset to original
         </button>
       </div>
+
+      {marking && (
+        <div className="toolbar">
+          <span className="mono faint">Brush</span>
+          <input
+            type="range"
+            min={8}
+            max={80}
+            step={2}
+            value={brush}
+            onChange={(e) => setBrush(Number(e.target.value))}
+            aria-label="Brush size"
+          />
+          <button className="btn btn-primary" disabled={busy || !marked} onClick={submitRemoval}>
+            Remove marked
+          </button>
+          <button className="btn" disabled={!marked} onClick={clearMarks}>
+            Clear marks
+          </button>
+        </div>
+      )}
+      {inpaint?.busy && (
+        <div className="card" role="status">
+          Removing the marked object — LaMa runs about a minute per region on
+          these CPUs. The page will update when it lands.
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div className="card" style={{ width: 280, flexShrink: 0 }}>
@@ -392,17 +566,49 @@ export default function EditPage() {
 
         <div style={{ flex: 1, minWidth: 320 }}>
           {previewUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={previewUrl}
-              alt="Develop preview"
-              style={{
-                maxWidth: "100%",
-                borderRadius: 6,
-                opacity: rendering ? 0.7 : 1,
-                transition: "opacity 0.15s",
-              }}
-            />
+            <div style={{ position: "relative", display: "inline-block" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                ref={imgRef}
+                src={previewUrl}
+                alt="Develop preview"
+                onLoad={syncCanvases}
+                style={{
+                  maxWidth: "100%",
+                  borderRadius: 6,
+                  opacity: rendering ? 0.7 : 1,
+                  transition: "opacity 0.15s",
+                  display: "block",
+                }}
+              />
+              <canvas
+                ref={paintRef}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  cursor: marking ? "crosshair" : "default",
+                  pointerEvents: marking ? "auto" : "none",
+                  touchAction: "none",
+                }}
+                onPointerDown={(e) => {
+                  painting.current = true;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  const p = canvasPoint(e);
+                  if (p) dab(p.x, p.y);
+                }}
+                onPointerMove={(e) => {
+                  if (!painting.current) return;
+                  const p = canvasPoint(e);
+                  if (p) dab(p.x, p.y);
+                }}
+                onPointerUp={() => {
+                  painting.current = false;
+                }}
+              />
+              <canvas ref={maskRef} style={{ display: "none" }} />
+            </div>
           ) : (
             <div className="empty">Rendering the first preview…</div>
           )}

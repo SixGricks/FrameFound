@@ -562,6 +562,19 @@ export interface SkyInfo {
   available: boolean;
 }
 
+export interface InpaintVersion {
+  version: number;
+  status: "queued" | "running" | "ready" | "failed";
+  error: string | null;
+  created_at: string;
+}
+
+export interface InpaintState {
+  asset_id: string;
+  versions: InpaintVersion[];
+  busy: boolean;
+}
+
 export interface EditState {
   asset_id: string;
   recipe: Partial<DevelopRecipe>;
@@ -926,6 +939,15 @@ export const api = {
   deleteSky: (name: string) =>
     request<void>(`/develop/skies/${encodeURIComponent(name)}`, { method: "DELETE" }),
   skyInfo: (assetId: string) => request<SkyInfo>(`/develop/${assetId}/sky-info`),
+  inpaintState: (assetId: string) => request<InpaintState>(`/develop/${assetId}/inpaint`),
+  requestInpaint: (assetId: string, maskPngBase64: string) =>
+    request<InpaintState>(`/develop/${assetId}/inpaint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mask_png: maskPngBase64 }),
+    }),
+  undoInpaint: (assetId: string, version: number) =>
+    request<InpaintState>(`/develop/${assetId}/inpaint/${version}`, { method: "DELETE" }),
   developState: (assetId: string) => request<EditState>(`/develop/${assetId}`),
   saveDevelop: (assetId: string, recipe: DevelopRecipe) =>
     request<EditState>(`/develop/${assetId}`, {

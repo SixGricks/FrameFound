@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from framefound.ai.embeddings import EmbeddingUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
 from framefound.config import Settings
-from framefound.db.models import Asset, AssetEdit, Library, Listing, ListingItem
+from framefound.db.models import Asset, AssetEdit, AssetInpaint, Library, Listing, ListingItem
 from framefound.media import develop as develop_lib
 from framefound.scanner.paths import PathValidationError, safe_join
 
@@ -205,12 +205,12 @@ async def delete_sky(name: str, _user: CurrentUser, settings: SettingsDep) -> No
 # the preview many times. A tiny per-process LRU means segmentation runs
 # once per photograph per editing session, not once per slider notch.
 
-_mask_cache: "OrderedDict[tuple[uuid.UUID, int, int], Any]" = OrderedDict()
+_mask_cache: "OrderedDict[tuple[uuid.UUID, int, int, int], Any]" = OrderedDict()
 _MASK_CACHE_MAX = 8
 
 
-def _cached_mask(asset_id: uuid.UUID, image: Any) -> Any:
-    key = (asset_id, image.size[0], image.size[1])
+def _cached_mask(asset_id: uuid.UUID, image: Any, base_version: int = 0) -> Any:
+    key = (asset_id, base_version, image.size[0], image.size[1])
     if key in _mask_cache:
         _mask_cache.move_to_end(key)
         return _mask_cache[key]
@@ -238,17 +238,17 @@ async def sky_info(
     from framefound.media.sky import MIN_SKY_FRACTION
 
     asset = await _get_image_asset(db, asset_id)
-    path = await _original_path(db, asset)
+    path, is_inpaint, base_version = await _base_image_path(db, asset, settings)
 
     def measure() -> float:
         import numpy as np
         from PIL import Image, ImageOps
 
         with Image.open(path) as img:
-            image = ImageOps.exif_transpose(img) or img
+            image = img if is_inpaint else (ImageOps.exif_transpose(img) or img)
             image = image.convert("RGB")
             image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
-            return float(np.mean(_cached_mask(asset_id, image)))
+            return float(np.mean(_cached_mask(asset_id, image, base_version)))
 
     try:
         fraction = await asyncio.to_thread(measure)
@@ -262,6 +262,198 @@ async def get_edit(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> EditSt
     await _get_image_asset(db, asset_id)
     recipe, version = await current_recipe(db, asset_id)
     return EditState(asset_id=asset_id, recipe=recipe, version=version, edited=version > 0)
+
+
+# --------------------------------------------------------------- inpaint
+#
+# Object removal is the one edit that is a queued task rather than a live
+# render: LaMa costs tens of seconds per region on these CPUs, and the
+# editor says so. The result becomes the photograph's new BASE — every
+# recipe (sky, geometry, colour) then renders on top of it, and undo
+# deletes the newest version's file.
+
+
+class InpaintRequest(BaseModel):
+    # The brush mask as a base64 PNG (any size; scaled to the original).
+    # White = remove. Kept small by the UI (preview resolution).
+    mask_png: str = Field(min_length=8, max_length=2_000_000)
+
+
+class InpaintOut(BaseModel):
+    version: int
+    status: str
+    error: str | None
+    created_at: Any
+
+
+class InpaintState(BaseModel):
+    asset_id: uuid.UUID
+    versions: list[InpaintOut]
+    busy: bool  # a round is queued or running
+
+
+async def latest_ready_inpaint(db: DbDep, asset_id: uuid.UUID) -> AssetInpaint | None:
+    return (
+        await db.execute(
+            select(AssetInpaint)
+            .where(AssetInpaint.asset_id == asset_id, AssetInpaint.status == "ready")
+            .order_by(AssetInpaint.version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _base_image_path(db: DbDep, asset: Asset, settings: Settings) -> tuple[Path, bool, int]:
+    """The image every render starts from: the newest ready inpaint result,
+    or the original. The bool says whether it is an inpaint file (already
+    orientation-applied and sRGB, so the caller must not transpose again);
+    the int is the inpaint version, for cache keys — the base's pixels are
+    a function of (asset, version), and so is anything derived from them."""
+    inpaint = await latest_ready_inpaint(db, asset.id)
+    if inpaint is not None and inpaint.relative_path:
+        path = settings.data_dir / inpaint.relative_path
+        if path.is_file():
+            return path, True, inpaint.version
+        log.warning("develop.inpaint_file_missing", asset_id=str(asset.id))
+    return await _original_path(db, asset), False, 0
+
+
+@router.get("/{asset_id}/inpaint", response_model=InpaintState)
+async def inpaint_state(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> InpaintState:
+    await _get_image_asset(db, asset_id)
+    rows = (
+        (
+            await db.execute(
+                select(AssetInpaint)
+                .where(AssetInpaint.asset_id == asset_id)
+                .order_by(AssetInpaint.version)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return InpaintState(
+        asset_id=asset_id,
+        versions=[
+            InpaintOut(version=r.version, status=r.status, error=r.error, created_at=r.created_at)
+            for r in rows
+        ],
+        busy=any(r.status in ("queued", "running") for r in rows),
+    )
+
+
+@router.post("/{asset_id}/inpaint", response_model=InpaintState, status_code=202)
+async def request_inpaint(
+    asset_id: uuid.UUID, body: InpaintRequest, _user: CurrentUser, db: DbDep
+) -> InpaintState:
+    """Queue one removal. One at a time per photograph — each round runs on
+    the previous result, so parallel rounds would race for the same base."""
+    import base64
+    import binascii
+
+    await _get_image_asset(db, asset_id)
+    pending = (
+        await db.execute(
+            select(func.count())
+            .select_from(AssetInpaint)
+            .where(
+                AssetInpaint.asset_id == asset_id,
+                AssetInpaint.status.in_(("queued", "running")),
+            )
+        )
+    ).scalar_one()
+    if pending:
+        raise HTTPException(status_code=409, detail="A removal is already running")
+
+    try:
+        raw = base64.b64decode(body.mask_png, validate=True)
+    except (binascii.Error, ValueError) as err:
+        raise HTTPException(status_code=400, detail="Mask is not valid base64") from err
+
+    def decode() -> tuple[int, int, float]:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as img:
+            gray = img.convert("L")
+            import numpy as np
+
+            arr = np.asarray(gray, dtype=np.float32) / 255.0
+            return gray.size[0], gray.size[1], float(arr.mean())
+
+    try:
+        mask_w, mask_h, coverage = await asyncio.to_thread(decode)
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="Mask is not a readable image") from err
+    if coverage <= 0.0:
+        raise HTTPException(status_code=400, detail="The mask selects nothing")
+    if coverage > 0.5:
+        raise HTTPException(
+            status_code=400,
+            detail="That selects more than half the photograph — this removes objects, "
+            "it does not repaint scenes",
+        )
+
+    version = (
+        await db.execute(
+            select(func.coalesce(func.max(AssetInpaint.version), 0)).where(
+                AssetInpaint.asset_id == asset_id
+            )
+        )
+    ).scalar_one() + 1
+    row = AssetInpaint(
+        asset_id=asset_id,
+        version=version,
+        mask_meta={
+            "png_base64": body.mask_png,
+            "mask_size": [mask_w, mask_h],
+            "coverage": round(coverage, 4),
+        },
+        status="queued",
+    )
+    db.add(row)
+    await db.commit()
+
+    try:
+        from framefound.processing.tasks import inpaint_asset
+
+        inpaint_asset.delay(str(row.id))
+    except Exception:
+        row.status = "failed"
+        row.error = "The processing queue is unavailable"
+        await db.commit()
+        raise HTTPException(status_code=503, detail="The processing queue is unavailable") from None
+    log.info("develop.inpaint_queued", asset_id=str(asset_id), version=version, coverage=coverage)
+    return await inpaint_state(asset_id, _user, db)
+
+
+@router.delete("/{asset_id}/inpaint/{version}", response_model=InpaintState)
+async def undo_inpaint(
+    asset_id: uuid.UUID, version: int, _user: CurrentUser, db: DbDep, settings: SettingsDep
+) -> InpaintState:
+    """Undo one removal. Only the newest version can go — the chain renders
+    each round on the previous result, so pulling a middle version out
+    would misdescribe every file after it."""
+    await _get_image_asset(db, asset_id)
+    newest = (
+        await db.execute(
+            select(AssetInpaint)
+            .where(AssetInpaint.asset_id == asset_id)
+            .order_by(AssetInpaint.version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if newest is None or newest.version != version:
+        raise HTTPException(status_code=409, detail="Only the newest removal can be undone")
+    if newest.relative_path:
+        (settings.data_dir / newest.relative_path).unlink(missing_ok=True)
+    await db.delete(newest)
+    await db.commit()
+    # The base image changed; cached segmentation masks are now stale.
+    _mask_cache.clear()
+    log.info("develop.inpaint_undone", asset_id=str(asset_id), version=version)
+    return await inpaint_state(asset_id, _user, db)
 
 
 def sky_loader(settings: Settings) -> Any:
@@ -286,11 +478,11 @@ async def preview(  # type: ignore[no-untyped-def]
 ):
     """Render the recipe onto a preview-sized copy of the original."""
     asset = await _get_image_asset(db, asset_id)
-    path = await _original_path(db, asset)
+    path, is_inpaint, base_version = await _base_image_path(db, asset, settings)
 
     def mask_for(image: Any) -> Any:
         try:
-            return _cached_mask(asset_id, image)
+            return _cached_mask(asset_id, image, base_version)
         except EmbeddingUnavailable:
             return None
 
@@ -298,7 +490,7 @@ async def preview(  # type: ignore[no-untyped-def]
         from PIL import Image, ImageOps
 
         with Image.open(path) as img:
-            image = ImageOps.exif_transpose(img) or img
+            image = img if is_inpaint else (ImageOps.exif_transpose(img) or img)
             image = image.convert("RGB")
             image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
             image = develop_lib.render(

@@ -271,6 +271,15 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**2026-08-05, later: object removal shipped (Phase 4).** Brush over the
+object in the editor, press Remove; LaMa runs crop-around-the-mask at 512
+on the media queue (~20-40 s per region, measured), and the result becomes
+the photograph's new base — every recipe renders on top, in preview and
+export alike. Removals are a versioned chain with newest-only undo, the
+painted mask is kept as provenance of exactly which pixels are invented,
+and a mask over half the frame is refused: it removes objects, it does not
+repaint scenes. The original never changes.
+
 **2026-08-05: the two Fotello gaps named in the quality review closed the
 next morning** — *Straighten* and *Verticals* geometry sliders (rotate with
 inscribed-crop, projective keystone; no black corners, output size stable)

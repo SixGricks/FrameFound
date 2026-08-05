@@ -1241,7 +1241,7 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
 
     from PIL import Image, ImageCms, ImageOps
 
-    from framefound.db.models import AssetEdit, Listing, ListingItem
+    from framefound.db.models import AssetEdit, AssetInpaint, Listing, ListingItem
     from framefound.media import develop as develop_lib
 
     def _load_sky(name: str) -> Any:
@@ -1265,24 +1265,31 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
             log.warning("listing.export_no_segmentation")
             return None
 
-    def to_jpeg(path: Path, recipe: dict[str, Any] | None) -> bytes:
+    def to_jpeg(path: Path, recipe: dict[str, Any] | None, is_inpaint: bool = False) -> bytes:
         with Image.open(path) as img:
-            # Camera orientation lives in EXIF; a sideways kitchen is not a
-            # feature. Then flatten any embedded profile to sRGB — MLS portals
-            # assume it, and a ProPhoto JPEG goes dull the moment they do.
-            image = ImageOps.exif_transpose(img) or img
-            icc = image.info.get("icc_profile")
-            if icc:
-                with contextlib.suppress(Exception):
-                    converted = ImageCms.profileToProfile(
-                        image,
-                        ImageCms.ImageCmsProfile(io.BytesIO(icc)),
-                        ImageCms.createProfile("sRGB"),
-                        outputMode="RGB",
-                    )
-                    if converted is not None:
-                        image = converted
-            image = image.convert("RGB")
+            if is_inpaint:
+                # An inpaint result was orientation-applied and flattened to
+                # sRGB when the chain started; doing either again would be
+                # wrong, not merely wasteful.
+                image = img.convert("RGB")
+            else:
+                # Camera orientation lives in EXIF; a sideways kitchen is not
+                # a feature. Then flatten any embedded profile to sRGB — MLS
+                # portals assume it, and a ProPhoto JPEG goes dull the moment
+                # they do.
+                image = ImageOps.exif_transpose(img) or img
+                icc = image.info.get("icc_profile")
+                if icc:
+                    with contextlib.suppress(Exception):
+                        converted = ImageCms.profileToProfile(
+                            image,
+                            ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+                            ImageCms.createProfile("sRGB"),
+                            outputMode="RGB",
+                        )
+                        if converted is not None:
+                            image = converted
+                image = image.convert("RGB")
             width, height = image.size
             longest = max(width, height)
             if longest > max_edge:
@@ -1344,6 +1351,22 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                 for edit in edit_rows:  # ascending versions: last write wins
                     recipes[edit.asset_id] = develop_lib.clean_recipe(edit.recipe)
 
+                # Object-removal results replace the original as the source.
+                inpaint_rows = (
+                    await db.execute(
+                        select(AssetInpaint)
+                        .where(
+                            AssetInpaint.asset_id.in_([a.id for _, a, _l in rows]),
+                            AssetInpaint.status == "ready",
+                        )
+                        .order_by(AssetInpaint.asset_id, AssetInpaint.version)
+                    )
+                ).scalars()
+                inpaint_paths: dict[uuid.UUID, str] = {}
+                for row_i in inpaint_rows:  # ascending: newest version wins
+                    if row_i.relative_path:
+                        inpaint_paths[row_i.asset_id] = row_i.relative_path
+
                 out_dir = settings.data_dir / "exports" / "listings"
                 out_dir.mkdir(parents=True, exist_ok=True)
                 zip_path = out_dir / f"{listing.id}.zip"
@@ -1354,8 +1377,16 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
                         for item, asset, library in rows:
                             try:
-                                path = safe_join(Path(library.root_path), asset.relative_path)
-                                data = await asyncio.to_thread(to_jpeg, path, recipes.get(asset.id))
+                                inpainted = inpaint_paths.get(asset.id)
+                                if inpainted and (settings.data_dir / inpainted).is_file():
+                                    path = settings.data_dir / inpainted
+                                    from_inpaint = True
+                                else:
+                                    path = safe_join(Path(library.root_path), asset.relative_path)
+                                    from_inpaint = False
+                                data = await asyncio.to_thread(
+                                    to_jpeg, path, recipes.get(asset.id), from_inpaint
+                                )
                             except Exception:
                                 skipped.append(asset.filename)
                                 log.warning(
@@ -1396,6 +1427,131 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                         images=written,
                         skipped=len(skipped),
                         megabytes=round(zip_path.stat().st_size / 1024**2, 1),
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@celery_app.task(
+    name="framefound.inpaint_asset",
+    queue="media",
+    # Deterministic per input; retrying an 18-second model run on the same
+    # pixels produces the same result or the same failure.
+    max_retries=0,
+)
+def inpaint_asset(inpaint_id: str) -> None:
+    """Run one queued object removal.
+
+    The base is the previous inpaint result when there is one, otherwise the
+    original — orientation-applied and flattened to sRGB exactly once, on
+    first entry into the chain, so every later round and every render reads
+    pixels that already agree about which way is up.
+    """
+    import base64
+    import io as io_module
+
+    from PIL import Image, ImageCms, ImageOps
+
+    from framefound.ai.inpaint import remove_region
+    from framefound.db.models import AssetInpaint
+
+    async def run() -> None:
+        import numpy as np
+
+        settings = get_settings()
+        engine = create_async_engine(settings.db_url)
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as db:
+                from sqlalchemy import select
+
+                row = await db.get(AssetInpaint, uuid.UUID(inpaint_id))
+                if row is None:
+                    log.warning("inpaint.gone", inpaint_id=inpaint_id)
+                    return
+                row.status = "running"
+                await db.commit()
+
+                try:
+                    asset = await db.get(Asset, row.asset_id)
+                    if asset is None:
+                        raise RuntimeError("Asset no longer exists")
+
+                    previous = (
+                        await db.execute(
+                            select(AssetInpaint)
+                            .where(
+                                AssetInpaint.asset_id == row.asset_id,
+                                AssetInpaint.status == "ready",
+                                AssetInpaint.version < row.version,
+                            )
+                            .order_by(AssetInpaint.version.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+
+                    # Resolve the base path on the loop, decode off it.
+                    if previous is not None and previous.relative_path:
+                        base_path = settings.data_dir / previous.relative_path
+                        first_round = False
+                    else:
+                        library = await db.get(Library, asset.library_id)
+                        if library is None:
+                            raise RuntimeError("Library no longer exists")
+                        base_path = safe_join(Path(library.root_path), asset.relative_path)
+                        first_round = True
+
+                    def work() -> str:
+                        with Image.open(base_path) as img:
+                            if first_round:
+                                image = ImageOps.exif_transpose(img) or img
+                                icc = image.info.get("icc_profile")
+                                if icc:
+                                    with contextlib.suppress(Exception):
+                                        converted = ImageCms.profileToProfile(
+                                            image,
+                                            ImageCms.ImageCmsProfile(io_module.BytesIO(icc)),
+                                            ImageCms.createProfile("sRGB"),
+                                            outputMode="RGB",
+                                        )
+                                        if converted is not None:
+                                            image = converted
+                                image = image.convert("RGB")
+                            else:
+                                image = img.convert("RGB")
+
+                            png = base64.b64decode(row.mask_meta["png_base64"])
+                            with Image.open(io_module.BytesIO(png)) as m:
+                                mask_img = m.convert("L").resize(
+                                    image.size, Image.Resampling.BILINEAR
+                                )
+                            mask = np.asarray(mask_img, dtype=np.float32) / 255.0
+
+                            result = remove_region(image, mask)
+                            out_dir = settings.data_dir / "inpaint" / str(asset.id)
+                            out_dir.mkdir(parents=True, exist_ok=True)
+                            relpath = f"inpaint/{asset.id}/v{row.version}.jpg"
+                            result.save(settings.data_dir / relpath, "JPEG", quality=95)
+                            return relpath
+
+                    row.relative_path = await asyncio.to_thread(work)
+                except Exception as exc:
+                    await db.rollback()
+                    row.status = "failed"
+                    row.error = str(exc)[:500]
+                    await db.commit()
+                    log.error("inpaint.failed", inpaint_id=inpaint_id, error=str(exc)[:300])
+                    raise
+                else:
+                    row.status = "ready"
+                    row.error = None
+                    await db.commit()
+                    log.info(
+                        "inpaint.done",
+                        asset_id=str(row.asset_id),
+                        version=row.version,
                     )
         finally:
             await engine.dispose()

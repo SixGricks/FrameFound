@@ -674,3 +674,32 @@ class AssetEdit(Base):
     # Slider values - see media/develop.py for the schema and the maths.
     recipe: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AssetInpaint(Base):
+    """One round of object removal on a photograph.
+
+    The result is a file (LaMa is tens of seconds per region, too costly to
+    re-derive at render time) and versions chain: each removal runs on the
+    previous result, undo deletes the newest row and its file. mask_meta
+    keeps the mask that was painted - a record of exactly which pixels are
+    invented, which a tool that edits real-estate photographs owes its
+    operator.
+    """
+
+    __tablename__ = "asset_inpaints"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "version", name="uq_asset_inpaints_asset_version"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(default=1)
+    mask_meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # queued | running | ready | failed
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    relative_path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    error: Mapped[str | None] = mapped_column(String(500), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

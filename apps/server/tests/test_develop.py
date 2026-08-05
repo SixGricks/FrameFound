@@ -144,6 +144,12 @@ async def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[
     (tmp_path / "data").mkdir()
     get_settings.cache_clear()
 
+    # No broker in tests: endpoints queue, tests run the tasks inline.
+    from framefound.processing import tasks as tasks_module
+
+    monkeypatch.setattr(tasks_module.export_listing_zip, "delay", lambda *args: None)
+    monkeypatch.setattr(tasks_module.inpaint_asset, "delay", lambda *args: None)
+
     engine = create_async_engine(url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -501,3 +507,172 @@ def test_window_pull_zero_changes_nothing() -> None:
     image = _gray(180)
     out = develop.apply_recipe(image, {"window_pull": 0.0})
     assert out is image
+
+
+# --------------------------------------------------------------- inpaint
+
+
+def test_crop_box_squares_up_with_margin_and_clamps() -> None:
+    import numpy as np
+
+    from framefound.ai import inpaint
+
+    mask = np.zeros((1000, 1500), dtype="float32")
+    mask[100:160, 200:280] = 1.0  # an 80x60 object
+    left, top, right, bottom = inpaint.crop_box(mask, 1500, 1000)
+    assert left <= 200 and right >= 280 and top <= 100 and bottom >= 160
+    assert (right - left) == (bottom - top), "square, as the model wants"
+    assert right - left >= 80 + 2 * inpaint.MIN_MARGIN, "context floor holds"
+
+    corner = np.zeros((1000, 1500), dtype="float32")
+    corner[0:40, 0:40] = 1.0
+    box = inpaint.crop_box(corner, 1500, 1000)
+    assert box[0] >= 0 and box[1] >= 0, "clamped to the frame"
+
+
+def test_crop_box_refuses_an_empty_mask() -> None:
+    import numpy as np
+    import pytest as _pytest
+
+    from framefound.ai import inpaint
+
+    with _pytest.raises(ValueError):
+        inpaint.crop_box(np.zeros((100, 100), dtype="float32"), 100, 100)
+
+
+def test_remove_region_touches_only_the_hole() -> None:
+    """The paste-through-mask property: unmasked pixels inside the crop box
+    must come back byte-identical, not softened by a 512 round-trip."""
+    import numpy as np
+
+    from framefound.ai import inpaint
+
+    image = Image.new("RGB", (800, 600), (90, 120, 90))
+    for x in range(0, 800, 7):  # texture, so degradation would show
+        for y in range(0, 600, 7):
+            image.putpixel((x, y), (200, 40, 40))
+    mask = np.zeros((600, 800), dtype="float32")
+    mask[250:310, 350:430] = 1.0
+
+    green_fill = lambda img512, hole: np.where(  # noqa: E731
+        hole[..., None] > 0.5, np.array([0.1, 0.9, 0.1], dtype="float32"), img512
+    )
+    out = inpaint.remove_region(image, mask, run_model=green_fill)
+
+    assert out.getpixel((390, 280))[1] > 180, "the hole was filled"
+    assert out.getpixel((10, 10)) == image.getpixel((10, 10)), "far pixels untouched"
+    # Inside the crop box but outside the (dilated, feathered) hole:
+    assert out.getpixel((350 - 60, 280)) == image.getpixel((350 - 60, 280)), (
+        "context inside the box survives byte-for-byte"
+    )
+
+
+async def test_inpaint_request_queue_and_guards(env: dict) -> None:
+    import base64
+
+    client = env["client"]
+    asset_id = env["ids"]["asset"]
+
+    def mask_png(fraction_white: float) -> str:
+        img = Image.new("L", (100, 100), 0)
+        rows = int(100 * fraction_white)
+        if rows:
+            img.paste(255, (0, 0, 100, rows))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+
+    resp = await client.post(
+        f"/api/v1/develop/{asset_id}/inpaint", json={"mask_png": mask_png(0.0)}
+    )
+    assert resp.status_code == 400, "an empty mask removes nothing"
+
+    resp = await client.post(
+        f"/api/v1/develop/{asset_id}/inpaint", json={"mask_png": mask_png(0.8)}
+    )
+    assert resp.status_code == 400, "this removes objects, it does not repaint scenes"
+
+    resp = await client.post(
+        f"/api/v1/develop/{asset_id}/inpaint", json={"mask_png": mask_png(0.1)}
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["busy"] is True
+
+    resp = await client.post(
+        f"/api/v1/develop/{asset_id}/inpaint", json={"mask_png": mask_png(0.1)}
+    )
+    assert resp.status_code == 409, "one at a time; rounds chain on each other"
+
+
+async def test_inpaint_task_runs_and_export_uses_the_result(
+    env: dict, monkeypatch: __import__("pytest").MonkeyPatch
+) -> None:
+    """The full chain with the model stubbed: queue, run, base switch, undo."""
+    import base64
+
+    import numpy as np
+
+    from framefound.ai import inpaint as inpaint_lib
+    from framefound.db.models import AssetInpaint
+    from framefound.processing import tasks as tasks_module
+
+    client = env["client"]
+    asset_id = env["ids"]["asset"]
+
+    monkeypatch.setattr(
+        inpaint_lib,
+        "_run_lama",
+        lambda img512, hole: np.where(
+            hole[..., None] > 0.5, np.array([0.05, 0.9, 0.05], dtype="float32"), img512
+        ),
+    )
+
+    mask = Image.new("L", (200, 150), 0)
+    mask.paste(255, (80, 50, 130, 100))
+    buf = io.BytesIO()
+    mask.save(buf, "PNG")
+    resp = await client.post(
+        f"/api/v1/develop/{asset_id}/inpaint",
+        json={"mask_png": base64.b64encode(buf.getvalue()).decode()},
+    )
+    assert resp.status_code == 202
+
+    async with env["factory"]() as db:
+        row = (
+            await db.execute(
+                select(AssetInpaint).where(AssetInpaint.asset_id == uuidlib.UUID(asset_id))
+            )
+        ).scalar_one()
+        inpaint_id = str(row.id)
+
+    await asyncio.to_thread(tasks_module.inpaint_asset, inpaint_id)
+
+    state = (await client.get(f"/api/v1/develop/{asset_id}/inpaint")).json()
+    assert state["versions"][-1]["status"] == "ready", state
+    result_path = get_settings().data_dir / f"inpaint/{asset_id}/v1.jpg"
+    assert result_path.is_file()
+    with Image.open(result_path) as done:
+        r, g, b = done.getpixel((105, 75))
+        assert g > 150 and r < 100, "the marked region was filled by the model stub"
+
+    # The export must start from the inpainted base.
+    listing = (
+        await client.post("/api/v1/listings", json={"name": "Inpainted", "asset_ids": [asset_id]})
+    ).json()
+    await asyncio.to_thread(tasks_module.export_listing_zip, listing["id"], 2048, 85)
+    async with env["factory"]() as db:
+        lrow = await db.get(Listing, uuidlib.UUID(listing["id"]))
+        assert lrow is not None and lrow.export_status == "ready"
+        zip_path = get_settings().data_dir / str(lrow.export_relpath)
+    with (
+        zipfile.ZipFile(zip_path) as archive,
+        Image.open(io.BytesIO(archive.read(archive.namelist()[0]))) as exported,
+    ):
+        # Export upscales nothing (source 200x150), so coordinates map 1:1.
+        r, g, b = exported.getpixel((105, 75))
+        assert g > 140 and r < 110, "the zip contains the removal"
+
+    # Undo: newest only, file goes with it.
+    resp = await client.delete(f"/api/v1/develop/{asset_id}/inpaint/1")
+    assert resp.status_code == 200
+    assert not result_path.exists(), "undo deletes the invented pixels"

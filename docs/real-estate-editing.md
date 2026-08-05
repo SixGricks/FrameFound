@@ -170,11 +170,29 @@ queued batch step and goes near-live when the GPU arrives.**
 - 9 new tests: composite/relight/no-op behaviour with hand-made masks,
   traversal refusal, garbage-upload refusal, degraded export.
 
-### Phase 4 — Object removal (medium, pace set by Phase 0)
-Brush/lasso mask in the editor → queued LaMa inpaint → result appears as
-the next recipe version. On current CPUs this is "mark five photos, get
-them back in ten minutes" — honest and still far faster than Photoshop
-round-trips. A GPU later makes it near-live without any redesign.
+### Phase 4 — Object removal ✅ SHIPPED 2026-08-05
+- **Brush in the editor**: paint over the object, press Remove. The mask
+  travels as a PNG the operator actually drew, and `mask_meta` keeps it —
+  a record of exactly which pixels are invented, which a tool that edits
+  real-estate photographs owes its operator. A mask covering more than
+  half the frame is refused: this removes objects, it does not repaint
+  scenes.
+- **Crop-around-the-mask** (`ai/inpaint.py`): square context crop
+  (60% margin, 64 px floor) → 512 → LaMa → paste back *through the
+  feathered mask*, so unmasked pixels survive byte-for-byte rather than
+  being softened by the 512 round-trip. Tested at the pixel.
+- **Queued, honestly**: ~20–40 s per region on the Xeons, on the media
+  queue (6 CPU / 8 GB, models volume mounted). The editor polls and says
+  "about a minute on this hardware"; a GPU later makes it near-live with
+  no redesign.
+- **Results are a versioned chain** (migration 0018): each removal runs
+  on the previous result; the newest becomes the *base image* every
+  recipe (sky, geometry, colour) renders on, in both preview and export.
+  Undo deletes the newest version's file — only the newest, because
+  pulling a middle link out would misdescribe every file after it. The
+  original stays untouched on its read-only mount.
+- One at a time per photograph (409 otherwise) — rounds chain, so
+  parallel rounds would race for the same base.
 
 ### Phase 5 — Claude provider (small, optional)
 Room labels/captions/filenames/QA behind the sealed-key provider pattern.
@@ -194,7 +212,7 @@ Fotello behaviour stands:
 | **Window pull** (bright windows, dark interiors) | ✅ single-frame local tonemap slider | Bracket fusion (`enfuse`) remains the ceiling for sensor-clipped panes |
 | **Vertical correction** (keystone) | ✅ Straighten + Verticals sliders | Auto-detection of the correction amount would be the refinement |
 | Learned personal style | ❌ | Their moat: trained on your past edits. Presets-per-operator is the honest approximation |
-| Declutter / object removal | 🔜 Phase 4 (LaMa, queued) | Spiked and viable; batch not live on current CPUs |
+| Declutter / object removal | ✅ brush + queued LaMa | ~1 min/region on CPU; near-live with a GPU |
 | Grass greening, fire-in-fireplace, TV inserts | ❌ | Greening is an easy HSL band op; the inserts are compositing work not planned |
 | Human QC pass | ❌ by design | The operator *is* the QC; optional Claude flag-pass (Phase 5) is the assist |
 
