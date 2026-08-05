@@ -436,3 +436,68 @@ async def test_export_with_a_sky_degrades_without_segmentation(env: dict) -> Non
         row = await db.get(Listing, uuidlib.UUID(listing["id"]))
         assert row is not None
         assert row.export_status == "ready", row.export_error
+
+
+# ------------------------------------------------------- geometry + pull
+
+
+def test_rotate_keeps_size_and_leaves_no_black_corners() -> None:
+    white = Image.new("RGB", (120, 80), (240, 240, 240))
+    out = develop.apply_geometry(white, {"rotate": 3.0})
+    assert out.size == (120, 80), "geometry must not change the canvas"
+    for corner in ((1, 1), (118, 1), (1, 78), (118, 78)):
+        assert out.getpixel(corner)[0] > 200, f"corner {corner} went dark"
+
+
+def test_keystone_maps_the_inset_to_the_corner() -> None:
+    """The contract, tested at the pixel: for positive correction the output
+    top-left corner samples from the inset point of the source top edge."""
+    image = Image.new("RGB", (100, 100), (0, 0, 0))
+    # 18% inset at full strength -> the source pixel at (18, 0).
+    for dx in range(-2, 3):
+        for dy in range(0, 3):
+            image.putpixel((18 + dx, dy), (250, 40, 40))
+    out = develop.apply_geometry(image, {"keystone": 1.0})
+    r, _g, _b = out.getpixel((0, 0))
+    assert r > 150, "top-left must now show what sat at the inset"
+
+
+def test_keystone_negative_works_on_the_bottom() -> None:
+    image = Image.new("RGB", (100, 100), (0, 0, 0))
+    for dx in range(-2, 3):
+        for dy in range(97, 100):
+            image.putpixel((18 + dx, dy), (40, 250, 40))
+    out = develop.apply_geometry(image, {"keystone": -1.0})
+    assert out.getpixel((0, 99))[1] > 150
+
+
+def test_geometry_zero_is_identity() -> None:
+    image = _gray(90)
+    assert develop.apply_geometry(image, {"rotate": 0, "keystone": 0}) is image
+
+
+def test_window_pull_darkens_the_bright_region_and_keeps_its_contrast() -> None:
+    """A bright 'window' should come down as a region while the detail
+    inside it keeps separating — that is the difference from a plain
+    highlights pull, and the reason the slider exists."""
+    size = 96
+    image = Image.new("RGB", (size, size), (70, 70, 70))
+    # A window: a bright block with internal detail (two tones).
+    for y in range(8, 40):
+        for x in range(8, 88):
+            v = 250 if (x // 8) % 2 == 0 else 225
+            image.putpixel((x, y), (v, v, v))
+
+    out = develop.apply_recipe(image, {"window_pull": 1.0})
+    bright_a = out.getpixel((12, 20))[0]
+    bright_b = out.getpixel((20, 20))[0]
+    wall = out.getpixel((48, 70))[0]
+    assert bright_a < 220, "the window came down"
+    assert abs(wall - 70) <= 8, "the dim wall stayed put"
+    assert abs(bright_a - bright_b) >= 8, "detail inside the window survives"
+
+
+def test_window_pull_zero_changes_nothing() -> None:
+    image = _gray(180)
+    out = develop.apply_recipe(image, {"window_pull": 0.0})
+    assert out is image

@@ -271,6 +271,16 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**2026-08-05: the two Fotello gaps named in the quality review closed the
+next morning** — *Straighten* and *Verticals* geometry sliders (rotate with
+inscribed-crop, projective keystone; no black corners, output size stable)
+and a single-frame *Window pull* (blurred-luminance local tone compression:
+the window darkens as a region, its internal detail keeps contrast). All
+three live in the same recipe, so batch apply and export honoured them from
+the first minute. Bracket fusion stays on the list as the ceiling for
+sensor-clipped panes. Incidentally verified: the VM rebooted mid-session
+and all twelve services returned unattended on their restart policies.
+
 **Phase 3 shipped: sky replacement.** SegFormer segmentation through the
 proven AVX-free ONNX path, a deterministic compositor (cover-fit, feathered
 join, bounded relight toward the sky's tone), and an operator-supplied sky

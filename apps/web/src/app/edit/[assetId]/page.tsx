@@ -44,6 +44,9 @@ const SLIDERS: Array<{
   { key: "highlights", label: "Highlights", min: -1, max: 1, step: 0.02 },
   { key: "vibrance", label: "Vibrance", min: -1, max: 1, step: 0.02 },
   { key: "saturation", label: "Saturation", min: -1, max: 1, step: 0.02 },
+  { key: "window_pull", label: "Window pull", min: 0, max: 1, step: 0.02 },
+  { key: "rotate", label: "Straighten", min: -5, max: 5, step: 0.1 },
+  { key: "keystone", label: "Verticals", min: -1, max: 1, step: 0.02 },
 ];
 
 export default function EditPage() {
@@ -268,7 +271,9 @@ export default function EditPage() {
                 <span className="faint">
                   {slider.key === "exposure"
                     ? recipe.exposure.toFixed(2)
-                    : Math.round(recipe[slider.key] * 100)}
+                    : slider.key === "rotate"
+                      ? `${recipe.rotate.toFixed(1)}°`
+                      : Math.round(recipe[slider.key] * 100)}
                 </span>
               </div>
               <input

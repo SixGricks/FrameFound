@@ -528,6 +528,9 @@ export interface DevelopRecipe {
   highlights: number;
   vibrance: number;
   saturation: number;
+  rotate: number;
+  keystone: number;
+  window_pull: number;
   auto: boolean;
   sky: SkyChoice | null;
 }
@@ -541,6 +544,9 @@ export const EMPTY_RECIPE: DevelopRecipe = {
   highlights: 0,
   vibrance: 0,
   saturation: 0,
+  rotate: 0,
+  keystone: 0,
+  window_pull: 0,
   auto: false,
   sky: null,
 };

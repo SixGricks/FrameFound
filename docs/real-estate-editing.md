@@ -191,8 +191,8 @@ Fotello behaviour stands:
 | Global colour/exposure correction | ✅ 8 sliders + bounded auto-levels | At parity for competent captures |
 | Batch consistency across a shoot | ✅ Apply-to-listing | At parity |
 | Sky replacement with relighting | ✅ Phase 3 | Close; theirs handles reflections/glass better |
-| **Window pull** (bright windows, dark interiors) | ⚠️ shadows/highlights approximates it | **The big one.** Real answer is exposure-fusing brackets (`enfuse`) or local tonemapping; global sliders cannot fully fake it |
-| **Vertical correction** (keystone) | ❌ | Real-estate table stakes; a manual vertical slider is a day, auto-detect is more |
+| **Window pull** (bright windows, dark interiors) | ✅ single-frame local tonemap slider | Bracket fusion (`enfuse`) remains the ceiling for sensor-clipped panes |
+| **Vertical correction** (keystone) | ✅ Straighten + Verticals sliders | Auto-detection of the correction amount would be the refinement |
 | Learned personal style | ❌ | Their moat: trained on your past edits. Presets-per-operator is the honest approximation |
 | Declutter / object removal | 🔜 Phase 4 (LaMa, queued) | Spiked and viable; batch not live on current CPUs |
 | Grass greening, fire-in-fireplace, TV inserts | ❌ | Greening is an easy HSL band op; the inserts are compositing work not planned |
@@ -203,13 +203,22 @@ you an edit a listing can use — corrected, consistent, sky replaced, named
 and ordered — with zero per-photo fees and nothing leaving the machine. For
 interiors, the window-pull gap is the visible difference from Fotello
 output, and vertical correction is the most conspicuous missing control.
-The two highest-value additions, in order:
+The two highest-value additions, both ✅ SHIPPED 2026-08-05:
 
-1. **Vertical/keystone correction slider** (small) — perspective warp is a
-   single Pillow/numpy transform; recipes already have a place for it.
-2. **Window pull** (medium) — detect bracketed sequences (same scene,
-   ±EV in EXIF, seconds apart) and merge with `enfuse`; single-frame
-   fallback via a stronger luminance-masked local tonemap.
+1. **Geometry sliders** — *Straighten* (±5°, rotate-and-crop to the largest
+   same-aspect inscribed rectangle, so no black corners ever) and
+   *Verticals* (projective keystone correction, up to an 18% top/bottom
+   inset at full strength). Output size never changes, which keeps masks,
+   previews and exports indifferent to geometry. Applied after the sky
+   composite so the segmentation mask stays a pure function of the original
+   pixels and the preview's mask cache stays valid.
+2. **Window pull (single-frame)** — local tone compression driven by
+   *blurred* luminance: a bright window darkens as a region while the
+   detail inside it keeps its own contrast, which is what separates it from
+   a plain highlights pull. It reveals whatever the file still holds; a
+   sensor-clipped pane has nothing left, and no slider can honestly invent
+   it — full bracket fusion (`enfuse` on ±EV sequences) remains the
+   ceiling and stays on the list below.
 
 What will *not* close: the learned style. That requires their training
 corpus. The counterweight is that every FrameFound edit is inspectable,

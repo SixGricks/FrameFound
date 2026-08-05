@@ -61,6 +61,9 @@ class RecipeIn(BaseModel):
     highlights: float = Field(default=0.0, ge=-1.0, le=1.0)
     vibrance: float = Field(default=0.0, ge=-1.0, le=1.0)
     saturation: float = Field(default=0.0, ge=-1.0, le=1.0)
+    rotate: float = Field(default=0.0, ge=-5.0, le=5.0)
+    keystone: float = Field(default=0.0, ge=-1.0, le=1.0)
+    window_pull: float = Field(default=0.0, ge=0.0, le=1.0)
     auto: bool = False
     sky: SkyIn | None = None
 

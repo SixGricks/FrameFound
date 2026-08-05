@@ -34,6 +34,15 @@ RECIPE_FIELDS = {
     "highlights": (-1.0, 1.0),
     "vibrance": (-1.0, 1.0),
     "saturation": (-1.0, 1.0),
+    # Geometry. rotate is degrees of straightening; keystone corrects
+    # converging verticals (positive = the camera was tilted up, the usual
+    # real-estate case). Both cost edge pixels, never black corners.
+    "rotate": (-5.0, 5.0),
+    "keystone": (-1.0, 1.0),
+    # Single-frame window pull: local tone compression driven by blurred
+    # luminance, so a bright window darkens as a region while its own
+    # detail keeps its contrast.
+    "window_pull": (0.0, 1.0),
 }
 
 
@@ -116,7 +125,76 @@ def render(
                     shift=sky["shift"],
                     relight=sky["relight"],
                 )
+    # Geometry after the sky so the segmentation mask stays a function of
+    # the original pixels alone (which is what lets the preview cache it),
+    # and a composited sky simply warps along with everything else.
+    image = apply_geometry(image, cleaned)
     return apply_recipe(image, cleaned)
+
+
+def apply_geometry(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
+    """Straighten, then correct verticals. Output size equals input size —
+    both operations sample from inside the frame and pay in edge pixels,
+    never in black corners, and a stable size is what keeps the rest of the
+    pipeline (masks, previews, exports) indifferent to geometry."""
+    recipe = clean_recipe(recipe)
+    rotate, keystone = recipe.get("rotate"), recipe.get("keystone")
+    if rotate:
+        image = _rotate_crop(image, rotate)
+    if keystone:
+        image = _keystone(image, keystone)
+    return image
+
+
+def _rotate_crop(image: Image.Image, degrees: float) -> Image.Image:
+    """Rotate and crop back to the largest same-aspect rectangle.
+
+    A rotated crop of size (s·w, s·h) fits in the original frame exactly
+    when its bounding box does, which gives the scale in closed form.
+    """
+    import math
+
+    w, h = image.size
+    a = math.radians(abs(degrees))
+    sin_a, cos_a = math.sin(a), math.cos(a)
+    s = min(w / (w * cos_a + h * sin_a), h / (w * sin_a + h * cos_a))
+    rotated = image.rotate(degrees, Image.Resampling.BICUBIC, expand=True)
+    rw, rh = rotated.size
+    cw, ch = round(w * s), round(h * s)
+    left, top = (rw - cw) // 2, (rh - ch) // 2
+    return rotated.crop((left, top, left + cw, top + ch)).resize((w, h), Image.Resampling.LANCZOS)
+
+
+def _keystone(image: Image.Image, amount: float) -> Image.Image:
+    """Vertical perspective correction.
+
+    Positive `amount` fixes verticals converging toward the top (camera
+    tilted up): the output's top edge samples from an inset span of the
+    source, which stretches the top back out. Negative fixes the opposite.
+    At full strength the inset is 18% per side — beyond that a photograph
+    stops believing itself.
+    """
+    import numpy as np
+
+    w, h = image.size
+    inset = abs(amount) * 0.18 * w
+    if amount > 0:
+        source = [(inset, 0.0), (w - inset, 0.0), (float(w), float(h)), (0.0, float(h))]
+    else:
+        source = [(0.0, 0.0), (float(w), 0.0), (w - inset, float(h)), (inset, float(h))]
+    dest = [(0.0, 0.0), (float(w), 0.0), (float(w), float(h)), (0.0, float(h))]
+
+    # Pillow's PERSPECTIVE coefficients map output coordinates to input
+    # coordinates; solve the 8-parameter projective system for dest→source.
+    rows, rhs = [], []
+    for (dx, dy), (sx, sy) in zip(dest, source, strict=True):
+        rows.append([dx, dy, 1, 0, 0, 0, -sx * dx, -sx * dy])
+        rows.append([0, 0, 0, dx, dy, 1, -sy * dx, -sy * dy])
+        rhs.extend([sx, sy])
+    coeffs = np.linalg.solve(np.asarray(rows, dtype=np.float64), np.asarray(rhs, dtype=np.float64))
+    return image.transform(
+        (w, h), Image.Transform.PERSPECTIVE, tuple(coeffs), Image.Resampling.BICUBIC
+    )
 
 
 def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
@@ -162,6 +240,25 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
         if highlights:
             mask = luma**2
             arr *= 1.0 + (0.5 * highlights) * mask[..., None]
+
+    # Window pull: the gain is driven by *blurred* luminance, so a bright
+    # window darkens as a region while the detail inside it keeps its own
+    # contrast — which is what separates this from just pulling highlights,
+    # and is the single-frame approximation of what bracket fusion does.
+    # It reveals whatever the file still holds; a sensor-clipped pane has
+    # nothing left to reveal, and no slider can honestly invent it.
+    if pull := recipe.get("window_pull"):
+        from PIL import ImageFilter
+
+        luma = np.clip(arr @ np.asarray(_LUMA, dtype=np.float32), 0.0, 1.0)
+        blur_img = Image.fromarray((luma * 255.0).astype("uint8"), "L")
+        radius = max(2.0, arr.shape[0] / 24.0)
+        blurred = (
+            np.asarray(blur_img.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32) / 255.0
+        )
+        excess = np.clip((blurred - 0.5) * 2.0, 0.0, 1.0)
+        gain = 1.0 - (0.75 * pull) * excess**1.3
+        arr *= gain[..., None]
 
     vibrance, saturation = recipe.get("vibrance"), recipe.get("saturation")
     if vibrance or saturation:
