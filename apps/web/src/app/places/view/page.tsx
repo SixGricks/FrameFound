@@ -62,6 +62,11 @@ function PlaceView() {
     if (sort === "captured") {
       sorted.sort((a, b) => (b.captured_at ?? "").localeCompare(a.captured_at ?? ""));
     }
+    if (sort === "captured_asc") {
+      sorted.sort((a, b) =>
+        (a.captured_at ?? "9999").localeCompare(b.captured_at ?? "9999"),
+      );
+    }
     if (sort === "name") sorted.sort((a, b) => a.filename.localeCompare(b.filename));
     return sorted;
   }, [assets, mediaType, sourceFilter, sort]);
@@ -116,6 +121,7 @@ function PlaceView() {
         <select className="select" value={sort} onChange={(e) => setSort(e.target.value)}>
           <option value="distance">Closest first</option>
           <option value="captured">Newest first</option>
+          <option value="captured_asc">Oldest first</option>
           <option value="name">By name</option>
         </select>
         {assets && (

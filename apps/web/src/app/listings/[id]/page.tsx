@@ -93,16 +93,33 @@ export default function ListingPage() {
     }
   }
 
+  const searchTicket = useRef(0);
+
   async function search() {
-    if (!query.trim()) return;
+    const q = query.trim();
+    if (!q) return;
+    const mine = ++searchTicket.current;
     if (addMode === "folders") {
       setOpenFolder(null);
       setFolderAssets(null);
-      setFolders(await api.searchFolders(query.trim()));
+      const found = await api.searchFolders(q);
+      if (mine === searchTicket.current) setFolders(found);
     } else {
-      setResults(await api.search(query.trim()));
+      const found = await api.search(q);
+      if (mine === searchTicket.current) setResults(found);
     }
   }
+
+  // Search as you type: results arrive without pressing anything, and the
+  // ticket makes the latest keystroke win over slower earlier requests.
+  useEffect(() => {
+    if (!adding) return;
+    const q = query.trim();
+    if (q.length < 2) return;
+    const timer = setTimeout(() => search(), 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, addMode, adding]);
 
   async function browseFolder(folder: ListingFolder) {
     setOpenFolder(folder);

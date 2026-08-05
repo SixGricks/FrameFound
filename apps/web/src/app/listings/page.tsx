@@ -1,14 +1,20 @@
 "use client";
 
 // Listings: property shoots on their way to becoming upload-ready galleries.
+//
+// The fast path is the address box: shoots live in folders named after the
+// property, so typing "5096" finds "00-00 5096 Old Philadelphia Pike
+// Kinzers" as you type, and picking it creates the listing — named from the
+// address, photos imported, rooms suggested — in one gesture. Browse's
+// "＋ listing" badge deep-links into the same flow with ?folder=&library=.
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
-import { api, type ListingSummary } from "@/lib/api";
+import { api, type ListingFolder, type ListingSummary } from "@/lib/api";
 
 const STATUS_LABEL: Record<string, string> = {
   none: "",
@@ -18,12 +24,24 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "export failed",
 };
 
-export default function ListingsPage() {
+/** "00-00 5096 Old Philadelphia Pike Kinzers" -> "5096 Old Philadelphia Pike Kinzers".
+ * The date prefix is filing convention, not part of the address. */
+function addressFromFolder(path: string): string {
+  const leaf = path.split("/").pop() ?? path;
+  return leaf.replace(/^\s*\d{2}\s*-\s*\d{2}\s*-?\s*/, "").trim() || leaf;
+}
+
+function ListingsInner() {
   const router = useRouter();
+  const params = useSearchParams();
   const [listings, setListings] = useState<ListingSummary[] | null>(null);
   const [name, setName] = useState("");
+  const [folders, setFolders] = useState<ListingFolder[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ticket = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -33,11 +51,63 @@ export default function ListingsPage() {
     }
   }, []);
 
+  const createFromFolder = useCallback(
+    async (libraryId: string, path: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const assets = await api.folderAssets(libraryId, path);
+        if (!assets.length) throw new Error("That folder has no photographs");
+        const created = await api.createListing(
+          addressFromFolder(path),
+          assets.map((a) => a.asset_id),
+        );
+        router.push(`/listings/${created.id}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not create the listing");
+        setBusy(false);
+      }
+    },
+    [router],
+  );
+
   useEffect(() => {
     load();
-  }, [load]);
+    // Deep link from Browse: ?folder=...&library=... creates immediately —
+    // the operator already said which shoot by clicking it.
+    const folder = params.get("folder");
+    const library = params.get("library");
+    if (folder && library) {
+      router.replace("/listings");
+      setNotice(`Creating a listing from ${addressFromFolder(folder)}…`);
+      createFromFolder(library, folder);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  async function create() {
+  // Address lookup, as you type. Folder names are the addresses.
+  useEffect(() => {
+    if (debounce.current) clearTimeout(debounce.current);
+    const query = name.trim();
+    if (query.length < 2) {
+      setFolders([]);
+      return;
+    }
+    debounce.current = setTimeout(async () => {
+      const mine = ++ticket.current;
+      try {
+        const found = await api.searchFolders(query);
+        if (mine === ticket.current) setFolders(found);
+      } catch {
+        if (mine === ticket.current) setFolders([]);
+      }
+    }, 250);
+    return () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    };
+  }, [name]);
+
+  async function createEmpty() {
     if (!name.trim()) return;
     setBusy(true);
     setError(null);
@@ -55,7 +125,7 @@ export default function ListingsPage() {
       <div className="sectionhead" style={{ marginTop: 0 }}>
         <h2>Listings</h2>
         <span className="faint mono">
-          ordered and named for upload — 01_front_exterior.jpg leads
+          type the address — shoots are found by their folder
         </span>
       </div>
 
@@ -64,28 +134,77 @@ export default function ListingsPage() {
           {error}
         </div>
       )}
+      {notice && !error && (
+        <div className="card" role="status">
+          {notice}
+        </div>
+      )}
 
-      <div className="toolbar">
-        <input
-          className="input"
-          style={{ flex: 1, minWidth: 220 }}
-          placeholder="Property address or shoot name"
-          value={name}
-          disabled={busy}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") create();
-          }}
-          aria-label="New listing name"
-        />
-        <button className="btn btn-primary" disabled={busy || !name.trim()} onClick={create}>
-          New listing
+      <div className="toolbar" style={{ position: "relative" }}>
+        <div style={{ flex: 1, minWidth: 260, position: "relative" }}>
+          <input
+            className="input"
+            style={{ width: "100%" }}
+            placeholder="Property address — matches shoot folders as you type"
+            value={name}
+            disabled={busy}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && folders.length === 0) createEmpty();
+            }}
+            aria-label="New listing address"
+          />
+          {folders.length > 0 && (
+            <div
+              className="card"
+              style={{
+                position: "absolute",
+                top: "100%",
+                left: 0,
+                right: 0,
+                zIndex: 30,
+                marginTop: 4,
+                display: "grid",
+                gap: 4,
+              }}
+            >
+              {folders.map((folder) => (
+                <button
+                  type="button"
+                  key={`${folder.library_id}:${folder.path}`}
+                  className="btn"
+                  disabled={busy}
+                  style={{ display: "flex", justifyContent: "space-between", gap: 8 }}
+                  onClick={() => createFromFolder(folder.library_id, folder.path)}
+                >
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {addressFromFolder(folder.path)}
+                  </span>
+                  <span className="faint mono">
+                    {folder.image_count} photos · {folder.library_name}
+                  </span>
+                </button>
+              ))}
+              <span className="faint" style={{ fontSize: "0.72rem", padding: "0 4px" }}>
+                Pick a shoot to create the listing with its photos — or press
+                Enter for an empty listing named “{name.trim()}”.
+              </span>
+            </div>
+          )}
+        </div>
+        <button
+          className="btn btn-primary"
+          disabled={busy || !name.trim()}
+          onClick={createEmpty}
+        >
+          New empty listing
         </button>
       </div>
 
       {listings && listings.length === 0 && (
         <div className="empty">
-          No listings yet. Create one, then add the shoot&apos;s photos from its page.
+          No listings yet. Type a property address above — the shoot folder and
+          its photos come with it.
         </div>
       )}
 
@@ -111,5 +230,13 @@ export default function ListingsPage() {
         ))}
       </div>
     </Shell>
+  );
+}
+
+export default function ListingsPage() {
+  return (
+    <Suspense>
+      <ListingsInner />
+    </Suspense>
   );
 }

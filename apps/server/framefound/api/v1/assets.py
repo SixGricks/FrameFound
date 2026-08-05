@@ -90,7 +90,7 @@ async def list_assets(
     include_suggested_tags: bool = Query(
         default=False, description="With `tag`, also match assets where it is only suggested"
     ),
-    sort: str = Query(default="recent", pattern="^(recent|captured|name|size)$"),
+    sort: str = Query(default="recent", pattern="^(recent|captured|captured_asc|name|size)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> AssetPage:
@@ -131,6 +131,7 @@ async def list_assets(
     orders: dict[str, UnaryExpression[Any]] = {
         "recent": Asset.first_indexed_at.desc(),
         "captured": Asset.captured_at.desc().nullslast(),
+        "captured_asc": Asset.captured_at.asc().nullslast(),
         "name": Asset.filename.asc(),
         "size": Asset.size_bytes.desc(),
     }

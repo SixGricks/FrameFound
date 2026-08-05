@@ -6,7 +6,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
@@ -17,6 +17,7 @@ const PAGE_SIZE = 60;
 
 function BrowsePage() {
   const params = useSearchParams();
+  const router = useRouter();
   // Arriving from a tag hit or a Places card: the filter comes in on the URL so
   // the view is linkable and survives a reload.
   const [tag, setTag] = useState(params.get("tag") ?? "");
@@ -136,7 +137,8 @@ function BrowsePage() {
           aria-label="Sort"
         >
           <option value="recent">Recently added</option>
-          <option value="captured">Capture date</option>
+          <option value="captured">Capture date (newest)</option>
+          <option value="captured_asc">Capture date (oldest)</option>
           <option value="name">Filename</option>
           <option value="size">Largest first</option>
         </select>
@@ -195,6 +197,27 @@ function BrowsePage() {
                   <span className="tile-badge">{duration(asset.duration_s)}</span>
                 )}
                 {asset.media_type === "audio" && <span className="tile-badge">audio</span>}
+                {asset.media_type === "image" && asset.relative_path.includes("/") && (
+                  <button
+                    type="button"
+                    className="tile-badge"
+                    style={{ right: "auto", left: 6, cursor: "pointer", border: 0 }}
+                    title={`Start a listing from this shoot folder: ${asset.relative_path.slice(0, asset.relative_path.lastIndexOf("/"))}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const folder = asset.relative_path.slice(
+                        0,
+                        asset.relative_path.lastIndexOf("/"),
+                      );
+                      router.push(
+                        `/listings?folder=${encodeURIComponent(folder)}&library=${asset.library_id}`,
+                      );
+                    }}
+                  >
+                    ＋ listing
+                  </button>
+                )}
               </div>
               <div className="tile-meta">
                 <div className="tile-name">{asset.filename}</div>
