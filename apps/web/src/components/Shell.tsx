@@ -33,6 +33,7 @@ const FIND = [
 
 const MANAGE = [
   { href: "/libraries", label: "Libraries", hint: "What is being catalogued" },
+  { href: "/drive", label: "Drive", hint: "Sort listing folders in Google Drive" },
   { href: "/storage", label: "Storage", hint: "Drives and where things live" },
   { href: "/basemaps", label: "Basemaps", hint: "Offline maps, one file each" },
   { href: "/duplicates", label: "Duplicates", hint: "Reclaimable space" },

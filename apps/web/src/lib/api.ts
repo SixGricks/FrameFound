@@ -592,6 +592,49 @@ export interface AiEditSettings {
   model: string;
 }
 
+export interface GdriveSettings {
+  configured: boolean;
+  enabled: boolean;
+  client_email: string;
+}
+
+export interface GdriveRename {
+  file_id: string;
+  old_name: string;
+  new_name: string;
+  room: string;
+  room_label: string;
+  score: number;
+  source: "catalogue" | "thumbnail";
+}
+
+export interface GdriveSkipped {
+  file_id: string;
+  name: string;
+  reason: string;
+}
+
+export interface GdrivePreview {
+  folder_id: string;
+  folder_name: string;
+  total: number;
+  renames: GdriveRename[];
+  skipped: GdriveSkipped[];
+  from_catalogue: number;
+  from_thumbnail: number;
+}
+
+export interface GdriveApplyResult {
+  renamed: number;
+  failed: GdriveSkipped[];
+  manifest_file_id: string | null;
+}
+
+export interface GdriveUndoResult {
+  restored: number;
+  failed: GdriveSkipped[];
+}
+
 export interface InpaintVersion {
   version: number;
   status: "queued" | "running" | "ready" | "failed";
@@ -978,6 +1021,32 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
+    }),
+
+  gdriveSettings: () => request<GdriveSettings>("/gdrive/settings"),
+  updateGdriveSettings: (patch: { service_account_json?: string; enabled?: boolean }) =>
+    request<GdriveSettings>("/gdrive/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  gdrivePreview: (folder: string) =>
+    request<GdrivePreview>("/gdrive/organize/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder }),
+    }),
+  gdriveApply: (folder: string, renames: GdriveRename[]) =>
+    request<GdriveApplyResult>("/gdrive/organize/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder, renames }),
+    }),
+  gdriveUndo: (folder: string) =>
+    request<GdriveUndoResult>("/gdrive/organize/undo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder }),
     }),
 
   skies: () => request<SkyAsset[]>("/develop/skies"),

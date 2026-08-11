@@ -12,6 +12,7 @@ from framefound.api.v1.assets import router as assets_router
 from framefound.api.v1.basemaps import router as basemaps_router
 from framefound.api.v1.develop import router as develop_router
 from framefound.api.v1.duplicates import router as duplicates_router
+from framefound.api.v1.gdrive import router as gdrive_router
 from framefound.api.v1.libraries import router as libraries_router
 from framefound.api.v1.listings import router as listings_router
 from framefound.api.v1.media import router as media_router
@@ -43,6 +44,7 @@ api_v1.include_router(tags_router)
 api_v1.include_router(slideshows_router)
 api_v1.include_router(listings_router)
 api_v1.include_router(develop_router)
+api_v1.include_router(gdrive_router)
 api_v1.include_router(panel_router)
 
 

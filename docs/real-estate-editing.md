@@ -373,3 +373,46 @@ renaming) with no new models and no external calls — it should ship first
 and would be useful the same week. The editor phases then layer onto assets
 that already flow through listings. The GPU upgrade already on the Later
 list is what turns Phase 4 from batch into live.
+
+## Google Drive organizer — SHIPPED 2026-08-11
+
+The workflow the listing exporter created — classify, order, rename — now
+reaches folders that live in Google Drive, without the photos ever entering
+FrameFound. Manage → Drive.
+
+**How it authenticates.** A Google service account, not OAuth: the operator
+creates the account once (Google Cloud console → IAM & Admin → Service
+Accounts → create → Keys → add key → JSON), pastes the downloaded JSON key
+on the Security page (sealed with the same Fernet seal as every other key;
+the API reports presence only), and then *shares* each property folder with
+the account's email address exactly like sharing with a person. The account
+can only see what was shared; un-sharing revokes it instantly. The Drive
+scope never touches the rest of the Google account.
+
+**How it classifies.** Catalogue-first: if the shoot is already on the NAS,
+each Drive filename stem is matched to its catalogued twin (address words
+from the Drive folder name break stem collisions between shoots) and the
+stored pgvector CLIP embedding is classified with the same 21-room
+zero-shot head the listings use — no pixels move anywhere. Only files the
+catalogue has never seen fall back to embedding Drive's own ~768px
+thumbnail locally. Files with no confident room are left untouched and
+listed, never guessed at.
+
+**How it writes.** Propose-then-approve. Preview computes the full plan —
+`01 - Front exterior - IMG_1724.jpg` … in canonical walk-through order —
+and the operator can drop rows (numbering closes ranks) before pressing
+Rename. Renames are in-place `files.update` metadata patches: no copies, no
+re-upload, file ids and share links survive. A manifest JSON written into
+the folder records old→new, and **Undo last organize** replays it in
+reverse. Re-running on an already-sorted folder strips the previous `NN -
+Label - ` prefixes first, so numbering never stacks.
+
+**Proven by the live demo (2026-08-11):** 24 photos of `09-22 - 1505 W
+Kings Hwy Gap/MLS` classified from catalogue embeddings and organized in
+Drive (as copies, in the pre-build demo; the shipped tool renames in place).
+
+Tests: fake Drive behind `httpx.MockTransport` — the real client path (RS256
+JWT assertion, token exchange, paging, rename, multipart manifest upload)
+runs against it, with a real RSA key generated per run. Degradation pinned:
+no AI runtime → catalogue matches still classify, thumbnail files are
+listed as skipped.

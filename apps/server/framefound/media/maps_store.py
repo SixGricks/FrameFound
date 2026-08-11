@@ -207,3 +207,69 @@ async def load_ai_edit_config(db: AsyncSession) -> AiEditConfig:
 
 async def save_ai_edit_config(db: AsyncSession, config: AiEditConfig) -> None:
     await _put(db, AI_EDIT_KEY, asdict(config))
+
+
+GDRIVE_KEY = "gdrive"
+
+
+@dataclass
+class GdriveConfig:
+    """Google Drive organizer, authenticated as a service account.
+
+    The whole service-account JSON key is the secret and it is sealed as one
+    blob. The client email is kept in the clear beside it because the UX
+    depends on it: the operator has to know which address to share folders
+    with, and an email address identifies the account without being able to
+    act as it. Revoking access is un-sharing the folder — no key rotation
+    needed to shut the door.
+    """
+
+    service_account_sealed: str = ""
+    client_email: str = ""
+    enabled: bool = True
+
+    @property
+    def ready(self) -> bool:
+        return self.enabled and bool(self.service_account_sealed)
+
+    def service_account(self) -> dict[str, Any]:
+        if not self.service_account_sealed:
+            raise SecretUnavailable("No Drive service account is configured")
+        import json
+
+        info = json.loads(unseal(self.service_account_sealed))
+        return dict(info)
+
+    def with_service_account(self, raw_json: str) -> None:
+        """Validate and seal a pasted service-account key file."""
+        if not raw_json.strip():
+            self.service_account_sealed = ""
+            self.client_email = ""
+            return
+        import json
+
+        try:
+            info = json.loads(raw_json)
+            email = str(info["client_email"])
+            key = str(info["private_key"])
+        except (json.JSONDecodeError, KeyError, TypeError) as err:
+            raise ValueError(
+                "That is not a service-account key file — it should be JSON "
+                "with client_email and private_key fields"
+            ) from err
+        if "PRIVATE KEY" not in key:
+            raise ValueError("The private_key field does not contain a PEM key")
+        self.service_account_sealed = seal(raw_json)
+        self.client_email = email
+
+
+async def load_gdrive_config(db: AsyncSession) -> GdriveConfig:
+    row = await db.get(AppSetting, GDRIVE_KEY)
+    if row is None:
+        return GdriveConfig()
+    known = set(GdriveConfig().__dict__)
+    return GdriveConfig(**{k: v for k, v in row.value.items() if k in known})
+
+
+async def save_gdrive_config(db: AsyncSession, config: GdriveConfig) -> None:
+    await _put(db, GDRIVE_KEY, asdict(config))

@@ -271,6 +271,26 @@ Room labels are suggestions until confirmed, videos stay out of the photo
 zip, and an unreadable file is skipped *by name* while the numbering closes
 ranks. Deleting a listing audits who did it.
 
+**2026-08-11: the organizer reached Google Drive.** The classify-order-
+rename workflow now runs against folders that live in Drive, with the photos
+staying put: a service account the operator shares folders with (JSON key
+sealed on Security, presence-only API), catalogue-first classification (a
+shoot that exists on the NAS is labelled from its stored embeddings — zero
+pixels move; unknown files fall back to embedding Drive's own thumbnail
+locally), propose-then-approve renames in place via metadata patch, and a
+manifest in the folder that makes **Undo last organize** one click.
+Re-running a sorted folder strips old prefixes instead of stacking them,
+unconfident files are left untouched and listed, and both apply and undo
+land in the audit log. Manage → Drive. Details in real-estate-editing.md.
+
+**2026-08-11, catching up the log — interior quality v2 had shipped after
+the previous entry:** the window-pull/shadows illumination map was rebuilt
+on an edge-aware guided filter (integral-image box means, O(N)), which
+ended the "dark mask floating over the window" look the operator called
+out — lifts and pulls now hug real edges. Sky selection became visual: a
+thumbnail picker on the listing rail and in the editor instead of a name
+dropdown.
+
 **2026-08-06, continued: live-testing feedback, six fixes same session.**
 Per-photo auto-edit progress (spinner → ✓ per tile, n/m on the button);
 six farm/rural room categories for the Lancaster market; the sky matte
