@@ -31,7 +31,13 @@ function loadMaps(key: string): Promise<void> {
     script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly`;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Google Maps failed to load"));
+    script.onerror = () => {
+      // Forget the failure so the next visit tries again: a cached
+      // rejection kept Places on the plain scatter until a full reload.
+      window.__framefoundMapsLoading = undefined;
+      script.remove();
+      reject(new Error("Google Maps failed to load"));
+    };
     document.head.appendChild(script);
   });
   return window.__framefoundMapsLoading;
@@ -53,7 +59,11 @@ function loadMapLibre(libraryUrl: string, stylesheetUrl: string): Promise<void> 
     script.src = libraryUrl;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("MapLibre failed to load"));
+    script.onerror = () => {
+      window.__framefoundMapLibreLoading = undefined;
+      script.remove();
+      reject(new Error("MapLibre failed to load"));
+    };
     document.head.appendChild(script);
   });
   return window.__framefoundMapLibreLoading;

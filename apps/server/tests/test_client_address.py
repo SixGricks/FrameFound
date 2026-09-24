@@ -35,9 +35,29 @@ def test_trusted_proxy_header_is_honoured() -> None:
     assert resolve_client_ip(request, DOCKER_BRIDGE) == "203.0.113.9"
 
 
-def test_leftmost_entry_wins_through_a_proxy_chain() -> None:
+def test_nearest_untrusted_hop_wins_through_a_proxy_chain() -> None:
+    # 10.0.0.1 is not a proxy we trust, so nothing we trust vouches for what
+    # it claims about the hop before it: that is the client, as far as we know.
     request = make_request("172.18.0.5", {"x-forwarded-for": "203.0.113.9, 10.0.0.1, 172.18.0.4"})
-    assert resolve_client_ip(request, DOCKER_BRIDGE) == "203.0.113.9"
+    assert resolve_client_ip(request, DOCKER_BRIDGE) == "10.0.0.1"
+
+
+def test_trusting_the_whole_chain_reaches_the_origin() -> None:
+    request = make_request("172.18.0.5", {"x-forwarded-for": "203.0.113.9, 10.0.0.1, 172.18.0.4"})
+    assert resolve_client_ip(request, f"{DOCKER_BRIDGE}, 10.0.0.1") == "203.0.113.9"
+
+
+def test_forged_left_entry_through_an_appending_proxy_is_ignored() -> None:
+    # The attack the left-most rule allowed: the client sends its own header,
+    # an appending proxy adds the real address, the request arrives looking
+    # like it came from the machine itself.
+    request = make_request("172.18.0.5", {"x-forwarded-for": "127.0.0.1, 198.51.100.23"})
+    assert resolve_client_ip(request, DOCKER_BRIDGE) == "198.51.100.23"
+
+
+def test_all_internal_chain_resolves_to_its_origin() -> None:
+    request = make_request("172.18.0.5", {"x-forwarded-for": "172.18.0.9, 172.18.0.4"})
+    assert resolve_client_ip(request, DOCKER_BRIDGE) == "172.18.0.9"
 
 
 def test_x_real_ip_used_when_forwarded_for_absent() -> None:

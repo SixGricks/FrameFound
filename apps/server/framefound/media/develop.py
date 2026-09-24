@@ -14,14 +14,54 @@ adjustments are per-pixel and scale-free, so applying them after downscaling
 exception of auto-levels' percentiles, which differ immeasurably.
 """
 
+import contextlib
+import io
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
 # Rec. 709 luma weights — the standard answer to "how bright is this pixel".
 _LUMA = (0.2126, 0.7152, 0.0722)
+
+
+def open_for_render(path: Path, already_normalized: bool = False) -> Image.Image:
+    """The pixels every render path starts from: upright and in sRGB.
+
+    One function because the paths used to disagree. Export flattened
+    embedded profiles to sRGB while the editor preview skipped it, so an
+    AdobeRGB photograph looked duller on screen than in the zip — the
+    operator added vibrance to compensate and the export overshot, which is
+    the "what you saw is what ships" promise broken in the most expensive
+    direction. Auto-edit judged the unconverted preview too.
+
+    `already_normalized` is for object-removal results, which were made
+    upright and sRGB when their chain started; doing either again is wrong.
+    Returns a loaded RGB copy, independent of the file.
+    """
+    from PIL import ImageCms, ImageOps
+
+    with Image.open(path) as img:
+        if already_normalized:
+            return img.convert("RGB")
+        image = ImageOps.exif_transpose(img) or img
+        icc = image.info.get("icc_profile")
+        if icc:
+            # A malformed profile is the camera's problem; the photograph
+            # still renders, just unconverted.
+            with contextlib.suppress(Exception):
+                converted = ImageCms.profileToProfile(
+                    image,
+                    ImageCms.ImageCmsProfile(io.BytesIO(icc)),
+                    ImageCms.createProfile("sRGB"),
+                    outputMode="RGB",
+                )
+                if converted is not None:
+                    image = converted
+        return image.convert("RGB")
+
 
 # Slider ranges, matched by the API's validation and the UI's slider bounds.
 # exposure is in EV stops; everything else is -1..1 (the UI shows -100..100).

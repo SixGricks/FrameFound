@@ -8,6 +8,16 @@ import Shell from "@/components/Shell";
 import { api, type Library } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 
+// How often a library is re-read. A scan of ~9,000 unchanged files takes
+// seconds, and on a NAS nothing else notices new files: the watcher only
+// hears changes made through this machine, not a shoot copied from a laptop.
+const SCHEDULES: { minutes: number | null; label: string }[] = [
+  { minutes: 60, label: "Rescan hourly" },
+  { minutes: 360, label: "Every 6 hours" },
+  { minutes: 1440, label: "Daily" },
+  { minutes: null, label: "Manual only" },
+];
+
 export default function LibrariesPage() {
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -28,6 +38,19 @@ export default function LibrariesPage() {
       setNotice(`Scan queued for ${library.name}`);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Could not start scan");
+    }
+    setTimeout(() => setNotice(null), 3500);
+  }
+
+  async function schedule(library: Library, minutes: number | null) {
+    try {
+      const updated = await api.updateLibrary(library.id, { scan_interval_minutes: minutes });
+      setLibraries((all) =>
+        all.map((lib) => (lib.id === updated.id ? { ...lib, ...updated, asset_count: lib.asset_count } : lib)),
+      );
+      setNotice(`${library.name}: ${SCHEDULES.find((s) => s.minutes === minutes)?.label ?? "saved"}`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not change the schedule");
     }
     setTimeout(() => setNotice(null), 3500);
   }
@@ -90,6 +113,26 @@ export default function LibrariesPage() {
                 <span className="faint" style={{ fontSize: "0.82rem" }}>
                   last scan {relativeTime(lib.last_scan_at)}
                 </span>
+                <select
+                  className="input"
+                  style={{ width: "auto", padding: "4px 8px", fontSize: "0.82rem" }}
+                  value={lib.scan_interval_minutes === null ? "" : String(lib.scan_interval_minutes)}
+                  onChange={(e) => schedule(lib, e.target.value === "" ? null : Number(e.target.value))}
+                  aria-label={`Rescan schedule for ${lib.name}`}
+                  title="New files on a network share only appear after a scan"
+                >
+                  {SCHEDULES.map((s) => (
+                    <option key={s.label} value={s.minutes === null ? "" : String(s.minutes)}>
+                      {s.label}
+                    </option>
+                  ))}
+                  {lib.scan_interval_minutes !== null &&
+                    !SCHEDULES.some((s) => s.minutes === lib.scan_interval_minutes) && (
+                      <option value={String(lib.scan_interval_minutes)}>
+                        Every {lib.scan_interval_minutes} min
+                      </option>
+                    )}
+                </select>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 9 }}>
                   <Link className="btn" href={`/browse?library=${lib.id}`}>
                     Browse

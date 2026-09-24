@@ -291,6 +291,36 @@ services:
     depends_on:
       redis: { condition: service_healthy }
 
+  backup:
+    # Nightly catalogue backup (infrastructure/scripts/backup-loop.sh), in the
+    # same archive format as `manage.sh backup`. Added after the install went
+    # eight weeks with no backup: the command worked and nothing ran it.
+    # The database's own image, so pg_dump always matches the server's major
+    # version. Archives land in <data store>/backups — the data disk, not the
+    # one Postgres lives on — and the System page reports how old the newest is.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    # The host account that owns the data store, so `manage.sh restore` can
+    # read what this writes.
+    user: "${FRAMEFOUND_UID:-1000}:${FRAMEFOUND_GID:-1000}"
+    entrypoint: ["bash", "/scripts/backup-loop.sh"]
+    env_file: .env
+    environment:
+      PGHOST: postgres
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    volumes:
+      - ${FRAMEFOUND_DATA_STORE:-framefound-data}:/data
+      - ./infrastructure/scripts/backup-loop.sh:/scripts/backup-loop.sh:ro
+      # Included in each archive because a restore needs it — which makes the
+      # archives themselves secret (the script writes them 0600).
+      - ./.env:/config/env:ro
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped

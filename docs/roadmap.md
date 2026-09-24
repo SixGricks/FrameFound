@@ -3,7 +3,199 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
-## Where things stand — 2026-07-29
+## Where things stand — 2026-09-24 (system review)
+
+**The NAS was unmounted for 39 days and nothing said so.** On Aug 16 the VM
+rebooted onto a kernel that unattended-upgrades had installed without
+`linux-modules-extra`; the CIFS mounts use `iocharset=utf8`, which needs
+`nls_utf8` from that package, so all three failed at boot (`mount error(79)`)
+and `nofail` let the machine carry on. Search and thumbnails kept working from
+the data disk, which is exactly why it looked healthy. Everything that needs an
+original — new shoots, listing previews, auto-edit, exports, object removal —
+has been impossible since. The daily GELCO scan walked the empty mountpoint,
+flagged 7,162 assets missing and reported success; the health check measured
+the VM's own root disk under the library's name and said "ok"; the three
+Intel libraries did report "unreachable", to a System page that never
+rendered that field. No backup had been taken since the M8 drills on Jul 30.
+
+Fixed in code today (details in the dated entry below): scans refuse an empty
+mountpoint and flag it `unmounted`; nothing flags files missing while a share
+is down; a banner on every page names any unreachable library, a stale
+backup, or a full disk; a `backup` service writes a nightly archive; and
+`manage.sh doctor` checks the host for exactly this failure. The review also
+found and fixed ~30 unrelated bugs across the pipeline, the listing vertical,
+the catalogue and the web UI.
+
+### Needs the operator — the fixes code cannot make
+
+1. **Restore the shares** (the package install is a host change; a session
+   cannot make it on your behalf):
+   `sudo apt install --no-install-recommends linux-modules-extra-6.8.0-138-generic linux-image-extra-virtual`
+   then `sudo mount -a -t cifs`. The meta package makes every future kernel
+   bring the modules with it; `manage.sh doctor` should then report clean.
+2. **Rescan.** GELCO's next scheduled scan (and every library's recovery
+   check) brings the 7,162 assets back online; press **Scan now** on each
+   library to do it at once. Set **Intel 2026** to *Rescan hourly* on the
+   Libraries page — until today no library but GELCO had a schedule, and the
+   file watcher cannot see files copied to the NAS from another machine, so a
+   new shoot only appeared after someone pressed Scan.
+3. **Copy backups off the machine.** The new service writes to the data disk,
+   which protects against a failed root disk and nothing larger.
+4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
+   it on a weekly schedule; it regrows by ~30 GB between prunes.
+
+### Measured state — 2026-09-24
+
+| | |
+|---|---|
+| Assets | **25,618** — 21,419 images · 3,111 videos · 1,088 audio, in 5 libraries |
+| Visual search coverage | 37,929 frames; 591 visual assets had none (152 photos: sampling raced the thumbnail; 439 videos, 407 of them BRAW) — the new repair sweep refills them once the shares are back |
+| People | 2,236 clusters, **5 named** |
+| Tags · slideshows | 9 · 0 |
+| Listings | 12 (2 exported), 8 photo edits, 0 object removals — all Aug 4–5 |
+| Drive organizer | shipped Aug 11, never configured |
+| AI auto-edit | key configured |
+| Last backup | Jul 30 (until the backup service's first run) |
+| Disks | root 43% · data disk 1% · Docker build cache 31.9 GB |
+| Logins since Aug 11 | a handful; last Sep 10 |
+
+### Plan and scope — the review's view
+
+The plan in this file is a record of a system growing fast and well: M0–M8
+done, M9 started, a real-estate vertical built in eight days that measurably
+matches the operator's own published listings. The code is careful, the
+comments explain their reasons, the tests are real. What the review found is
+not a code-quality problem. It is a **fit** problem, and it has three parts.
+
+1. **Breadth has outrun use.** Most of what has shipped has not been used
+   since it shipped: slideshows (built, 0 rendered), the Premiere and
+   Lightroom panels (written Jul 31, never run in their hosts), the Drive
+   organizer (never configured), object removal (0 uses), tags (9). People
+   was the exception — until it too stopped. The August plan said "features
+   that ride momentum beat features that open a new front"; the vertical
+   opened the biggest front yet, and then the outage cut it off two weeks
+   in.
+2. **Nothing tells the operator anything.** A self-hosted system used a few
+   times a month needs to *push* bad news. Today it waits to be looked at —
+   the banner added today helps only when someone opens a page. A 39-day
+   silent outage is the proof.
+3. **The real workflow lives next door.** Brochures, mailers, the Lancaster
+   Farming and Obertaul ads, and photo organizing already run as Claude skills
+   over Google Drive and Canva. FrameFound's listing pipeline does the part
+   those tools cannot — pixels, order, room labels, curation — but it hands
+   nothing to them: the export is a zip, and the Drive organizer only renames
+   folders that exist. The two systems overlap (the photo-organizer skill
+   sorts and renames the same folders) instead of chaining.
+
+**Recommendation: narrow before widening.** Treat the next month as
+reliability plus one loop, and let "1.0" mean that loop in daily use:
+
+- **One loop:** NAS shoot → listing (auto-edit, sky, curation) → *delivered*
+  into the property's Drive folder, ordered and named, where the brochure and
+  mailer skills pick it up. The delivery half is the piece the August Drive
+  decision deferred; it turns two overlapping tools into a chain.
+- **Push alerts** for share-down, backup-stale and disk-full (e-mail or a
+  phone notification), plus off-machine backup copies — the service account
+  the Drive organizer uses could hold them.
+- **Freeze breadth** on the catalogue side except where it serves that loop
+  (capture-date repair, bracket fusion). Decide the panels explicitly: run
+  them in Premiere and Lightroom this month, or park them.
+- **Test against what production runs.** CI uses SQLite; production is
+  Postgres. Add a pgvector service to CI for the API tests, and a browser
+  smoke test of every page — the Drive page shipped without its navigation
+  and passed an HTTP-200 check.
+
+### Next up (replaces the list below dated 2026-08)
+
+1. Operator actions above (shares, rescans, backup copies, cache).
+2. Listing delivery to Drive — export writes the ordered, edited set into the
+   property's folder; the organizer's manifest makes it undoable.
+3. Push notifications for the alert banner's conditions.
+4. Postgres in CI; a browser smoke test per page.
+5. Bracket fusion (enfuse) — still the quality ceiling for interiors.
+6. The review's remaining findings (listed at the end of the next section).
+
+### 2026-09-24 — what the review fixed
+
+Evidence first: production data (jobs, scans, logs, usage) and five parallel
+code reviews, every finding re-traced before acting — three were false
+positives and are recorded as such. Each fix below has a test; 22 of the new
+tests were run against the old code and fail there.
+
+**Outage and operations**
+- Scans treat an empty mountpoint as unreachable (`unmounted`, scan failed
+  with the reason) instead of flagging every asset missing; a directory the
+  walk could not read no longer counts as deleted
+  (`storage/reachability.py`, shared by everything below).
+- Scheduled scans are measured from the last *attempt*: a failed scan was
+  due again on the next 5-second tick — latent until the fix above made
+  failures honest. A library whose share returns is rescanned within
+  minutes.
+- Tasks, the watcher and the new repair sweep never flag an asset missing
+  while its share is down.
+- Health reports an empty mountpoint as unreachable (it measured the root
+  disk), drops the permanent "Database unreachable" false alarm, and reports
+  backup age; `/system/alerts` feeds a banner on every page; the System page
+  finally shows volumes.
+- Nightly `backup` service (same archive as `manage.sh backup`), and
+  `manage.sh doctor` / `prune`. Deployment docs name the kernel-module
+  prerequisite.
+
+**Pipeline**
+- Stills are sampled *after* their thumbnail: enqueued together, sampling
+  won the race and quietly succeeded with nothing — 152 photos outside visual
+  search, faces and listing room labels.
+- BRAW and other undecodable video take one frame from their poster (407
+  BRAW clips had none). A maintenance sweep re-queues any asset left without
+  thumbnail, frames or vectors, bounded and attempt-capped.
+- A lost enqueue no longer turns a successful extraction into
+  `metadata_failed`; a wedged BRAW decoder is killed instead of leaked.
+
+**Listing vertical**
+- The editor preview now colour-manages like the export (one loader for
+  preview, export, auto-edit, sky check and object removal) — AdobeRGB photos
+  previewed duller than they shipped.
+- A zip that no longer matches its listing (reorder, relabel, edit, removal)
+  is marked out of date and refused, via a fingerprint of the export's inputs
+  (migration 0019).
+- Auto-edit: the first failing photo ended the whole run (an expired-object
+  read after rollback), it judged the original instead of the object-removed
+  version, and overlapping runs silently dropped edits. The progress display
+  could never see a run finish, and on a re-run counted everything done at
+  once.
+- Wide objects are padded square for LaMa instead of squashed; a racing
+  removal request returns 409 instead of 500; the Drive manifest is written
+  before the old one is removed; the Drive page has its navigation and
+  sign-in guard (shipped without them on Aug 11).
+
+**Catalogue, security, web**
+- Duplicates listed the *smallest* savings (ascending order before the
+  limit). Browse paging had no tiebreaker over 500-row runs of identical
+  timestamps. Person pages counted faces on the page, not the person. Covers
+  survived their face moving to someone else. FCP7 exports mangled Windows
+  and UNC paths (clips imported offline). Panel media URLs were unsigned, so
+  panels could never preview.
+- `X-Forwarded-For` is read right-to-left past trusted hops — not exploitable
+  behind today's Caddy, which discards client headers, but spoofable the day
+  an appending proxy is put in front.
+- A session that expires mid-page returns to sign-in instead of failing every
+  button; a failed map-script load is retried on the next visit; Libraries
+  can set a rescan schedule.
+
+**Checked and dismissed:** Prev/Next in the editor carrying inpaint marks and
+old recipes across photos (Next 15 remounts the page per `assetId` — verified
+in its source); the `X-Forwarded-For` bypass as an active exploit (above).
+
+**Found, not yet fixed:** `GET /people` fetches covers one query per person;
+name/tag suggestions limit before ranking; similar-asset search de-duplicates
+after its limit; `/api/docs` is reachable whenever public access is on; TOTP
+confirm/disable skip the login limiter; the `readonly` role is never
+enforced; `index_visual_batch` is dead code; sky uploads accept names recipes
+reject; `reorder` accepts duplicate ids; 16-bit TIFFs are mis-scaled by
+`convert("RGB")`; Drive listing pages the whole folder before the size cap;
+369 BRAW clips still have no duration (ffprobe cannot read it; the SDK can).
+
+## Snapshot — 2026-07-29
 
 Milestones were not completed strictly in order: deployment happened early
 (which surfaced eleven real bugs), and backup/restore was pulled forward

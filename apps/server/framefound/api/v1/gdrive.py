@@ -293,11 +293,11 @@ def _apply_renames(
             failed.append(SkippedOut(file_id=entry.file_id, name=entry.old_name, reason=str(err)))
     manifest_id: str | None = None
     if done:
-        # One manifest per folder: the newest organize owns undo.
+        # One manifest per folder: the newest organize owns undo. Written
+        # before the old one is removed — the other order had a window in
+        # which a failed upload left renames applied and no undo at all.
         try:
             existing = client.find_file(folder_id, gdrive_lib.MANIFEST_NAME)
-            if existing:
-                client.delete(str(existing["id"]))
             manifest_id = client.upload_json(
                 folder_id,
                 gdrive_lib.MANIFEST_NAME,
@@ -313,6 +313,13 @@ def _apply_renames(
             )
         except gdrive_lib.GdriveError as err:
             log.warning("gdrive.manifest_failed", folder=folder_id, error=str(err))
+        else:
+            if existing:
+                try:
+                    client.delete(str(existing["id"]))
+                except gdrive_lib.GdriveError as err:
+                    # Harmless: undo reads the newest manifest by creation time.
+                    log.warning("gdrive.old_manifest_kept", folder=folder_id, error=str(err))
     return done, failed, manifest_id
 
 

@@ -63,6 +63,9 @@ async def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[
 
 
 async def test_shell_records_skip_for_missing_file(env: dict) -> None:
+    # The library is plainly there (it has other files); this one is gone.
+    (env["tmp"] / "lib" / "neighbour.jpg").write_bytes(b"still here")
+
     async def handler(db: AsyncSession, asset, library, path) -> None:  # pragma: no cover
         raise AssertionError("handler must not run for a missing file")
 
@@ -75,6 +78,23 @@ async def test_shell_records_skip_for_missing_file(env: dict) -> None:
         assert job.finished_at is not None
         asset = await db.get(Asset, env["asset_id"])
         assert asset.availability == "missing"
+
+
+async def test_shell_does_not_call_a_file_missing_when_the_share_is_down(env: dict) -> None:
+    """An empty library folder is a failed mount, not a deletion: skip the
+    work, say why, and leave the asset's availability alone."""
+
+    async def handler(db: AsyncSession, asset, library, path) -> None:  # pragma: no cover
+        raise AssertionError("handler must not run without the original")
+
+    await task_module._with_asset("unit_test_task", env["asset_id"], handler)
+
+    async with env["factory"]() as db:
+        job = (await db.execute(select(Job))).scalar_one()
+        assert job.status == "skipped"
+        assert job.error is not None and "not mounted" in job.error
+        asset = await db.get(Asset, env["asset_id"])
+        assert asset.availability == "online"
 
 
 async def test_shell_records_success_and_failure(env: dict) -> None:

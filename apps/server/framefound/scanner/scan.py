@@ -8,7 +8,11 @@ Design constraints (docs/architecture.md, brief §5):
 - Pause/resume/cancel: the scan row's status is re-read between batches, so
   API-driven control takes effect mid-scan.
 - Originals are only ever read. Missing files are *flagged*, never deleted;
-  an unreachable mount flags the whole library `unmounted` and aborts.
+  an unreachable mount flags the whole library `unmounted` and aborts — and
+  "unreachable" includes the empty mountpoint a failed mount leaves behind
+  (storage/reachability.py), not just a folder that is gone.
+- A directory the walk could not read says nothing about the files in it,
+  so nothing beneath it is flagged missing on that scan's evidence.
 """
 
 import fnmatch
@@ -22,7 +26,7 @@ from pathlib import Path
 
 import anyio
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.db.models import Asset, Library, Scan
@@ -35,6 +39,7 @@ from framefound.media.detect import (
 from framefound.scanner.identity import partial_hash
 from framefound.scanner.paths import PathValidationError, safe_join
 from framefound.scanner.stability import looks_at_rest
+from framefound.storage.reachability import unreachable_reason
 
 log = structlog.get_logger()
 
@@ -42,6 +47,9 @@ Enqueue = Callable[[uuid.UUID], None]
 
 BATCH_SIZE = 500
 PAUSE_POLL_SECONDS = 2.0
+# Past this many unreadable directories the scan's evidence is too patchy to
+# flag anything missing at all; the next clean scan will.
+MAX_UNREADABLE_EXCLUSIONS = 50
 
 
 def _now() -> datetime:
@@ -60,11 +68,15 @@ def _excluded(rel_posix: str, globs: list[str]) -> bool:
 
 
 def _walk(
-    root: Path, include_exts: set[str], exclude_globs: list[str]
+    root: Path,
+    include_exts: set[str],
+    exclude_globs: list[str],
+    unreadable: list[str] | None = None,
 ) -> Iterator[tuple[str, os.stat_result]]:
     """Yield (relative_posix_path, stat) for candidate files, depth-first,
     skipping hidden entries, excluded globs, and symlinked directories
-    (symlinks could escape the validated root)."""
+    (symlinks could escape the validated root). Directories that cannot be
+    listed are appended to `unreadable` as relative paths ('.' is the root)."""
     stack = [root]
     while stack:
         current = stack.pop()
@@ -88,6 +100,8 @@ def _walk(
                             continue
         except OSError:
             log.warning("scan.dir_unreadable", path=str(current))
+            if unreadable is not None:
+                unreadable.append(os.path.relpath(current, root).replace(os.sep, "/"))
             continue
 
 
@@ -231,13 +245,19 @@ async def run_scan(
     scan.status = "running"
     await db.commit()
 
-    if not root.is_dir():
+    known = (
+        await db.execute(
+            select(func.count()).select_from(Asset).where(Asset.library_id == library.id)
+        )
+    ).scalar_one()
+    reason = await anyio.to_thread.run_sync(unreachable_reason, root, known)
+    if reason is not None:
         affected = await mark_library_unmounted(db, library.id)
         scan.status = "failed"
-        scan.error = "Library folder is not reachable. Existing entries were kept."
+        scan.error = f"{reason} Existing entries were kept."[:500]
         scan.finished_at = _now()
         await db.commit()
-        log.warning("scan.unmounted", library=library.name, assets_flagged=affected)
+        log.warning("scan.unmounted", library=library.name, assets_flagged=affected, reason=reason)
         return
 
     include_exts = (
@@ -245,7 +265,8 @@ async def run_scan(
         if library.include_extensions
         else set(SUPPORTED_EXTENSIONS)
     )
-    walker = _walk(root, include_exts, list(library.exclude_globs))
+    unreadable: list[str] = []
+    walker = _walk(root, include_exts, list(library.exclude_globs), unreadable)
     scan_time = scan.started_at
     to_enqueue: list[uuid.UUID] = []
 
@@ -311,16 +332,23 @@ async def run_scan(
 
     # Anything online that this scan never touched is gone from disk: flag,
     # never delete — the catalog survives NAS hiccups and human mistakes.
-    missing = await db.execute(
-        update(Asset)
-        .where(
+    # Except beneath a directory the walk could not list: its files were not
+    # seen, which is not the same as not being there.
+    if "." in unreadable or len(unreadable) > MAX_UNREADABLE_EXCLUSIONS:
+        scan.files_missing = 0
+        log.warning(
+            "scan.missing_check_skipped", library=library.name, unreadable_dirs=len(unreadable)
+        )
+    else:
+        conditions = [
             Asset.library_id == library.id,
             Asset.availability == "online",
             (Asset.last_verified_at.is_(None)) | (Asset.last_verified_at < scan_time),
-        )
-        .values(availability="missing")
-    )
-    scan.files_missing = int(missing.rowcount or 0)  # type: ignore[attr-defined]
+        ]
+        for prefix in unreadable:
+            conditions.append(~Asset.relative_path.startswith(f"{prefix}/", autoescape=True))
+        missing = await db.execute(update(Asset).where(*conditions).values(availability="missing"))
+        scan.files_missing = int(missing.rowcount or 0)  # type: ignore[attr-defined]
     scan.status = "completed"
     scan.finished_at = _now()
     library.last_scan_at = scan.finished_at

@@ -2,7 +2,7 @@
 
 import shutil
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -13,9 +13,14 @@ from sqlalchemy import func, select, text
 from framefound import __version__
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
 from framefound.db.models import Asset, Derivative, Job
+from framefound.storage.reachability import unreachable_reason
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/system", tags=["system"])
+
+# The backup service writes one archive a day; a day and a half without a
+# new one means it has stopped.
+BACKUP_STALE_HOURS = 36
 
 # Order is the pipeline order, so the dashboard reads as a flow rather than
 # an alphabetical list.  must be here or the slowest stage in the
@@ -39,12 +44,19 @@ class VolumeStatus(BaseModel):
     detail: str
 
 
+class BackupStatus(BaseModel):
+    status: str  # ok | stale | missing
+    last_backup_at: datetime | None
+    detail: str
+
+
 class HealthReport(BaseModel):
     version: str
     database: ComponentStatus
     queue: ComponentStatus
     data_dir_free_gb: float | None
     volumes: list[VolumeStatus]
+    backup: BackupStatus
 
 
 @router.get("/health", response_model=HealthReport)
@@ -85,7 +97,41 @@ async def system_health(_user: CurrentUser, db: DbDep, settings: SettingsDep) ->
         queue=queue,
         data_dir_free_gb=free_gb,
         volumes=await _volumes(db, settings),
+        backup=_backup_status(settings),
     )
+
+
+def _backup_status(settings: SettingsDep) -> BackupStatus:
+    """The newest archive the backup service wrote into the data directory.
+
+    Added after the install went eight weeks with no backup at all: the
+    backup command existed and worked, and nothing ever ran it.
+    """
+    folder = Path(settings.data_dir) / "backups"
+    try:
+        archives = [(p.stat().st_mtime, p) for p in folder.glob("framefound-*.tar.gz")]
+    except OSError:
+        archives = []
+    if not archives:
+        return BackupStatus(
+            status="missing",
+            last_backup_at=None,
+            detail=(
+                "No automatic backup exists. The catalogue — names, tags, listings, "
+                "edits — lives only in the database until one does."
+            ),
+        )
+    newest = datetime.fromtimestamp(max(archives)[0], tz=UTC)
+    hours = (datetime.now(UTC) - newest).total_seconds() / 3600
+    if hours > BACKUP_STALE_HOURS:
+        return BackupStatus(
+            status="stale",
+            last_backup_at=newest,
+            detail=(
+                f"The newest backup is {hours / 24:.0f} days old; the backup service has stopped."
+            ),
+        )
+    return BackupStatus(status="ok", last_backup_at=newest, detail="")
 
 
 async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
@@ -103,24 +149,46 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     and a scan reports every asset as missing. Distinguishing "the share is
     down" from "somebody deleted the footage" is the entire point of listing
     them here.
+
+    Which this function once failed to do for 39 days: `disk_usage()` on an
+    empty mountpoint succeeds — it measures whatever disk the directory sits
+    on — so two unmounted NAS libraries reported as healthy under the VM's
+    own root disk. Reachability is now asked directly (storage/reachability.py)
+    before any space is measured.
     """
     from framefound.db.models import Library
 
     floor = settings.min_free_gb
-    targets: list[tuple[str, Path]] = [
-        ("Derivatives", Path(settings.data_dir)),
-        ("Database", Path("/var/lib/postgresql/data")),
+    # The third element is how many files the catalogue holds there — it is
+    # what makes an empty library folder alarming — or None for system disks.
+    targets: list[tuple[str, Path, int | None]] = [
+        ("Derivatives", Path(settings.data_dir), None),
+        # The database's own volume is not mounted in this container, so it
+        # used to be listed as "unreachable" on every load: a permanent false
+        # alarm that teaches the page to be ignored. The container root sits
+        # on the Docker disk, which is where the database volume lives.
+        ("System disk (database)", Path("/"), None),
     ]
-    libraries = (await db.execute(select(Library))).scalars().all()
+    counts: dict[uuid.UUID, int] = {
+        library_id: count
+        for library_id, count in (
+            await db.execute(select(Asset.library_id, func.count()).group_by(Asset.library_id))
+        ).all()
+    }
+    libraries = (await db.execute(select(Library).order_by(Library.name))).scalars().all()
     for library in libraries:
-        targets.append((library.name, Path(library.root_path)))
+        targets.append((library.name, Path(library.root_path), int(counts.get(library.id, 0))))
 
     seen: set[str] = set()
     out: list[VolumeStatus] = []
-    for label, path in targets:
-        try:
-            usage = shutil.disk_usage(path)
-        except OSError:
+    for label, path, known in targets:
+        reason = unreachable_reason(path, known) if known is not None else None
+        if reason is None:
+            try:
+                usage = shutil.disk_usage(path)
+            except OSError:
+                reason = "This location cannot be read."
+        if reason is not None:
             out.append(
                 VolumeStatus(
                     label=label,
@@ -130,9 +198,8 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
                     used_percent=0.0,
                     status="unreachable",
                     detail=(
-                        "This location cannot be read. If it is a network share, it is "
-                        "probably unmounted — the catalogue is intact and will recover "
-                        "when the share comes back."
+                        f"{reason} The catalogue is intact — search and thumbnails still "
+                        "work — and everything recovers when the share comes back."
                     ),
                 )
             )
@@ -174,6 +241,61 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
             )
         )
     return out
+
+
+class Alert(BaseModel):
+    level: str  # error | warning
+    title: str
+    detail: str
+    href: str
+
+
+@router.get("/alerts", response_model=list[Alert])
+async def system_alerts(_user: CurrentUser, db: DbDep, settings: SettingsDep) -> list[Alert]:
+    """What the operator needs to know now, shown on every page.
+
+    The NAS outage of Aug-Sep 2026 lasted 39 days because every signal of it
+    lived on pages nobody had reason to open. A problem that stops work gets
+    a banner; the System page keeps the detail.
+    """
+    alerts: list[Alert] = []
+    volumes = await _volumes(db, settings)
+
+    down = [v.label for v in volumes if v.status == "unreachable"]
+    if down:
+        names = down[0] if len(down) == 1 else f"{', '.join(down[:-1])} and {down[-1]}"
+        alerts.append(
+            Alert(
+                level="error",
+                title=f"{names} {'is' if len(down) == 1 else 'are'} unreachable",
+                detail=(
+                    "The network share is probably not mounted. Search and thumbnails "
+                    "still work; originals, edits, exports and new files wait for it."
+                ),
+                href="/health",
+            )
+        )
+    full = [v.label for v in volumes if v.status == "full"]
+    if full:
+        alerts.append(
+            Alert(
+                level="error",
+                title=f"{', '.join(full)} is out of space",
+                detail="Previews and derivatives are paused until space is freed.",
+                href="/health",
+            )
+        )
+    backup = _backup_status(settings)
+    if backup.status != "ok":
+        alerts.append(
+            Alert(
+                level="warning",
+                title="No recent backup" if backup.status == "stale" else "No backup yet",
+                detail=backup.detail,
+                href="/health",
+            )
+        )
+    return alerts
 
 
 class FailedJob(BaseModel):

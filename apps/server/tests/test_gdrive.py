@@ -316,9 +316,7 @@ async def test_settings_seal_the_key_and_expose_only_the_email(env: dict) -> Non
         assert "PRIVATE KEY" not in stored, "key must be sealed at rest"
         assert row.value["client_email"].endswith("gserviceaccount.com")
 
-    cleared = await env["client"].put(
-        "/api/v1/gdrive/settings", json={"service_account_json": ""}
-    )
+    cleared = await env["client"].put("/api/v1/gdrive/settings", json={"service_account_json": ""})
     assert cleared.json() == {"configured": False, "enabled": True, "client_email": ""}
 
 
@@ -421,9 +419,7 @@ async def test_apply_renames_writes_manifest_and_undo_restores(
     again = (
         await client.post("/api/v1/gdrive/organize/preview", json={"folder": FOLDER_ID})
     ).json()
-    assert [r["new_name"] for r in again["renames"]] == [
-        r["new_name"] for r in preview["renames"]
-    ]
+    assert [r["new_name"] for r in again["renames"]] == [r["new_name"] for r in preview["renames"]]
 
     undo = await client.post("/api/v1/gdrive/organize/undo", json={"folder": FOLDER_ID})
     assert undo.status_code == 200, undo.text
@@ -452,3 +448,28 @@ async def test_apply_refuses_path_like_names(env: dict) -> None:
         },
     )
     assert resp.status_code == 400
+
+
+async def test_reorganizing_replaces_the_manifest_without_a_gap(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new manifest is written before the old one goes, so no failure in
+    between can leave renames applied with nothing to undo them — and a
+    second organize still leaves exactly one manifest behind."""
+    await _configure(env)
+    monkeypatch.setattr(gdrive_api, "get_embedding_provider", lambda: _FakeProvider())
+    client, state = env["client"], env["state"]
+
+    for _ in range(2):
+        preview = (
+            await client.post("/api/v1/gdrive/organize/preview", json={"folder": FOLDER_ID})
+        ).json()
+        applied = await client.post(
+            "/api/v1/gdrive/organize/apply",
+            json={"folder": FOLDER_ID, "renames": preview["renames"]},
+        )
+        assert applied.status_code == 200, applied.text
+
+    manifests = [n for n in state["files"].values() if n == gdrive_lib.MANIFEST_NAME]
+    assert manifests == [gdrive_lib.MANIFEST_NAME], "one manifest, the newest"
+    assert state["manifest_id"] in state["files"]

@@ -591,6 +591,68 @@ def test_remove_region_touches_only_the_hole() -> None:
     )
 
 
+def test_a_wide_object_is_padded_square_not_squashed() -> None:
+    """A parked truck across a landscape frame needs more context than the
+    short side holds, so the box comes back oblong. Squashing it into the
+    model's square input distorted everything the model saw; the short side
+    is padded instead, and the fill is cropped back to the box."""
+    import numpy as np
+
+    from framefound.ai import inpaint
+
+    image = Image.new("RGB", (300, 200), (200, 30, 30))  # red top half...
+    for y in range(100, 200):
+        for x in range(300):
+            image.putpixel((x, y), (30, 30, 200))  # ...blue bottom half
+    mask = np.zeros((200, 300), dtype="float32")
+    mask[95:105, 20:280] = 1.0  # wide and thin, straddling the boundary
+
+    box = inpaint.crop_box(mask, 300, 200)
+    assert (box[2] - box[0], box[3] - box[1]) == (300, 200), "oblong, clamped to the frame"
+
+    seen: list[np.ndarray] = []
+
+    def spy(img512: np.ndarray, hole: np.ndarray) -> np.ndarray:
+        seen.append(img512)
+        return img512
+
+    out = inpaint.remove_region(image, mask, run_model=spy)
+    model_input = seen[0]
+    assert model_input.shape == (inpaint.SIDE, inpaint.SIDE, 3)
+    # Row 200 of 512 is source row ~117 once padded (blue) but row ~78 when
+    # the 200 rows are stretched over all 512 (red).
+    red, _g, blue = model_input[200, 150]
+    assert blue > red, "aspect preserved: the model saw the frame undistorted"
+    assert out.size == image.size
+    assert out.getpixel((150, 10)) == image.getpixel((150, 10)), "outside the hole, untouched"
+
+
+def test_open_for_render_flattens_an_embedded_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The loader every path shares converts embedded profiles to sRGB — the
+    step the editor preview used to skip while the export did it."""
+    from PIL import ImageCms
+
+    calls: list[str] = []
+    real = ImageCms.profileToProfile
+
+    def spy(im: Image.Image, src: object, dst: object, **kwargs: object) -> Image.Image | None:
+        calls.append(im.mode)
+        return real(im, src, dst, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ImageCms, "profileToProfile", spy)
+    srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    path = tmp_path / "tagged.jpg"
+    Image.new("RGB", (40, 30), (10, 200, 90)).save(path, "JPEG", icc_profile=srgb)
+
+    image = develop.open_for_render(path)
+    assert calls, "an embedded profile is always transformed to sRGB"
+    assert image.mode == "RGB" and image.size == (40, 30)
+    assert develop.open_for_render(path, already_normalized=True).size == (40, 30)
+    assert len(calls) == 1, "results already in sRGB are not converted twice"
+
+
 async def test_inpaint_request_queue_and_guards(env: dict) -> None:
     import base64
 

@@ -54,12 +54,18 @@ def resolve_client_ip(request: Request, trusted: str) -> str | None:
 
     forwarded = request.headers.get(FORWARDED_FOR)
     if forwarded:
-        # Left-most entry is the originating client; the rest are proxies.
-        # A hostile client can prepend entries, but it cannot remove the ones
-        # our own trusted proxy appended, so we take the left-most only when
-        # we already decided to trust this hop.
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
+        # Walk from the right, past our own proxies. Each entry was appended
+        # by the hop to its right, so the first one no trusted proxy added is
+        # the nearest address anyone we trust can vouch for. The left end is
+        # whatever the client typed: Caddy happens to discard a client's
+        # header today, but put any appending proxy in front (a CDN, a
+        # tunnel) and a request claiming "127.0.0.1" would have walked past
+        # the kill switch and the login limiter if the left end were trusted.
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        for hop in reversed(hops):
+            if not is_trusted_proxy(hop, trusted):
+                return hop
+        if hops:
+            return hops[0]  # every hop is one of ours: the request began inside
     real_ip = request.headers.get(REAL_IP)
     return real_ip.strip() if real_ip else peer

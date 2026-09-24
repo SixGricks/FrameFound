@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
+import Shell from "@/components/Shell";
 import {
   api,
   type GdrivePreview,
@@ -18,12 +19,16 @@ import {
 } from "@/lib/api";
 
 function renumber(renames: GdriveRename[]): GdriveRename[] {
-  return renames.map((entry, index) => ({
-    ...entry,
-    new_name: `${String(index + 1).padStart(2, "0")}${entry.new_name.slice(
-      entry.new_name.indexOf(" - "),
-    )}`,
-  }));
+  return renames.map((entry, index) => {
+    const rest = entry.new_name.indexOf(" - ");
+    // Without the separator there is no number to replace; slicing at -1
+    // would keep only the last character of the name.
+    if (rest < 0) return entry;
+    return {
+      ...entry,
+      new_name: `${String(index + 1).padStart(2, "0")}${entry.new_name.slice(rest)}`,
+    };
+  });
 }
 
 export default function DrivePage() {
@@ -110,9 +115,9 @@ export default function DrivePage() {
   }
 
   return (
-    <div>
-      <div className="sectionhead">
-        <h1>Drive organizer</h1>
+    <Shell>
+      <div className="sectionhead" style={{ marginTop: 0 }}>
+        <h2>Drive organizer</h2>
         {settings?.configured && (
           <span className="faint mono">shared with {settings.client_email}</span>
         )}
@@ -267,6 +272,6 @@ export default function DrivePage() {
           </div>
         </>
       )}
-    </div>
+    </Shell>
   );
 }

@@ -82,6 +82,9 @@ async def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[
     for folder in ("edit/render.mp4", "backup/render.mp4", "archive/render.mp4"):
         await add(folder, 100 * MB, partial="aaaa")
     await add("unique.mp4", 40 * MB, partial="bbbb")
+    # A second, far less valuable pair: 10 MB to reclaim against 200.
+    for folder in ("scratch/a.mp4", "scratch/b.mp4"):
+        await add(folder, 10 * MB, partial="eeee")
     # A master and its smaller export: different bytes, same picture.
     await add("master.mp4", 500 * MB, phash="ffff0000ffff0000", partial="cccc")
     await add("export.mp4", 80 * MB, phash="ffff0000ffff0000", partial="dddd")
@@ -139,3 +142,11 @@ async def test_verification_reports_unverified_members(env: dict) -> None:
     group = next(g for g in body["groups"] if g["count"] == 3)
     # Nothing has a full-content hash yet, so the UI must be able to say so.
     assert all(m["content_hash_verified"] is False for m in group["members"])
+
+
+async def test_the_biggest_saving_survives_the_limit(env: dict) -> None:
+    """The limit applies in SQL, so the SQL order decides which groups exist
+    at all. Ascending, the page showed the least worthwhile groups and never
+    the multi-gigabyte ones."""
+    body = (await env["client"].get("/api/v1/duplicates", params={"limit": 1})).json()
+    assert [g["reclaimable_bytes"] for g in body["groups"]] == [200 * MB]

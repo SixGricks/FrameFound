@@ -623,6 +623,9 @@ class Listing(Base):
     export_relpath: Mapped[str | None] = mapped_column(String(1024), default=None)
     export_error: Mapped[str | None] = mapped_column(String(500), default=None)
     exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Digest of what the zip was made from (media/export_state.py); a listing
+    # that no longer digests the same has a stale export.
+    export_fingerprint: Mapped[str | None] = mapped_column(String(64), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

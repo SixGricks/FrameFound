@@ -176,6 +176,77 @@ async def test_unreachable_root_flags_unmounted(db: AsyncSession, tmp_path: Path
     assert asset.availability == "unmounted"
 
 
+async def test_empty_mountpoint_is_unmounted_not_mass_deletion(
+    db: AsyncSession, tmp_path: Path
+) -> None:
+    """What a failed mount really looks like: the folder is still there,
+    just empty. The rmtree test above never modelled it — and in production a
+    scan walked the empty mountpoint, flagged 7,162 assets missing, and
+    reported success."""
+    root = tmp_path / "lib"
+    write_old(root / "a.jpg", b"data")
+    write_old(root / "sub" / "b.jpg", b"more")
+    library = await make_library(db, root)
+    enqueued: list[uuid.UUID] = []
+    await scan_once(db, library, enqueued)
+
+    import shutil
+
+    shutil.rmtree(root)
+    root.mkdir()  # the mountpoint survives the mount
+    scan = await scan_once(db, library, enqueued)
+
+    assert scan.status == "failed"
+    assert scan.error is not None and "not mounted" in scan.error
+    assert scan.files_missing == 0
+    states = set((await db.execute(select(Asset.availability))).scalars())
+    assert states == {"unmounted"}
+
+    # And when the share comes back, the next scan brings everything online.
+    write_old(root / "a.jpg", b"data")
+    write_old(root / "sub" / "b.jpg", b"more")
+    scan = await scan_once(db, library, enqueued)
+    assert scan.status == "completed"
+    assert set((await db.execute(select(Asset.availability))).scalars()) == {"online"}
+
+
+async def test_new_empty_library_scans_cleanly(db: AsyncSession, tmp_path: Path) -> None:
+    library = await make_library(db, tmp_path / "fresh")
+    scan = await scan_once(db, library, [])
+    assert scan.status == "completed"
+    assert scan.files_seen == 0
+
+
+async def test_unreadable_directory_does_not_flag_its_files_missing(
+    db: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "lib"
+    write_old(root / "keep" / "a.jpg", b"aaa")
+    write_old(root / "flaky" / "b.jpg", b"bbb")
+    write_old(root / "gone" / "c.jpg", b"ccc")
+    library = await make_library(db, root)
+    await scan_once(db, library, [])
+
+    (root / "gone" / "c.jpg").unlink()  # a real deletion
+    real_scandir = os.scandir
+
+    def flaky_scandir(path: object) -> object:
+        if Path(str(path)).name == "flaky":
+            raise PermissionError("share hiccup")
+        return real_scandir(path)  # type: ignore[call-overload]
+
+    import framefound.scanner.scan as scan_module
+
+    monkeypatch.setattr(scan_module.os, "scandir", flaky_scandir)
+    scan = await scan_once(db, library, [])
+
+    rows = dict((await db.execute(select(Asset.relative_path, Asset.availability))).all())
+    assert rows["keep/a.jpg"] == "online"
+    assert rows["flaky/b.jpg"] == "online", "unseen is not the same as gone"
+    assert rows["gone/c.jpg"] == "missing"
+    assert scan.files_missing == 1
+
+
 async def test_include_extensions_filter(db: AsyncSession, tmp_path: Path) -> None:
     root = tmp_path / "lib"
     write_old(root / "a.jpg", b"img")

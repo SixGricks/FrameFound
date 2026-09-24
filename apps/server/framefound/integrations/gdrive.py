@@ -151,6 +151,8 @@ class GdriveClient:
                 return files
 
     def find_file(self, folder_id: str, name: str) -> dict[str, Any] | None:
+        """The newest file of that name in the folder: Drive allows duplicate
+        names, and the manifest briefly has one while it is being replaced."""
         safe = name.replace("\\", "\\\\").replace("'", "\\'")
         data = self._request(
             "GET",
@@ -158,6 +160,7 @@ class GdriveClient:
             params={
                 "q": f"'{folder_id}' in parents and trashed=false and name = '{safe}'",
                 "fields": "files(id,name)",
+                "orderBy": "createdTime desc",
                 "pageSize": 1,
             },
         ).json()

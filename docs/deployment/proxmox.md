@@ -22,7 +22,21 @@ App disk holds Postgres, thumbnails, proxies, caches — size it at roughly
    nas:/export/media  /mnt/media  nfs  ro,_netdev,nofail,soft,timeo=100  0 0
    ```
    `nofail` + `_netdev` keep the VM booting when the NAS is down; FrameFound
-   flags libraries `unmounted` rather than treating files as deleted.
+   flags libraries `unmounted` rather than treating files as deleted, and
+   shows a banner on every page until the share is back.
+
+   **Ubuntu cloud/virtual kernels: install the extra modules, and keep them
+   coming.** `iocharset=utf8` needs the `nls_utf8` module, which lives in
+   `linux-modules-extra` — and kernel updates through `linux-virtual` do not
+   bring it. The first reboot onto a new kernel then fails every CIFS mount
+   with `mount error(79)`, and `nofail` boots on without them. That took this
+   project's own NAS offline for 39 days (Aug–Sep 2026). Install the meta
+   package once so every future kernel includes the modules:
+   ```
+   sudo apt install --no-install-recommends linux-image-extra-virtual
+   ```
+   `./infrastructure/scripts/manage.sh doctor` checks the running kernel and
+   the next one to boot.
 3. **Docker**: official `get.docker.com` script or distro packages; add user to
    `docker` group.
 4. **GPU passthrough (optional)**: enable IOMMU on the host, pass the NVIDIA

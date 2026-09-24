@@ -103,7 +103,19 @@ def frames(seconds: float | None, fps: float | None) -> int:
 
 def file_url(path: str) -> str:
     """A `file://` URL. Spaces and non-ASCII are everywhere in real media
-    libraries, and an unquoted path silently fails to resolve on import."""
+    libraries, and an unquoted path silently fails to resolve on import.
+
+    Windows paths arrive from the path-mapping profiles (`Z:\\Intel\\...`) and
+    need their own shape: read as POSIX they were one opaque segment, quoted
+    into `file://localhostZ%3A%5CIntel...`, and every clip imported offline.
+    """
+    if len(path) > 2 and path[0].isalpha() and path[1] == ":" and path[2] in "\\/":
+        # The form Premiere itself writes: file://localhost/Z%3A/Intel/clip.mp4
+        return "file://localhost/" + quote(path.replace("\\", "/"))
+    if path.startswith("\\\\"):
+        # UNC: \\nas\share\clip.mp4 -> file://nas/share/clip.mp4
+        host, _, rest = path[2:].replace("\\", "/").partition("/")
+        return f"file://{quote(host)}/{quote(rest)}"
     posix = PurePosixPath(path).as_posix()
     return "file://localhost" + quote(posix)
 

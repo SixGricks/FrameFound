@@ -304,6 +304,58 @@ async def test_deleting_a_listing_removes_the_zip_and_leaves_a_trace(env: dict) 
         ).scalar_one_or_none() is not None
 
 
+async def test_a_zip_that_no_longer_matches_the_listing_is_not_served(env: dict) -> None:
+    """Export, spot a mistake, fix it, press Download — the old zip used to
+    come back, and MLS got the old gallery. Every kind of change counts."""
+    from framefound.processing.tasks import export_listing_zip
+
+    client = env["client"]
+    body = await _create(env, ["front", "kitchen", "bedroom"])
+    listing_id = body["id"]
+    url = f"/api/v1/listings/{listing_id}"
+
+    async def export() -> None:
+        await client.post(f"{url}/export", json={})
+        await asyncio.to_thread(export_listing_zip, listing_id, 3840, 85)
+
+    await export()
+    assert (await client.get(url)).json()["export_stale"] is False
+    assert (await client.get(f"{url}/export/download")).status_code == 200
+
+    # A reorder.
+    await client.post(f"{url}/reorder", json={"asset_ids": [env["ids"]["bedroom"]]})
+    assert (await client.get(url)).json()["export_stale"] is True
+    refused = await client.get(f"{url}/export/download")
+    assert refused.status_code == 409
+    assert "export again" in refused.json()["error"]["message"]
+
+    await export()
+    assert (await client.get(url)).json()["export_stale"] is False
+
+    # An edit to one photograph's recipe.
+    resp = await client.put(f"/api/v1/develop/{env['ids']['kitchen']}", json={"exposure": 0.4})
+    assert resp.status_code == 200, resp.text
+    assert (await client.get(url)).json()["export_stale"] is True
+
+    await export()
+    # A relabelled room.
+    await client.put(f"{url}/items/{env['ids']['front']}/room", json={"room": "backyard"})
+    assert (await client.get(url)).json()["export_stale"] is True
+
+
+async def test_an_export_from_before_fingerprints_counts_as_stale(env: dict) -> None:
+    """A zip that cannot prove it matches must not ship."""
+    body = await _create(env, ["front"])
+    async with env["factory"]() as db:
+        listing = await db.get(Listing, uuidlib.UUID(body["id"]))
+        assert listing is not None
+        listing.export_status = "ready"
+        listing.export_relpath = f"exports/listings/{listing.id}.zip"
+        await db.commit()
+    detail = (await env["client"].get(f"/api/v1/listings/{body['id']}")).json()
+    assert detail["export_stale"] is True
+
+
 async def test_export_with_no_images_is_refused(env: dict) -> None:
     body = await _create(env, ["video"], name="Video Only")
     resp = await env["client"].post(f"/api/v1/listings/{body['id']}/export", json={})

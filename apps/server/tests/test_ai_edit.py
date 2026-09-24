@@ -355,6 +355,82 @@ async def test_ai_edit_task_writes_a_recipe_per_photo(
     assert all(item["edited"] for item in detail["items"])
 
 
+async def test_one_failing_photo_is_skipped_not_fatal(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's promise is "40 edited and 2 skipped beats 0 edited and an
+    exception". It used to break on the first failure: the rollback expired
+    every ORM object in the session, and the next attribute read from async
+    code raised — ending the run instead of skipping one photograph."""
+    from framefound.ai import recipe_picker
+    from framefound.processing import tasks as tasks_module
+
+    client = env["client"]
+    await client.put("/api/v1/develop/settings/ai", json={"api_key": "sk-ant-test"})
+    listing = (
+        await client.post(
+            "/api/v1/listings",
+            json={"name": "Flaky", "asset_ids": [env["ids"]["a1"], env["ids"]["a2"]]},
+        )
+    ).json()
+
+    calls = {"n": 0}
+
+    def overloaded_once(preview: bytes, key: str, model: str) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise recipe_picker.RecipePickUnavailable("Anthropic API returned 529")
+        return {"recipe": {"exposure": 0.3}, "needs_sky_replacement": False, "notes": ""}
+
+    monkeypatch.setattr(recipe_picker, "pick_recipe", overloaded_once)
+    await asyncio.to_thread(tasks_module.ai_edit_listing, listing["id"], None, "ai")
+
+    async with env["factory"]() as db:
+        edited = set((await db.execute(select(AssetEdit.asset_id))).scalars())
+    assert calls["n"] == 2, "the run carried on past the failure"
+    assert len(edited) == 1, "the failed photograph was skipped, the other edited"
+
+
+async def test_auto_edit_judges_the_object_removed_version(
+    env: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Export renders the newest removal result, so that is what the model
+    must see — not the original with the removed object still in it."""
+    import io as io_module
+
+    import numpy as np
+
+    from framefound.ai import recipe_picker
+    from framefound.db.models import AssetInpaint
+    from framefound.processing import tasks as tasks_module
+
+    client = env["client"]
+    await client.put("/api/v1/develop/settings/ai", json={"api_key": "sk-ant-test"})
+    asset_id = uuidlib.UUID(env["ids"]["a1"])
+    relpath = f"inpaint/{asset_id}/v1.jpg"
+    (tmp_path / "data" / "inpaint" / str(asset_id)).mkdir(parents=True)
+    Image.new("RGB", (160, 120), (20, 40, 220)).save(tmp_path / "data" / relpath, "JPEG")
+    async with env["factory"]() as db:
+        db.add(AssetInpaint(asset_id=asset_id, version=1, status="ready", relative_path=relpath))
+        await db.commit()
+    listing = (
+        await client.post("/api/v1/listings", json={"name": "R", "asset_ids": [str(asset_id)]})
+    ).json()
+
+    seen: list[bytes] = []
+
+    def capture(preview: bytes, key: str, model: str) -> dict:
+        seen.append(preview)
+        return {"recipe": {}, "needs_sky_replacement": False, "notes": ""}
+
+    monkeypatch.setattr(recipe_picker, "pick_recipe", capture)
+    await asyncio.to_thread(tasks_module.ai_edit_listing, listing["id"], None, "ai")
+
+    with Image.open(io_module.BytesIO(seen[0])) as judged:
+        red, _green, blue = np.asarray(judged.convert("RGB"), dtype=float).mean(axis=(0, 1))
+    assert blue > 150 and red < 80, "the model saw the removal result, not the original"
+
+
 # --------------------------------------------------------------- curation
 
 

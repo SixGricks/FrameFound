@@ -138,8 +138,14 @@ async def list_assets(
     order = orders[sort]
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    # Asset.id breaks ties. The scanner commits 500 assets per transaction and
+    # Postgres's now() is per-transaction, so "recent" alone has runs of 500
+    # identical keys — and offset paging over ties repeats or skips rows at
+    # every page boundary that falls inside one.
     rows = (
-        await db.execute(query.order_by(order).offset((page - 1) * page_size).limit(page_size))
+        await db.execute(
+            query.order_by(order, Asset.id).offset((page - 1) * page_size).limit(page_size)
+        )
     ).scalars()
     return AssetPage(
         items=[AssetSummary.model_validate(a) for a in rows],

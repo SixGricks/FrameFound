@@ -67,3 +67,29 @@ def test_the_filename_is_never_lost() -> None:
     """The one property that must hold for every profile and every platform."""
     for prefix in ("Z:\\", "/Volumes/GELCO", "\\\\nas\\media", "/mnt/x/"):
         assert _translate("/media/g/deep/a001.mp4", "/media/g", prefix).endswith("a001.mp4")
+
+
+def test_panel_media_urls_are_signed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A panel holds a bearer token, which <img> and <video> cannot send, and
+    the media endpoint takes a session or a signature and nothing else. The
+    URLs it was handed were bare, so it could find footage and never show it."""
+    import uuid
+    from urllib.parse import parse_qs, urlparse
+
+    from framefound.api.v1.panel import _media_url
+    from framefound.config import get_settings
+    from framefound.media.signing import verify_media_signature
+
+    monkeypatch.setenv("FRAMEFOUND_SECRET_KEY", "panel-media-secret")
+    get_settings.cache_clear()
+    try:
+        asset_id = uuid.uuid4()
+        url = urlparse(_media_url(asset_id, "thumbnail"))
+        assert url.path == f"/api/v1/media/{asset_id}/thumbnail"
+        query = parse_qs(url.query)
+        # Raises unless the signature is the one the media endpoint checks.
+        verify_media_signature(
+            "panel-media-secret", asset_id, "thumbnail", int(query["exp"][0]), query["sig"][0]
+        )
+    finally:
+        get_settings.cache_clear()

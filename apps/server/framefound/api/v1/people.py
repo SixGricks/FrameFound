@@ -17,6 +17,7 @@ import asyncio
 import io
 import re
 import uuid
+from collections.abc import Sequence
 from typing import Any, cast
 
 import structlog
@@ -242,7 +243,7 @@ async def suggest_names(
         return []
 
     counts = await _confirmed_counts(db, [p.id for p in people])
-    covers = await _covers(db, [p.cover_face_id for p in people if p.cover_face_id])
+    covers = await _covers(db, people)
 
     def rank(person: Person) -> tuple[int, int, str]:
         lowered = person.name.lower()
@@ -257,7 +258,7 @@ async def suggest_names(
             name=person.name,
             confirmed_count=counts.get(person.id, 0),
             exact=person.name.lower() == term,
-            cover=covers.get(person.cover_face_id) if person.cover_face_id else None,
+            cover=covers.get(person.id),
         )
         for person in people
     ]
@@ -276,15 +277,28 @@ async def _confirmed_counts(db: DbDep, ids: list[uuid.UUID]) -> dict[uuid.UUID, 
     return {row[0]: row[1] for row in rows}
 
 
-async def _covers(db: DbDep, face_ids: list[uuid.UUID]) -> dict[uuid.UUID, FaceOut]:
-    if not face_ids:
+async def _covers(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, FaceOut]:
+    """Each person's chosen cover, keyed by person — honoured only while that
+    face is still theirs and not rejected. The pointer is a plain column with
+    no constraint behind it, and a face that had moved on showed one
+    person's photograph under another person's name."""
+    pairs = [(p.id, p.cover_face_id) for p in people if p.cover_face_id]
+    if not pairs:
         return {}
     rows = (
         await db.execute(
-            select(Face, Asset).join(Asset, Asset.id == Face.asset_id).where(Face.id.in_(face_ids))
+            select(Face, Asset)
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(Face.id.in_({face_id for _, face_id in pairs}), Face.source != "rejected")
         )
     ).all()
-    return {row[0].id: _face_out(row[0], row[1]) for row in rows}
+    faces = {face.id: (face, asset) for face, asset in rows}
+    covers: dict[uuid.UUID, FaceOut] = {}
+    for person_id, face_id in pairs:
+        found = faces.get(face_id)
+        if found is not None and found[0].person_id == person_id:
+            covers[person_id] = _face_out(*found)
+    return covers
 
 
 @router.get("/{person_id}", response_model=PersonDetail)
@@ -332,14 +346,27 @@ async def get_person(
             .where(Face.suggested_person_id == person_id, Face.suggestion_state == "pending")
         )
     ).scalar_one()
+    # Totals over every face, not the page: counting the limited, possibly
+    # source-filtered list said "200 pending" for someone with 295, and
+    # "0 confirmed" whenever the page was filtered to detections.
+    by_source: dict[str, int] = {
+        source_name: count
+        for source_name, count in (
+            await db.execute(
+                select(Face.source, func.count())
+                .where(Face.person_id == person_id)
+                .group_by(Face.source)
+            )
+        ).all()
+    }
 
     return PersonDetail(
         id=person.id,
         name=person.name or UNNAMED_LABEL,
         slug=person.slug,
         named=bool(person.name),
-        confirmed_count=sum(1 for f in faces if f.source == "confirmed"),
-        pending_count=sum(1 for f in faces if f.source == "detected"),
+        confirmed_count=by_source.get("confirmed", 0),
+        pending_count=by_source.get("detected", 0),
         cover=faces[0] if faces else None,
         faces=faces,
         suggestion_count=suggestions,
@@ -428,6 +455,8 @@ async def reject_faces(
         .where(Face.id.in_(body.face_ids), Face.person_id == person_id)
         .values(source="rejected", similarity=None)
     )
+    if person.cover_face_id in body.face_ids:
+        person.cover_face_id = None
     await db.commit()
     await _relearn(db, person)
     return {"rejected": _rows(result)}
@@ -1161,6 +1190,11 @@ async def assign_face(
     face.similarity = None
     if person.cover_face_id is None:
         person.cover_face_id = face.id
+    if previous and previous != person.id:
+        prior = await db.get(Person, previous)
+        if prior is not None and prior.cover_face_id == face.id:
+            # Freed, so their next confirmed face can take the cover.
+            prior.cover_face_id = None
     await db.commit()
 
     await _relearn(db, person)

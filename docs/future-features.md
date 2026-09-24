@@ -66,11 +66,16 @@ them with candidate corrections — file mtime, folder name, median of siblings
 in the same folder — and the operator picks. Same philosophy as faces: the
 system proposes, a human confirms, nothing is silently rewritten.
 
-### 9. Close the real frame gap
+### 9. Close the real frame gap — done 2026-09-24
 The "1,554 assets invisible to visual search" headline decomposed on
 inspection: 1,080 are audio (no frames by design), 407 are BRAW (GPU-gated).
 The true gap is ~67 images/videos that should have frames and do not. Requeue
 them; then the number on the dashboard means what it says.
+
+*Resolved by the system review:* the gap was 591, not ~67 — 152 photos lost a
+race between sampling and their own thumbnail, and BRAW now takes one frame
+from its SDK-decoded poster. A maintenance sweep re-queues anything left
+without thumbnail, frames or vectors (runs once the NAS shares are back).
 
 ### 10. Transcription coverage audit
 116 of 3,052 videos have transcripts. Much of the footage is b-roll where VAD
@@ -119,7 +124,9 @@ the one open feasibility question, spiked first.
 - Docker build cache had grown to **70 GB** and put root at 80%; pruned to
   keep 8 GB, root now 25%. The build host needs `docker builder prune`
   on a schedule or a disk gauge on the dashboard — silent growth to full is
-  the current default.
+  the current default. *2026-09-24: back to 31.9 GB. `manage.sh prune` exists
+  now and `manage.sh doctor` reports it; the schedule is still the
+  operator's to set up.*
 - `delete_slideshow` still writes no audit row (noted 2026-07-31).
 - DJ Grick's threshold sits at 0.325 — near the 0.30 floor, driven by a
   weakest-confirmed of 0.345 with zero rejections. Not wrong, but his

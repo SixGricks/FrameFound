@@ -7,7 +7,8 @@ Loop responsibilities:
    stability-gated candidates they surface.
 4. Confirm departures — paths a watchdog event claims are gone — and flag the
    assets behind them `missing` once a stat agrees.
-5. Re-queue work that failed and was never looked at again.
+5. Re-queue work that failed and was never looked at again — including
+   visual stages (thumbnails, frames, vectors) an asset never got.
 6. Keep table statistics fresh, so bulk inserts do not quietly cost the
    query planner its indexes.
 """
@@ -21,16 +22,17 @@ from pathlib import Path
 from typing import Any, cast
 
 import structlog
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import exists, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.db.engine import session_factory
-from framefound.db.models import Asset, Face, Job, Library, Scan
+from framefound.db.models import Asset, Derivative, Face, Frame, Job, Library, Scan
 from framefound.logging import configure_logging
 from framefound.scanner import scan as scan_engine
 from framefound.scanner.stability import is_file_stable
 from framefound.scanner.watcher import WatchQueue, observe_file, start_observer
+from framefound.storage.reachability import unreachable_reason
 
 log = structlog.get_logger()
 
@@ -51,6 +53,15 @@ MAX_TRANSCRIBE_ATTEMPTS = 3
 # Clustering one or two loose faces produces noise, not people. Waiting for
 # a handful means the first groups the operator sees are worth naming.
 MIN_FACES_TO_CLUSTER = 4
+# Visual repair hands over this many assets per stage per pass.
+VISUALS_BATCH = 100
+# Tries per stage per asset. A file no decoder can read stays unreadable, and
+# a video retry decodes off the share for a minute or more.
+MAX_VISUAL_ATTEMPTS = 4
+# The ordinary pipeline gets this long before an asset counts as stranded.
+VISUALS_GRACE = timedelta(hours=1)
+# How soon a library whose last scan failed is checked for having come back.
+RECOVERY_RETRY = timedelta(minutes=5)
 
 
 def _make_enqueue() -> scan_engine.Enqueue:
@@ -82,8 +93,13 @@ async def _run_pending_scans(db: AsyncSession, enqueue: scan_engine.Enqueue) -> 
     await db.commit()
 
 
+def _utc(when: datetime) -> datetime:
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
 async def _schedule_due_scans(db: AsyncSession) -> None:
     libraries = (await db.execute(select(Library).where(Library.enabled.is_(True)))).scalars().all()
+    now = datetime.now(UTC)
     for library in libraries:
         if library.scan_interval_minutes is None:
             continue
@@ -97,10 +113,32 @@ async def _schedule_due_scans(db: AsyncSession) -> None:
         ).first()
         if active is not None:
             continue
-        last = library.last_scan_at
-        due = last is None or datetime.now(UTC) - (
-            last if last.tzinfo else last.replace(tzinfo=UTC)
-        ) >= timedelta(minutes=library.scan_interval_minutes)
+        latest = (
+            await db.execute(
+                select(Scan)
+                .where(Scan.library_id == library.id)
+                .order_by(Scan.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        # Measured from the last attempt, not the last success. A failed scan
+        # never sets last_scan_at, so a library whose share was down fell due
+        # again on the very next five-second pass — a failed scan row on every
+        # tick for as long as the outage lasted.
+        stamps = [library.last_scan_at, latest.created_at if latest is not None else None]
+        marks = [_utc(t) for t in stamps if t is not None]
+        due = not marks or now - max(marks) >= timedelta(minutes=library.scan_interval_minutes)
+        # A share that was down and is back gets read now rather than at the
+        # end of its interval: that scan is what brings its files back online.
+        # Floored so a failure of another kind cannot loop.
+        if (
+            not due
+            and latest is not None
+            and latest.status == "failed"
+            and now - _utc(latest.created_at) >= RECOVERY_RETRY
+        ):
+            root = Path(library.root_path)
+            due = await asyncio.to_thread(unreachable_reason, root, 1) is None
         if due:
             db.add(Scan(library_id=library.id, status="pending"))
     await db.commit()
@@ -155,6 +193,9 @@ async def _drain_departures(db: AsyncSession, queue: WatchQueue) -> None:
     for departure in queue.departures_due(DEPART_MIN_AGE_SECONDS):
         library = await db.get(Library, departure.library_id)
         if library is None or not library.enabled:
+            continue
+        # A share that dropped makes every file look departed.
+        if await asyncio.to_thread(unreachable_reason, Path(library.root_path), 1):
             continue
         abs_path = Path(library.root_path) / departure.relative_path
         if abs_path.exists():
@@ -333,6 +374,101 @@ async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     log.info("scanner.transcripts_requeued", count=len(candidates))
 
 
+async def _reachable_library_ids(db: AsyncSession) -> list[uuid.UUID]:
+    libraries = (await db.execute(select(Library).where(Library.enabled.is_(True)))).scalars().all()
+    reachable = []
+    for library in libraries:
+        if await asyncio.to_thread(unreachable_reason, Path(library.root_path), 1) is None:
+            reachable.append(library.id)
+    return reachable
+
+
+async def _requeue_missing_visuals(db: AsyncSession) -> None:
+    """Re-queue assets that are `ready` but never got their visual stages.
+
+    Nothing looked at an asset again once metadata succeeded, so anything
+    that interrupted the stages after it — a worker killed mid-task, a
+    low-disk pause, a lost enqueue, and above all the race in which a still
+    was sampled before its thumbnail existed — left it permanently without
+    a thumbnail, frames or vectors. Found in review (2026-09): 152 photographs
+    and 439 videos with no frames, invisible to visual search, to faces, and
+    to the room labels that order a listing, every one with its jobs marked
+    succeeded.
+
+    Gated like the other sweeps — idle queues only, bounded batches, a cap on
+    attempts — and it skips libraries whose share is down, where a retry
+    would only mark the asset missing.
+    """
+    if await _queue_busy("visuals") or await _queue_busy("frames") or await _queue_busy("vision"):
+        return
+    reachable = await _reachable_library_ids(db)
+    if not reachable:
+        return
+    cutoff = datetime.now(UTC) - VISUALS_GRACE
+
+    def settled(task: str) -> Any:
+        """Assets this stage should leave alone: tried too often, or tried
+        so recently that the job may still be in flight."""
+        exhausted = (
+            select(Job.asset_id)
+            .where(Job.task_name == task, Job.asset_id.is_not(None))
+            .group_by(Job.asset_id)
+            .having(func.count() >= MAX_VISUAL_ATTEMPTS)
+        )
+        recent = select(Job.asset_id).where(
+            Job.task_name == task, Job.started_at > cutoff, Job.asset_id.is_not(None)
+        )
+        return Asset.id.not_in(exhausted.union(recent))
+
+    eligible = (
+        Asset.library_id.in_(reachable),
+        Asset.availability == "online",
+        Asset.processing_status == "ready",
+        Asset.media_type.in_(("image", "video")),
+        Asset.first_indexed_at < cutoff,
+    )
+    has_thumb = exists().where(
+        Derivative.asset_id == Asset.id,
+        Derivative.kind == "thumbnail",
+        Derivative.status == "ready",
+    )
+    has_frames = exists().where(Frame.asset_id == Asset.id)
+    unembedded = exists().where(Frame.asset_id == Asset.id, Frame.embedding.is_(None))
+
+    async def ids(*conditions: Any) -> list[uuid.UUID]:
+        return list(
+            (await db.execute(select(Asset.id).where(*eligible, *conditions).limit(VISUALS_BATCH)))
+            .scalars()
+            .all()
+        )
+
+    need_thumb = await ids(~has_thumb, settled("generate_derivatives"))
+    # A thumbnail first: stills are sampled from it, and so is the fallback
+    # frame for video no decoder here can read.
+    need_frames = await ids(has_thumb, ~has_frames, settled("sample_frames"))
+    need_vectors = await ids(unembedded, settled("embed_frames"))
+    if not (need_thumb or need_frames or need_vectors):
+        return
+
+    try:
+        from framefound.processing.tasks import embed_frames, generate_derivatives, sample_frames
+    except Exception:
+        log.warning("scanner.visuals_unavailable")
+        return
+    for asset_id in need_thumb:
+        generate_derivatives.delay(str(asset_id))
+    for asset_id in need_frames:
+        sample_frames.delay(str(asset_id))
+    for asset_id in need_vectors:
+        embed_frames.delay(str(asset_id))
+    log.info(
+        "scanner.visuals_requeued",
+        thumbnails=len(need_thumb),
+        frames=len(need_frames),
+        vectors=len(need_vectors),
+    )
+
+
 # Jobs a worker started and never finished. Distinct from a failure: nothing
 # wrote an outcome, because the process that was going to write it is gone —
 # an OOM kill, a container restart, a deploy mid-task.
@@ -454,6 +590,7 @@ async def main() -> None:
                 if time.time() - last_requeue > 300:
                     await _requeue_stuck_assets(db, enqueue)
                     await _requeue_missing_transcripts(db)
+                    await _requeue_missing_visuals(db)
                     await _cluster_new_faces(db)
                     await _reap_orphaned_jobs(db)
                     await _refresh_statistics(db)

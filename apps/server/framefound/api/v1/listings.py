@@ -12,6 +12,7 @@ then explicit reorder wins and nothing shuffles it afterwards.
 
 import asyncio
 import uuid
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -25,6 +26,7 @@ from framefound.ai import rooms as rooms_lib
 from framefound.ai.embeddings import EmbeddingUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.db.models import Asset, AssetEdit, AuditLog, Frame, Listing, ListingItem
+from framefound.media.export_state import listing_fingerprint
 
 log = structlog.get_logger()
 
@@ -49,6 +51,10 @@ class ItemOut(BaseModel):
     room_score: float | None
     # A develop recipe exists for this photograph; the export will apply it.
     edited: bool = False
+    # When its newest recipe was saved. Auto-edit progress compares these
+    # against a snapshot taken at the start of the run — "edited" alone is
+    # already true for every photo when a listing is edited a second time.
+    edited_at: datetime | None = None
 
 
 class ListingOut(BaseModel):
@@ -65,6 +71,10 @@ class ListingDetail(ListingOut):
     # True when classification was skipped because the CLIP runtime is not
     # installed — the UI says so instead of showing silent blanks.
     classified: bool
+    # The zip exists but the listing has changed since it was made (order,
+    # rooms, edits, removals). The download refuses it; the UI offers a
+    # re-export instead of shipping the old gallery to MLS.
+    export_stale: bool = False
 
 
 class CreateListingRequest(BaseModel):
@@ -89,7 +99,7 @@ class ExportRequest(BaseModel):
     quality: int = Field(default=85, ge=60, le=95)
 
 
-def _item_out(item: ListingItem, asset: Asset, edited: bool = False) -> ItemOut:
+def _item_out(item: ListingItem, asset: Asset, edited_at: datetime | None = None) -> ItemOut:
     return ItemOut(
         asset_id=item.asset_id,
         filename=asset.filename,
@@ -99,7 +109,8 @@ def _item_out(item: ListingItem, asset: Asset, edited: bool = False) -> ItemOut:
         room_label=rooms_lib.ROOM_LABELS.get(item.room, ""),
         room_source=item.room_source,
         room_score=item.room_score,
-        edited=edited,
+        edited=edited_at is not None,
+        edited_at=edited_at,
     )
 
 
@@ -178,17 +189,17 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
             .order_by(ListingItem.position, ListingItem.created_at)
         )
     ).all()
-    edited_ids = {
-        row
-        for row in (
+    edited_at: dict[uuid.UUID, datetime] = {
+        asset_id: when
+        for asset_id, when in (
             await db.execute(
-                select(AssetEdit.asset_id.distinct()).where(
-                    AssetEdit.asset_id.in_([item.asset_id for item, _ in rows])
-                )
+                select(AssetEdit.asset_id, func.max(AssetEdit.created_at))
+                .where(AssetEdit.asset_id.in_([item.asset_id for item, _ in rows]))
+                .group_by(AssetEdit.asset_id)
             )
-        ).scalars()
+        ).all()
     }
-    items = [_item_out(item, asset, item.asset_id in edited_ids) for item, asset in rows]
+    items = [_item_out(item, asset, edited_at.get(item.asset_id)) for item, asset in rows]
     return ListingDetail(
         id=listing.id,
         name=listing.name,
@@ -198,7 +209,18 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
         cover_asset_id=items[0].asset_id if items else None,
         items=items,
         classified=classified,
+        export_stale=await _export_stale(db, listing),
     )
+
+
+async def _export_stale(db: DbDep, listing: Listing) -> bool:
+    """A ready zip that no longer matches the listing. An export from before
+    fingerprints existed counts as stale — "cannot tell" must not ship."""
+    if listing.export_status != "ready":
+        return False
+    if listing.export_fingerprint is None:
+        return True
+    return listing.export_fingerprint != await listing_fingerprint(db, listing.id)
 
 
 @router.get("/rooms", response_model=list[RoomOut])
@@ -689,6 +711,12 @@ async def download_export(  # type: ignore[no-untyped-def]
     listing = await _get(db, listing_id)
     if listing.export_status != "ready" or not listing.export_relpath:
         raise HTTPException(status_code=404, detail="No export is ready")
+    if await _export_stale(db, listing):
+        raise HTTPException(
+            status_code=409,
+            detail="This listing changed after the zip was made — export again so the "
+            "download matches what you see",
+        )
     path = settings.data_dir / listing.export_relpath
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Export file is missing")

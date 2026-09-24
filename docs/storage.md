@@ -34,6 +34,13 @@ SMB, in `/etc/fstab`:
 //nas/framefound-data  /mnt/framefound-data  cifs  credentials=/etc/framefound-smb.cred,rw,uid=1000,gid=1000,iocharset=utf8,vers=3.0,_netdev,nofail  0 0
 ```
 
+On Ubuntu's cloud and virtual kernels, `iocharset=utf8` needs a module that
+kernel updates do not install by themselves; without it the next reboot fails
+the mount with `mount error(79)`. Install `linux-image-extra-virtual` once
+(`--no-install-recommends`) — see
+[deployment/proxmox.md](deployment/proxmox.md) — and run
+`manage.sh doctor` to check.
+
 NFS:
 
 ```

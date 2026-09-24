@@ -52,6 +52,8 @@ export interface Library {
   generate_proxies: boolean;
   proxy_resolution: number;
   transcribe_enabled: boolean;
+  /** null = rescanned only when someone presses Scan now. */
+  scan_interval_minutes: number | null;
   last_scan_at: string | null;
   asset_count: number;
 }
@@ -495,6 +497,9 @@ export interface ListingItem {
   room_score: number | null;
   /** A develop recipe exists; the export will apply it. */
   edited: boolean;
+  /** When the newest recipe was saved — how a run's progress is told apart
+   *  from edits that were already there. */
+  edited_at: string | null;
 }
 
 export interface ListingSummary {
@@ -509,6 +514,8 @@ export interface ListingSummary {
 export interface ListingDetail extends ListingSummary {
   items: ListingItem[];
   classified: boolean;
+  /** A zip exists but the listing changed since; the download refuses it. */
+  export_stale: boolean;
 }
 
 export interface SkyChoice {
@@ -669,11 +676,36 @@ export interface ProcessingReport {
   }>;
 }
 
+export interface VolumeStatus {
+  label: string;
+  path: string;
+  total_gb: number;
+  free_gb: number;
+  used_percent: number;
+  status: "ok" | "low" | "full" | "unreachable";
+  detail: string;
+}
+
+export interface BackupStatus {
+  status: "ok" | "stale" | "missing";
+  last_backup_at: string | null;
+  detail: string;
+}
+
 export interface HealthReport {
   version: string;
   database: { status: string; detail: string | null };
   queue: { status: string; detail: string | null };
   data_dir_free_gb: number | null;
+  volumes: VolumeStatus[];
+  backup: BackupStatus;
+}
+
+export interface SystemAlert {
+  level: "error" | "warning";
+  title: string;
+  detail: string;
+  href: string;
 }
 
 export class ApiError extends Error {
@@ -689,6 +721,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`/api/v1${path}`, { ...init, credentials: "same-origin" });
   if (!resp.ok) {
     const body = await resp.json().catch(() => null);
+    // A session that ends while a page is open — expiry, or "sign out
+    // everywhere" from another device — used to surface as every button
+    // failing with a generic error. Outside /auth/ a 401 only ever means
+    // "no valid session"; inside it, a wrong password is not an expiry.
+    if (resp.status === 401 && !path.startsWith("/auth/") && typeof window !== "undefined") {
+      window.location.assign("/login");
+    }
     throw new ApiError(resp.status, body?.error?.message ?? `Request failed (${resp.status})`);
   }
   return resp.status === 204 ? (undefined as T) : ((await resp.json()) as T);
@@ -778,6 +817,12 @@ export const api = {
       body: JSON.stringify(mappings),
     }),
   scanLibrary: (id: string) => request<unknown>(`/libraries/${id}/scan`, { method: "POST" }),
+  updateLibrary: (id: string, patch: { scan_interval_minutes?: number | null }) =>
+    request<Library>(`/libraries/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
 
   assets: (params: {
     library_id?: string;
@@ -1088,6 +1133,7 @@ export const api = {
 
   processing: () => request<ProcessingReport>("/system/processing"),
   health: () => request<HealthReport>("/system/health"),
+  alerts: () => request<SystemAlert[]>("/system/alerts"),
 };
 
 export const listingExportUrl = (id: string) => `/api/v1/listings/${id}/export/download`;

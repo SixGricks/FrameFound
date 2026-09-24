@@ -143,7 +143,16 @@ def extract_poster_braw(src: Path, dst: Path, max_width: int = 1920) -> None:
         if producer.stdout is not None:
             producer.stdout.close()
         producer.terminate()
-        producer.wait(timeout=30)
+        try:
+            producer.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            # A decoder wedged on a stalled share read can ignore SIGTERM.
+            # Letting the timeout escape here would hide the real error and
+            # leak the process, and its NAS file handle, for the life of the
+            # worker.
+            producer.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                producer.wait(timeout=5)
     if consumer.returncode != 0 or not dst.is_file() or dst.stat().st_size == 0:
         tail = consumer.stderr.decode("utf-8", errors="replace")[-300:]
         log.warning("braw.poster_failed", stderr_tail=tail)

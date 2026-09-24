@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from framefound.ai.embeddings import EmbeddingUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
@@ -244,13 +245,12 @@ async def sky_info(
 
     def measure() -> float:
         import numpy as np
-        from PIL import Image, ImageOps
+        from PIL import Image
 
-        with Image.open(path) as img:
-            image = img if is_inpaint else (ImageOps.exif_transpose(img) or img)
-            image = image.convert("RGB")
-            image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
-            return float(np.mean(_cached_mask(asset_id, image, base_version)))
+        # Same pixels as the preview: the two share one mask cache.
+        image = develop_lib.open_for_render(path, already_normalized=is_inpaint)
+        image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+        return float(np.mean(_cached_mask(asset_id, image, base_version)))
 
     try:
         fraction = await asyncio.to_thread(measure)
@@ -415,7 +415,13 @@ async def request_inpaint(
         status="queued",
     )
     db.add(row)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two requests passed the pending check together; the version's
+        # unique constraint let exactly one through.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="A removal is already running") from None
 
     try:
         from framefound.processing.tasks import inpaint_asset
@@ -489,18 +495,18 @@ async def preview(  # type: ignore[no-untyped-def]
             return None
 
     def render() -> bytes:
-        from PIL import Image, ImageOps
+        from PIL import Image
 
-        with Image.open(path) as img:
-            image = img if is_inpaint else (ImageOps.exif_transpose(img) or img)
-            image = image.convert("RGB")
-            image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
-            image = develop_lib.render(
-                image, body.model_dump(), load_sky=sky_loader(settings), mask_for=mask_for
-            )
-            out = io.BytesIO()
-            image.save(out, "JPEG", quality=80)
-            return out.getvalue()
+        # The same loader the export uses, so the preview carries the same
+        # colour management — see develop.open_for_render.
+        image = develop_lib.open_for_render(path, already_normalized=is_inpaint)
+        image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+        image = develop_lib.render(
+            image, body.model_dump(), load_sky=sky_loader(settings), mask_for=mask_for
+        )
+        out = io.BytesIO()
+        image.save(out, "JPEG", quality=80)
+        return out.getvalue()
 
     data = await asyncio.to_thread(render)
     # Never cached: the whole point is that the recipe just changed.

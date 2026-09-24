@@ -82,6 +82,18 @@ def test_non_ascii_paths_survive() -> None:
     assert "%C3%A9" in file_url("/media/café/clip.mp4")
 
 
+def test_windows_drive_paths_become_urls_premiere_can_resolve() -> None:
+    """Path profiles hand Windows edit bays `Z:\\...` paths. Read as POSIX
+    they were one opaque segment — `file://localhostZ%3A%5CIntel...` — and
+    every clip imported offline."""
+    url = file_url("Z:\\Intel\\2026\\take 1.mp4")
+    assert url == "file://localhost/Z%3A/Intel/2026/take%201.mp4"
+
+
+def test_unc_paths_carry_their_host() -> None:
+    assert file_url("\\\\nas\\intel\\clip.mp4") == "file://nas/intel/clip.mp4"
+
+
 def test_the_document_has_the_doctype_premiere_requires() -> None:
     xml = build_bin("Results", [Clip(name="a.mp4", path="/media/a.mp4")])
     assert xml.startswith('<?xml version="1.0" encoding="UTF-8"?>')

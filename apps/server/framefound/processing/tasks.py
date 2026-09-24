@@ -19,8 +19,11 @@ The split between frames/vision/transcribe was learned three times over: each
 time two latency classes shared a worker, the slow one starved the fast one and
 the catalogue silently stopped gaining searchable data.
 
-Stage chain: extract_metadata -> generate_derivatives + generate_proxy.
-Every task is idempotent; each execution writes a Job history row (the
+Stage chain: extract_metadata -> generate_derivatives + generate_proxy
+(+ sample_frames for video); generate_derivatives -> sample_frames for
+stills, whose one frame is their thumbnail; sample_frames -> embed_frames +
+detect_faces. Anything the chain drops, the scanner's maintenance sweep
+re-queues. Every task is idempotent; each execution writes a Job history row (the
 processing dashboard's data source). Each task run creates and disposes its
 own engine — asyncpg pools are event-loop-bound and each `asyncio.run` gets a
 fresh loop. TODO(perf): persistent-loop workers if task volume demands it.
@@ -28,7 +31,6 @@ fresh loop. TODO(perf): persistent-loop workers if task volume demands it.
 
 import asyncio
 import bisect
-import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -44,6 +46,7 @@ from framefound.db.models import Asset, Job, Library
 from framefound.processing import derivatives as deriv
 from framefound.processing.probe import probe_media
 from framefound.scanner.paths import PathValidationError, safe_join
+from framefound.storage.reachability import unreachable_reason
 
 log = structlog.get_logger()
 
@@ -121,8 +124,15 @@ async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandle
                     log.error("processing.path_rejected", asset_id=str(asset_id))
                     return
                 if not path.is_file():
-                    asset.availability = "missing"
                     job.status = "skipped"
+                    # A share that is down makes every file look deleted;
+                    # flagging on that evidence turns an outage into
+                    # thousands of false "missing" assets.
+                    reason = await asyncio.to_thread(unreachable_reason, Path(library.root_path), 1)
+                    if reason is not None:
+                        job.error = reason[:500]
+                        return
+                    asset.availability = "missing"
                     job.error = "Original file is not reachable"
                     return
                 await handler(db, asset, library, path)
@@ -165,19 +175,34 @@ async def _extract(db: AsyncSession, asset: Asset, library: Library, path: Path)
     await db.commit()
     log.info("metadata.extracted", asset_id=str(asset.id), fields=sorted(fields.keys()))
     # Chain the downstream stages now that duration/dimensions are known.
-    generate_derivatives.delay(str(asset.id))
-    if asset.media_type == "video" and library.generate_proxies:
-        generate_proxy.delay(str(asset.id))
-    has_audio = asset.media_type == "audio" or asset.audio_codec is not None
-    if has_audio and library.transcribe_enabled:
-        transcribe_asset.delay(str(asset.id))
-    # Images are sampled too (one frame at ts=0) so stills and motion share
-    # one vector table — see docs/data-model.md §frames.
-    sample_frames.delay(str(asset.id))
+    # A lost enqueue (a broker blip) must not relabel a successful extraction
+    # "metadata_failed" — every stage is idempotent, and the scanner's
+    # maintenance sweep finds any asset left without its visuals.
+    try:
+        generate_derivatives.delay(str(asset.id))
+        if asset.media_type == "video" and library.generate_proxies:
+            generate_proxy.delay(str(asset.id))
+        has_audio = asset.media_type == "audio" or asset.audio_codec is not None
+        if has_audio and library.transcribe_enabled:
+            transcribe_asset.delay(str(asset.id))
+        # Video is sampled straight from the file. Stills are sampled too (one
+        # frame at ts=0, so stills and motion share one vector table — see
+        # docs/data-model.md §frames), but from their thumbnail, so they are
+        # chained after derivatives in _visuals rather than raced against them.
+        if asset.media_type == "video":
+            sample_frames.delay(str(asset.id))
+    except Exception:
+        log.warning("metadata.enqueue_failed", asset_id=str(asset.id), exc_info=True)
 
 
 async def _visuals(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
     await deriv.generate_visuals(db, get_settings().data_dir, asset, path)
+    if asset.media_type == "image":
+        # Enqueued alongside derivatives, sampling often ran before the
+        # thumbnail it reads existed, returned quietly, and was recorded as a
+        # success: 152 photographs sat outside visual search, face detection
+        # and listing room labels that way.
+        sample_frames.delay(str(asset.id))
 
 
 class ProcessingPaused(Exception):
@@ -331,14 +356,19 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
     from framefound.processing import scenes
 
     data_dir = get_settings().data_dir
-    if asset.media_type == "image":
+    thumb = data_dir / deriv.derivative_relpath(asset.id, "thumbnail", "webp")
+    if asset.media_type == "image" or (asset.media_type == "video" and asset.extension == "braw"):
         # A still is a one-frame asset: reuse its preview so search covers
-        # photos and motion through the same table.
-        thumb_rel = deriv.derivative_relpath(asset.id, "thumbnail", "webp")
-        if not (data_dir / thumb_rel).is_file():
+        # photos and motion through the same table. Blackmagic RAW takes the
+        # same route — ffmpeg cannot decode it, but its poster came from the
+        # SDK decoder, and one frame beats the zero that 407 clips had.
+        if not thumb.is_file():
+            # The sweep regenerates derivatives and comes back; say so
+            # rather than return in silence under a "succeeded" job.
+            log.warning("frames.no_thumbnail", asset_id=str(asset.id))
             return
         plan = [(0.0, False)]
-        sources = {0.0: data_dir / thumb_rel}
+        sources = {0.0: thumb}
     else:
         if asset.media_type != "video":
             return
@@ -397,6 +427,21 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
             )
         )
         written += 1
+    if written == 0 and asset.media_type == "video" and thumb.is_file():
+        # Nothing decoded — a damaged file, a codec ffmpeg lacks — yet a
+        # poster exists. One frame keeps the clip findable by what it shows.
+        db.add(
+            Frame(
+                asset_id=asset.id,
+                ts_ms=0,
+                scene_number=None,
+                is_scene_change=False,
+                relative_path=str(thumb.relative_to(data_dir)).replace("\\", "/"),
+                phash=await asyncio.to_thread(dhash, thumb),
+            )
+        )
+        written = 1
+        log.info("frames.thumbnail_fallback", asset_id=str(asset.id))
     await db.commit()
     log.info("frames.sampled", asset_id=str(asset.id), frames=written, scenes=scene_counter)
     if written:
@@ -1220,6 +1265,49 @@ async def _slideshow_spec(db: AsyncSession, show: Any) -> Any:
     )
 
 
+async def _render_sources(
+    db: AsyncSession, data_dir: Path, rows: Any
+) -> dict[uuid.UUID, tuple[Path, bool]]:
+    """Where each photograph's render starts: its newest object-removal
+    result if it has one, else the original. The bool is True for a removal
+    result, which is already upright sRGB.
+
+    Shared by export and auto-edit, so auto-edit judges exactly the pixels the
+    zip will carry. It used to judge the original — the photograph with the
+    removed trash can still in it. A source that fails path validation is
+    left out; callers treat a missing entry as an unreadable photograph.
+    """
+    from sqlalchemy import select
+
+    from framefound.db.models import AssetInpaint
+
+    ids = [asset.id for _item, asset, _library in rows]
+    newest: dict[uuid.UUID, str] = {}
+    if ids:
+        removals = (
+            await db.execute(
+                select(AssetInpaint)
+                .where(AssetInpaint.asset_id.in_(ids), AssetInpaint.status == "ready")
+                .order_by(AssetInpaint.asset_id, AssetInpaint.version)
+            )
+        ).scalars()
+        for removal in removals:  # ascending: the newest version wins
+            if removal.relative_path:
+                newest[removal.asset_id] = removal.relative_path
+
+    sources: dict[uuid.UUID, tuple[Path, bool]] = {}
+    for _item, asset, library in rows:
+        relpath = newest.get(asset.id)
+        if relpath and (data_dir / relpath).is_file():
+            sources[asset.id] = (data_dir / relpath, True)
+            continue
+        try:
+            sources[asset.id] = (safe_join(Path(library.root_path), asset.relative_path), False)
+        except PathValidationError:
+            continue
+    return sources
+
+
 @celery_app.task(
     name="framefound.export_listing_zip",
     queue="media",
@@ -1239,10 +1327,11 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
     import io
     import zipfile
 
-    from PIL import Image, ImageCms, ImageOps
+    from PIL import Image
 
-    from framefound.db.models import AssetEdit, AssetInpaint, Listing, ListingItem
+    from framefound.db.models import AssetEdit, Listing, ListingItem
     from framefound.media import develop as develop_lib
+    from framefound.media.export_state import listing_fingerprint
 
     def _load_sky(name: str) -> Any:
         from PIL import Image
@@ -1266,48 +1355,29 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
             return None
 
     def to_jpeg(path: Path, recipe: dict[str, Any] | None, is_inpaint: bool = False) -> bytes:
-        with Image.open(path) as img:
-            if is_inpaint:
-                # An inpaint result was orientation-applied and flattened to
-                # sRGB when the chain started; doing either again would be
-                # wrong, not merely wasteful.
-                image = img.convert("RGB")
-            else:
-                # Camera orientation lives in EXIF; a sideways kitchen is not
-                # a feature. Then flatten any embedded profile to sRGB — MLS
-                # portals assume it, and a ProPhoto JPEG goes dull the moment
-                # they do.
-                image = ImageOps.exif_transpose(img) or img
-                icc = image.info.get("icc_profile")
-                if icc:
-                    with contextlib.suppress(Exception):
-                        converted = ImageCms.profileToProfile(
-                            image,
-                            ImageCms.ImageCmsProfile(io.BytesIO(icc)),
-                            ImageCms.createProfile("sRGB"),
-                            outputMode="RGB",
-                        )
-                        if converted is not None:
-                            image = converted
-                image = image.convert("RGB")
-            width, height = image.size
-            longest = max(width, height)
-            if longest > max_edge:
-                scale = max_edge / longest
-                image = image.resize(
-                    (round(width * scale), round(height * scale)), Image.Resampling.LANCZOS
-                )
-            # The develop recipe, applied after the resize because every
-            # adjustment is per-pixel and scale-free — same maths, quarter
-            # the pixels. This is the moment "what you saw in the editor"
-            # becomes "what the zip contains". Sky replacement rides along:
-            # same segmentation, same compositor, same feathering as the
-            # preview the operator approved.
-            if recipe:
-                image = develop_lib.render(image, recipe, load_sky=_load_sky, mask_for=_mask_for)
-            out = io.BytesIO()
-            image.save(out, "JPEG", quality=quality, optimize=True)
-            return out.getvalue()
+        # Upright (a sideways kitchen is not a feature) and flattened to sRGB
+        # (MLS portals assume it; a ProPhoto JPEG goes dull the moment they
+        # do) — by the same loader the editor preview uses, so the colours
+        # the operator judged are the colours that ship.
+        image = develop_lib.open_for_render(path, already_normalized=is_inpaint)
+        width, height = image.size
+        longest = max(width, height)
+        if longest > max_edge:
+            scale = max_edge / longest
+            image = image.resize(
+                (round(width * scale), round(height * scale)), Image.Resampling.LANCZOS
+            )
+        # The develop recipe, applied after the resize because every
+        # adjustment is per-pixel and scale-free — same maths, quarter the
+        # pixels. This is the moment "what you saw in the editor" becomes
+        # "what the zip contains". Sky replacement rides along: same
+        # segmentation, same compositor, same feathering as the preview the
+        # operator approved.
+        if recipe:
+            image = develop_lib.render(image, recipe, load_sky=_load_sky, mask_for=_mask_for)
+        out = io.BytesIO()
+        image.save(out, "JPEG", quality=quality, optimize=True)
+        return out.getvalue()
 
     async def run() -> None:
         from sqlalchemy import select
@@ -1325,6 +1395,9 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                     return
                 listing.export_status = "exporting"
                 await db.commit()
+                # Digested before the inputs are read, so a change made while
+                # this runs leaves the finished zip stale — the safe direction.
+                fingerprint = await listing_fingerprint(db, listing.id)
 
                 rows = (
                     await db.execute(
@@ -1352,20 +1425,7 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                     recipes[edit.asset_id] = develop_lib.clean_recipe(edit.recipe)
 
                 # Object-removal results replace the original as the source.
-                inpaint_rows = (
-                    await db.execute(
-                        select(AssetInpaint)
-                        .where(
-                            AssetInpaint.asset_id.in_([a.id for _, a, _l in rows]),
-                            AssetInpaint.status == "ready",
-                        )
-                        .order_by(AssetInpaint.asset_id, AssetInpaint.version)
-                    )
-                ).scalars()
-                inpaint_paths: dict[uuid.UUID, str] = {}
-                for row_i in inpaint_rows:  # ascending: newest version wins
-                    if row_i.relative_path:
-                        inpaint_paths[row_i.asset_id] = row_i.relative_path
+                sources = await _render_sources(db, settings.data_dir, rows)
 
                 out_dir = settings.data_dir / "exports" / "listings"
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -1375,15 +1435,12 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                 try:
                     # JPEGs do not compress again; ZIP_STORED skips the wasted CPU.
                     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
-                        for item, asset, library in rows:
+                        for item, asset, _library in rows:
                             try:
-                                inpainted = inpaint_paths.get(asset.id)
-                                if inpainted and (settings.data_dir / inpainted).is_file():
-                                    path = settings.data_dir / inpainted
-                                    from_inpaint = True
-                                else:
-                                    path = safe_join(Path(library.root_path), asset.relative_path)
-                                    from_inpaint = False
+                                source = sources.get(asset.id)
+                                if source is None:
+                                    raise PathValidationError("unresolvable source")
+                                path, from_inpaint = source
                                 data = await asyncio.to_thread(
                                     to_jpeg, path, recipes.get(asset.id), from_inpaint
                                 )
@@ -1411,6 +1468,7 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                 else:
                     listing.export_status = "ready"
                     listing.export_relpath = f"exports/listings/{listing.id}.zip"
+                    listing.export_fingerprint = fingerprint
                     listing.exported_at = datetime.now(UTC)
                     listing.export_error = (
                         (
@@ -1452,10 +1510,11 @@ def inpaint_asset(inpaint_id: str) -> None:
     import base64
     import io as io_module
 
-    from PIL import Image, ImageCms, ImageOps
+    from PIL import Image
 
     from framefound.ai.inpaint import remove_region
     from framefound.db.models import AssetInpaint
+    from framefound.media import develop as develop_lib
 
     async def run() -> None:
         import numpy as np
@@ -1504,37 +1563,22 @@ def inpaint_asset(inpaint_id: str) -> None:
                         first_round = True
 
                     def work() -> str:
-                        with Image.open(base_path) as img:
-                            if first_round:
-                                image = ImageOps.exif_transpose(img) or img
-                                icc = image.info.get("icc_profile")
-                                if icc:
-                                    with contextlib.suppress(Exception):
-                                        converted = ImageCms.profileToProfile(
-                                            image,
-                                            ImageCms.ImageCmsProfile(io_module.BytesIO(icc)),
-                                            ImageCms.createProfile("sRGB"),
-                                            outputMode="RGB",
-                                        )
-                                        if converted is not None:
-                                            image = converted
-                                image = image.convert("RGB")
-                            else:
-                                image = img.convert("RGB")
+                        # The first round makes the original upright and sRGB,
+                        # once; later rounds read results that already are.
+                        image = develop_lib.open_for_render(
+                            base_path, already_normalized=not first_round
+                        )
+                        png = base64.b64decode(row.mask_meta["png_base64"])
+                        with Image.open(io_module.BytesIO(png)) as m:
+                            mask_img = m.convert("L").resize(image.size, Image.Resampling.BILINEAR)
+                        mask = np.asarray(mask_img, dtype=np.float32) / 255.0
 
-                            png = base64.b64decode(row.mask_meta["png_base64"])
-                            with Image.open(io_module.BytesIO(png)) as m:
-                                mask_img = m.convert("L").resize(
-                                    image.size, Image.Resampling.BILINEAR
-                                )
-                            mask = np.asarray(mask_img, dtype=np.float32) / 255.0
-
-                            result = remove_region(image, mask)
-                            out_dir = settings.data_dir / "inpaint" / str(asset.id)
-                            out_dir.mkdir(parents=True, exist_ok=True)
-                            relpath = f"inpaint/{asset.id}/v{row.version}.jpg"
-                            result.save(settings.data_dir / relpath, "JPEG", quality=95)
-                            return relpath
+                        result = remove_region(image, mask)
+                        out_dir = settings.data_dir / "inpaint" / str(asset.id)
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        relpath = f"inpaint/{asset.id}/v{row.version}.jpg"
+                        result.save(settings.data_dir / relpath, "JPEG", quality=95)
+                        return relpath
 
                     row.relative_path = await asyncio.to_thread(work)
                 except Exception as exc:
@@ -1584,27 +1628,31 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
     rate limits boring. Failures on individual photos are logged and
     skipped - 40 edited and 2 skipped beats 0 edited and an exception.
     """
-    from PIL import Image, ImageOps
+    from PIL import Image
+    from sqlalchemy.exc import IntegrityError
 
     from framefound.ai import recipe_picker
     from framefound.db.models import AssetEdit, Listing, ListingItem
     from framefound.media import develop as develop_lib
     from framefound.media.maps_store import load_ai_edit_config
 
-    def _sky_fraction_for(source: Path) -> float:
+    def _sky_fraction_for(source: Path, normalized: bool) -> float:
         """How much sky a photograph has, or 0.0 when segmentation is not
         installed — the sky is then simply not added, and the colour edit
         still lands."""
         try:
             from framefound.ai import skyseg
 
-            with Image.open(source) as img:
-                image = ImageOps.exif_transpose(img) or img
-                small = image.convert("RGB")
-                small.thumbnail((768, 768), Image.Resampling.BILINEAR)
-                return skyseg.sky_fraction(small)
+            small = develop_lib.open_for_render(source, already_normalized=normalized)
+            small.thumbnail((768, 768), Image.Resampling.BILINEAR)
+            return skyseg.sky_fraction(small)
         except Exception:
             return 0.0
+
+    def build_preview(source: Path, normalized: bool) -> bytes:
+        return recipe_picker.preview_bytes(
+            develop_lib.open_for_render(source, already_normalized=normalized)
+        )
 
     async def run() -> None:
         from sqlalchemy import func, select
@@ -1621,6 +1669,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                 config = await load_ai_edit_config(db)
                 use_ai = mode == "ai" and config.ready
                 api_key = config.api_key() if use_ai else ""
+                model = config.model
 
                 rows = (
                     await db.execute(
@@ -1634,52 +1683,62 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                         .order_by(ListingItem.position)
                     )
                 ).all()
+                sources = await _render_sources(db, settings.data_dir, rows)
+                # Plain values, taken before the loop: a failed photograph
+                # rolls the session back, which expires every ORM object in
+                # it, and touching an expired attribute from async code raises
+                # — so the first failure used to end the whole run, not skip
+                # one photograph.
+                photos = [
+                    (asset.id, asset.filename, sources.get(asset.id)) for _item, asset, _lib in rows
+                ]
 
                 edited = skipped = 0
-                for _item, asset, library in rows:
+                for asset_id, filename, source in photos:
                     try:
-                        path = safe_join(Path(library.root_path), asset.relative_path)
-
-                        def build_preview(source: Path = path) -> bytes:
-                            with Image.open(source) as img:
-                                image = ImageOps.exif_transpose(img) or img
-                                return recipe_picker.preview_bytes(image)
-
+                        if source is None:
+                            raise PathValidationError("unresolvable source")
+                        path, normalized = source
                         if use_ai:
-                            preview = await asyncio.to_thread(build_preview)
+                            preview = await asyncio.to_thread(build_preview, path, normalized)
                             picked = await asyncio.to_thread(
-                                recipe_picker.pick_recipe, preview, api_key, config.model
+                                recipe_picker.pick_recipe, preview, api_key, model
                             )
                             recipe = dict(picked["recipe"])
                         else:
                             recipe = dict(develop_lib.LISTING_PRESET)
 
                         if sky_name:
-                            fraction = await asyncio.to_thread(_sky_fraction_for, path)
+                            fraction = await asyncio.to_thread(_sky_fraction_for, path, normalized)
                             if fraction >= 0.04:
                                 recipe["sky"] = {"name": sky_name}
-                        version = (
-                            await db.execute(
-                                select(func.coalesce(func.max(AssetEdit.version), 0)).where(
-                                    AssetEdit.asset_id == asset.id
+                        cleaned = develop_lib.clean_recipe(recipe)
+                        for _attempt in range(3):
+                            version = (
+                                await db.execute(
+                                    select(func.coalesce(func.max(AssetEdit.version), 0)).where(
+                                        AssetEdit.asset_id == asset_id
+                                    )
                                 )
-                            )
-                        ).scalar_one() + 1
-                        db.add(
-                            AssetEdit(
-                                asset_id=asset.id,
-                                version=version,
-                                recipe=develop_lib.clean_recipe(recipe),
-                            )
-                        )
-                        await db.commit()
+                            ).scalar_one() + 1
+                            db.add(AssetEdit(asset_id=asset_id, version=version, recipe=cleaned))
+                            try:
+                                await db.commit()
+                                break
+                            except IntegrityError:
+                                # Another run (a second tab, a double press)
+                                # took this version first; take the next one
+                                # rather than lose this edit in silence.
+                                await db.rollback()
+                        else:
+                            raise RuntimeError("Could not allocate a recipe version")
                         edited += 1
                     except Exception as exc:
                         await db.rollback()
                         skipped += 1
                         log.warning(
                             "ai_edit.photo_skipped",
-                            filename=asset.filename,
+                            filename=filename,
                             error=str(exc)[:200],
                         )
                 log.info(

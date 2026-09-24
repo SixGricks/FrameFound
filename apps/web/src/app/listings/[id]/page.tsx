@@ -56,15 +56,21 @@ export default function ListingPage() {
   const [quality, setQuality] = useState(85);
   const [suggestions, setSuggestions] = useState<RemovalSuggestion[] | null>(null);
   const [curating, setCurating] = useState(false);
-  const editedBaseline = useRef(0);
+  // Each photo's edited_at when the auto-edit run started: a photo is done
+  // when its timestamp moves. "edited" alone is already true for every photo
+  // the second time a listing is auto-edited.
+  const runSnapshot = useRef<Map<string, string | null>>(new Map());
   const dragFrom = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<ListingDetail | null> => {
     try {
-      setListing(await api.listing(listingId));
+      const fresh = await api.listing(listingId);
+      setListing(fresh);
+      return fresh;
     } catch {
       setError("Could not load this listing.");
+      return null;
     }
   }, [listingId]);
 
@@ -136,11 +142,15 @@ export default function ListingPage() {
   async function aiEditAll() {
     setBusy(true);
     setError(null);
+    // Before the request: a quick preset run can finish photos before the
+    // response comes back, and a later snapshot would count them as untouched.
+    runSnapshot.current = new Map(
+      (listing?.items ?? [])
+        .filter((i) => i.media_type === "image")
+        .map((i) => [i.asset_id, i.edited_at]),
+    );
     try {
       const { queued, mode } = await api.aiEditListing(listingId, skyChoice || null);
-      editedBaseline.current = (listing?.items ?? []).filter(
-        (i) => i.media_type === "image" && i.edited,
-      ).length;
       setAiRunning(true);
       setNotice(
         mode === "ai"
@@ -159,24 +169,45 @@ export default function ListingPage() {
     }
   }
 
-  // While an AI run is in flight, refresh so edited badges appear; stop when
-  // every image is edited or after 15 minutes, whichever comes first.
+  // While an AI run is in flight, refresh so tiles turn over as photos land.
+  // Stop when every photo has a new recipe, when nothing has moved for three
+  // minutes (longer than one slow API call plus its render — a photo the run
+  // skipped never lands), or at fifteen minutes regardless.
   useEffect(() => {
     if (!aiRunning) return;
     const started = Date.now();
+    let lastProgress = Date.now();
+    let lastDone = -1;
     const timer = setInterval(async () => {
-      await load();
-      const all = (listing?.items ?? []).filter((i) => i.media_type === "image");
-      if (
-        (all.length > 0 && all.every((i) => i.edited)) ||
-        Date.now() - started > 15 * 60 * 1000
-      ) {
+      // The fresh copy, not `listing`: this callback closed over the state
+      // from when the run began, so checking that could never see the run
+      // finish — the button sat on "Editing 12/12…" and polled for the full
+      // fifteen minutes.
+      const fresh = await load();
+      const images = (fresh?.items ?? []).filter((i) => i.media_type === "image");
+      const done = images.filter((i) => doneThisRun(i)).length;
+      if (done !== lastDone) {
+        lastDone = done;
+        lastProgress = Date.now();
+      }
+      const now = Date.now();
+      if (images.length > 0 && done === images.length) {
         setAiRunning(false);
+      } else if (now - lastProgress > 3 * 60 * 1000 || now - started > 15 * 60 * 1000) {
+        setAiRunning(false);
+        setNotice(
+          `Auto-edit stopped reporting progress with ${done} of ${images.length} photos ` +
+            `edited — the rest were skipped (see the server log) or are still running.`,
+        );
       }
     }, 5000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiRunning]);
+
+  function doneThisRun(item: { asset_id: string; edited_at: string | null }): boolean {
+    return item.edited_at !== null && item.edited_at !== runSnapshot.current.get(item.asset_id);
+  }
 
   function togglePick(assetId: string) {
     setPicked((current) => {
@@ -254,7 +285,7 @@ export default function ListingPage() {
 
   const items = [...(listing?.items ?? [])].sort((a, b) => a.position - b.position);
   const imageCount = items.filter((i) => i.media_type === "image").length;
-  const editedImages = items.filter((i) => i.media_type === "image" && i.edited).length;
+  const doneImages = items.filter((i) => i.media_type === "image" && doneThisRun(i)).length;
   // The number each image will carry in the zip: images only, in order.
   const exportNumbers = new Map<string, number>();
   items
@@ -565,7 +596,7 @@ export default function ListingPage() {
                   ? String(exportNumbers.get(item.asset_id)).padStart(2, "0")
                   : "video"}
               </span>
-              {aiRunning && item.media_type === "image" && !item.edited && (
+              {aiRunning && item.media_type === "image" && !doneThisRun(item) && (
                 <span
                   className="pill mono"
                   style={{ position: "absolute", bottom: 6, left: 6 }}
@@ -573,7 +604,7 @@ export default function ListingPage() {
                   <span className="spinner" /> editing…
                 </span>
               )}
-              {aiRunning && item.media_type === "image" && item.edited && (
+              {aiRunning && item.media_type === "image" && doneThisRun(item) && (
                 <span
                   className="pill mono"
                   style={{ position: "absolute", bottom: 6, left: 6 }}
@@ -673,7 +704,7 @@ export default function ListingPage() {
               }
             >
               {aiRunning
-                ? `Editing ${editedImages}/${imageCount}…`
+                ? `Editing ${doneImages}/${imageCount}…`
                 : "Auto-edit photos"}
             </button>
             <span className="faint" style={{ fontSize: "0.72rem" }}>
@@ -750,7 +781,7 @@ export default function ListingPage() {
             >
               {exporting ? "Exporting…" : "Export zip"}
             </button>
-            {listing?.export_status === "ready" && (
+            {listing?.export_status === "ready" && !listing.export_stale && (
               <a
                 className="btn"
                 style={{ width: "100%", marginTop: 6, display: "block", textAlign: "center" }}
@@ -758,6 +789,16 @@ export default function ListingPage() {
               >
                 Download
               </a>
+            )}
+            {listing?.export_status === "ready" && listing.export_stale && (
+              // The listing changed after the zip was made; the server will
+              // not serve it, so say why rather than offer a dead link.
+              <p className="faint" style={{ fontSize: "0.78rem", margin: "6px 0 0" }}>
+                <span className="pill" data-tone="warn">
+                  out of date
+                </span>{" "}
+                The listing changed since the last export — export again to download.
+              </p>
             )}
           </div>
 

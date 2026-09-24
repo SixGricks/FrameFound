@@ -93,8 +93,13 @@ async def find_duplicates(
         )
         if library_id is not None:
             grouped = grouped.where(Asset.library_id == library_id)
+        # Biggest saving first, in SQL: the limit applies before any sorting
+        # done in Python, and ascending here meant the page listed the 50
+        # least worthwhile groups and never the multi-gigabyte ones.
         rows = (
-            await db.execute(grouped.order_by((func.count() - 1) * Asset.size_bytes).limit(limit))
+            await db.execute(
+                grouped.order_by(((func.count() - 1) * Asset.size_bytes).desc()).limit(limit)
+            )
         ).all()
 
         groups = []
@@ -127,6 +132,8 @@ async def find_duplicates(
             .where(Frame.phash.is_not(None), Frame.ts_ms == 0)
             .group_by(Frame.phash)
             .having(func.count(func.distinct(Frame.asset_id)) > 1)
+            # Largest groups first; unordered, the limit kept an arbitrary set.
+            .order_by(func.count(func.distinct(Frame.asset_id)).desc(), Frame.phash)
             .limit(limit)
         )
         groups = []

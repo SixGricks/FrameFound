@@ -26,6 +26,8 @@ Usage: ./infrastructure/scripts/manage.sh <command>
   restore FILE   Restore from a backup archive (replaces the catalog)
   verify FILE    Check a backup archive's checksums without restoring
   update         Pull images, migrate, health-check, roll back on failure
+  doctor         Check the host: shares mounted, kernel modules, backups, cache
+  prune          Reclaim Docker build cache (it grows ~30 GB between prunes)
 EOF
 }
 
@@ -137,6 +139,79 @@ cmd_update() {
   fail "Health check failed after update. Roll back with: manage.sh restore <latest backup>"
 }
 
+cmd_doctor() {
+  # Written after the NAS was unmounted for 39 days (Aug-Sep 2026): a kernel
+  # update arrived without linux-modules-extra, the CIFS mounts' iocharset=utf8
+  # needed nls_utf8 from it, every mount failed at boot, and `nofail` let the
+  # machine carry on as if nothing had happened.
+  local problems=0 src target fstype _rest kernel data newest age_h
+
+  say "Network shares in /etc/fstab"
+  while read -r src target fstype _rest; do
+    case "$fstype" in cifs | nfs | nfs4 | smb3) ;; *) continue ;; esac
+    target=${target//\\040/ }
+    if mountpoint -q "$target"; then
+      printf '  ok       %s\n' "$target"
+    else
+      printf '  MISSING  %s  <- not mounted: sudo mount "%s"\n' "$target" "$target"
+      problems=$((problems + 1))
+    fi
+  done < <(grep -vE '^[[:space:]]*(#|$)' /etc/fstab)
+
+  say "Kernel support for those shares (running kernel, and the next one to boot)"
+  for kernel in $( (uname -r; ls -1 /lib/modules | sort -V | tail -1) | sort -u); do
+    if modinfo -k "$kernel" nls_utf8 >/dev/null 2>&1; then
+      printf '  ok       nls_utf8 for %s\n' "$kernel"
+    else
+      printf '  MISSING  nls_utf8 for %s  <- sudo apt install linux-modules-extra-%s\n' \
+        "$kernel" "$kernel"
+      problems=$((problems + 1))
+    fi
+  done
+  if ! dpkg -s linux-image-generic >/dev/null 2>&1 && dpkg -s linux-virtual >/dev/null 2>&1; then
+    printf '  WARNING  future kernels will arrive without the extra modules again:\n'
+    printf '           sudo apt install --no-install-recommends linux-image-extra-virtual\n'
+  fi
+
+  say "Backups"
+  data=$(env_value FRAMEFOUND_DATA_STORE)
+  newest=$(ls -1t "${data:-/nonexistent}"/backups/framefound-*.tar.gz "$BACKUP_DIR"/framefound-*.tar.gz \
+    2>/dev/null | head -1 || true)
+  if [ -z "$newest" ]; then
+    printf '  MISSING  no backup archive found — is the backup service running?\n'
+    problems=$((problems + 1))
+  else
+    age_h=$((($(date +%s) - $(stat -c %Y "$newest")) / 3600))
+    if [ "$age_h" -gt 36 ]; then
+      printf '  STALE    newest backup is %s hours old: %s\n' "$age_h" "$newest"
+      problems=$((problems + 1))
+    else
+      printf '  ok       %s (%s hours old)\n' "$newest" "$age_h"
+    fi
+    printf '           Copies on this machine only; keep one somewhere else too.\n'
+  fi
+
+  say "Docker disk use"
+  docker system df | awk 'NR == 1 || /Build Cache/ { print "  " $0 }'
+  printf '           Build cache regrows with every deploy; reclaim it with: manage.sh prune\n'
+
+  say "Disk space"
+  df -h / "${data:-/}" 2>/dev/null | awk '!seen[$0]++ { print "  " $0 }'
+
+  if [ "$problems" -eq 0 ]; then
+    say "No problems found"
+  else
+    fail "$problems problem(s) found — see above"
+  fi
+}
+
+cmd_prune() {
+  say "Reclaiming Docker build cache (keeping 8 GB for fast rebuilds)"
+  docker builder prune --keep-storage=8GB -f
+  say "Removing dangling images"
+  docker image prune -f
+}
+
 case "${1:-}" in
   up)      $COMPOSE up -d ;;
   down)    $COMPOSE down ;;
@@ -146,5 +221,7 @@ case "${1:-}" in
   verify)  cmd_verify "${2:-}" ;;
   restore) cmd_restore "${2:-}" ;;
   update)  cmd_update ;;
+  doctor)  cmd_doctor ;;
+  prune)   cmd_prune ;;
   *)       usage; exit 1 ;;
 esac

@@ -177,6 +177,59 @@ async def test_a_rejected_face_stops_counting_toward_the_person(env: dict) -> No
     assert listing[0]["confirmed_count"] == 2
 
 
+async def test_person_counts_are_totals_not_the_page(env: dict) -> None:
+    """The counts used to be summed over the page of faces returned — so
+    someone with 295 faces to review showed "200 pending", and filtering the
+    page to detections showed "0 confirmed" for everyone."""
+    url = f"/api/v1/people/{env['person_id']}"
+    one = (await env["client"].get(url, params={"limit": 1})).json()
+    assert len(one["faces"]) == 1
+    assert one["pending_count"] == 3
+
+    await env["client"].post(f"{url}/confirm", json={"face_ids": [env["faces"][0]]})
+    filtered = (await env["client"].get(url, params={"source": "detected"})).json()
+    assert filtered["confirmed_count"] == 1
+    assert filtered["pending_count"] == 2
+
+
+async def test_a_cover_that_moved_to_someone_else_is_never_shown_under_the_old_name(
+    env: dict,
+) -> None:
+    await env["client"].put(f"/api/v1/people/{env['person_id']}/name", json={"name": "Brian"})
+    moved = env["faces"][0]
+    async with env["factory"]() as db:
+        person = await db.get(Person, uuidlib.UUID(env["person_id"]))
+        assert person is not None
+        person.cover_face_id = uuidlib.UUID(moved)
+        await db.commit()
+
+    resp = await env["client"].post(
+        f"/api/v1/people/faces/{moved}/assign", json={"name": "Aunt Sue"}
+    )
+    assert resp.status_code == 200, resp.text
+
+    brian = (await env["client"].get("/api/v1/people/suggest/names", params={"q": "bri"})).json()
+    assert brian[0]["name"] == "Brian"
+    assert brian[0]["cover"] is None or brian[0]["cover"]["face_id"] != moved
+    sue = (await env["client"].get("/api/v1/people/suggest/names", params={"q": "sue"})).json()
+    assert sue[0]["cover"]["face_id"] == moved, "it is Aunt Sue's photograph now"
+
+
+async def test_a_rejected_cover_is_let_go(env: dict) -> None:
+    await env["client"].put(f"/api/v1/people/{env['person_id']}/name", json={"name": "Brian"})
+    async with env["factory"]() as db:
+        person = await db.get(Person, uuidlib.UUID(env["person_id"]))
+        assert person is not None
+        person.cover_face_id = uuidlib.UUID(env["faces"][0])
+        await db.commit()
+
+    await env["client"].post(
+        f"/api/v1/people/{env['person_id']}/reject", json={"face_ids": [env["faces"][0]]}
+    )
+    brian = (await env["client"].get("/api/v1/people/suggest/names", params={"q": "bri"})).json()
+    assert brian[0]["cover"] is None, "a face ruled out is not their picture"
+
+
 async def test_confirming_a_suggestion_counts_it(env: dict) -> None:
     async with env["factory"]() as db:
         await db.execute(sql_update(Face).values(source="detected"))

@@ -19,7 +19,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
-import { api, type User } from "@/lib/api";
+import { api, type SystemAlert, type User } from "@/lib/api";
 
 const FIND = [
   { href: "/", label: "Search" },
@@ -52,6 +52,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [checked, setChecked] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [alerts, setAlerts] = useState<SystemAlert[]>([]);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -61,6 +62,22 @@ export default function Shell({ children }: { children: ReactNode }) {
       .catch(() => router.replace("/login"))
       .finally(() => setChecked(true));
   }, [router]);
+
+  // Problems that stop work get a line on every page. The NAS was unmounted
+  // for 39 days while the only signs of it sat on pages nobody opened.
+  useEffect(() => {
+    if (!user) return;
+    let live = true;
+    api
+      .alerts()
+      .then((found) => {
+        if (live) setAlerts(found);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [user]);
 
   // Close on route change, so the menu never lingers over the page it opened.
   useEffect(() => {
@@ -159,6 +176,13 @@ export default function Shell({ children }: { children: ReactNode }) {
         </div>
       </header>
       <main className="page" id="main" tabIndex={-1}>
+        {alerts.map((alert) => (
+          <div className="alertbar" data-level={alert.level} role="status" key={alert.title}>
+            <strong>{alert.title}</strong>
+            <span>{alert.detail}</span>
+            {!pathname.startsWith(alert.href) && <Link href={alert.href}>Details →</Link>}
+          </div>
+        ))}
         {children}
       </main>
     </div>

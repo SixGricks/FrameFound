@@ -79,7 +79,12 @@ def _run_lama(image_512: Any, mask_512: Any) -> Any:
 def crop_box(mask: Any, width: int, height: int) -> tuple[int, int, int, int]:
     """A square box around the mask with context margin, clamped to the
     frame. Returns (left, top, right, bottom); raises ValueError on an
-    empty mask — "remove nothing" is a caller bug, not a render."""
+    empty mask — "remove nothing" is a caller bug, not a render.
+
+    Square unless the mask plus its context is wider than the frame's short
+    side (a parked truck across a landscape frame): the box is then clamped
+    to the frame and comes back oblong, and remove_region pads it square
+    rather than squash it."""
     import numpy as np
 
     ys, xs = np.nonzero(mask > 0.5)
@@ -115,10 +120,24 @@ def remove_region(image: Any, mask: Any, run_model: Any = None) -> Any:
     mask_arr = np.asarray(mask, dtype=np.float32)
     box = crop_box(mask_arr, width, height)
     left, top, right, bottom = box
+    crop_w, crop_h = right - left, bottom - top
+    square = max(crop_w, crop_h)
 
-    crop = image.crop(box).resize((SIDE, SIDE), Image.Resampling.LANCZOS)
+    crop = image.crop(box)
     mask_img = Image.fromarray((np.clip(mask_arr, 0, 1) * 255).astype("uint8"), "L")
-    mask_crop = mask_img.crop(box).resize((SIDE, SIDE), Image.Resampling.NEAREST)
+    mask_crop = mask_img.crop(box)
+    if crop_w != crop_h:
+        # Squashing an oblong crop into the model's square input distorts
+        # everything it sees and un-distorts the fill on the way back. Pad the
+        # short side instead: edge pixels read to the model as more of the
+        # same wall, and the pad holds no hole, so nothing is invented there.
+        pad = ((0, square - crop_h), (0, square - crop_w))
+        crop = Image.fromarray(
+            np.pad(np.asarray(crop.convert("RGB")), (*pad, (0, 0)), mode="edge"), "RGB"
+        )
+        mask_crop = Image.fromarray(np.pad(np.asarray(mask_crop), pad), "L")
+    crop = crop.resize((SIDE, SIDE), Image.Resampling.LANCZOS)
+    mask_crop = mask_crop.resize((SIDE, SIDE), Image.Resampling.NEAREST)
     # Dilate slightly: LaMa behaves better when the hole fully covers the
     # object, and a brush rarely hits the exact silhouette edge.
     mask_crop = mask_crop.filter(ImageFilter.MaxFilter(9))
@@ -135,9 +154,12 @@ def remove_region(image: Any, mask: Any, run_model: Any = None) -> Any:
         ImageFilter.GaussianBlur(FEATHER)
     )
     patch = Image.fromarray((filled * 255 + 0.5).astype("uint8"), "RGB").resize(
-        (right - left, bottom - top), Image.Resampling.LANCZOS
+        (square, square), Image.Resampling.LANCZOS
     )
-    soft_full = soft.resize((right - left, bottom - top), Image.Resampling.BILINEAR)
+    soft_full = soft.resize((square, square), Image.Resampling.BILINEAR)
+    if crop_w != crop_h:
+        patch = patch.crop((0, 0, crop_w, crop_h))
+        soft_full = soft_full.crop((0, 0, crop_w, crop_h))
 
     out = image.copy()
     out.paste(patch, (left, top), mask=soft_full)

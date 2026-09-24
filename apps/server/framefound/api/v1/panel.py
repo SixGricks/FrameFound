@@ -26,7 +26,25 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from framefound.auth.deps import DbDep, PanelPrincipal, require_panel_scope
+from framefound.config import get_settings
 from framefound.db.models import Asset, Library, PathMapping
+from framefound.media.signing import SigningError, sign_media_url
+
+# A panel authenticates with a bearer token, which an <img> or <video> element
+# cannot send, and the media endpoint accepts a session cookie or a signed
+# link — nothing else. Unsigned URLs meant a panel could find footage and
+# never preview it. Signed as /assets/{id}/urls signs them for the web UI,
+# and long enough to outlast an edit session.
+PANEL_MEDIA_TTL_S = 12 * 3600
+
+
+def _media_url(asset_id: uuid.UUID, kind: str) -> str:
+    try:
+        expires, sig = sign_media_url(get_settings().secret_key, asset_id, kind, PANEL_MEDIA_TTL_S)
+    except SigningError:
+        return f"/api/v1/media/{asset_id}/{kind}"
+    return f"/api/v1/media/{asset_id}/{kind}?exp={expires}&sig={sig}"
+
 
 log = structlog.get_logger()
 
@@ -193,8 +211,8 @@ async def panel_search(
             height=asset.height,
             captured_at=asset.captured_at.isoformat() if asset.captured_at else None,
             path=_translate_for(asset, profiles),
-            proxy_url=f"/api/v1/media/{asset.id}/proxy",
-            thumbnail_url=f"/api/v1/media/{asset.id}/thumbnail",
+            proxy_url=_media_url(asset.id, "proxy"),
+            thumbnail_url=_media_url(asset.id, "thumbnail"),
         )
         for asset in results[:limit]
     ]
@@ -283,7 +301,7 @@ async def asset_paths(asset_id: uuid.UUID, _user: PanelPrincipal, db: DbDep) -> 
             }
             for m in mappings
         ],
-        "proxy_url": f"/api/v1/media/{asset_id}/proxy",
+        "proxy_url": _media_url(asset_id, "proxy"),
     }
 
 
