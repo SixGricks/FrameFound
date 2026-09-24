@@ -132,3 +132,19 @@ async def test_a_manual_library_is_never_scheduled(db: AsyncSession, tmp_path: P
 
     await scanner._schedule_due_scans(db)
     assert await _scans(db, library) == 0
+
+
+async def test_a_scan_interrupted_by_a_restart_runs_again(db: AsyncSession, tmp_path: Path) -> None:
+    """A deploy or reboot mid-scan left the row "running" forever, and a
+    running scan blocks every later one of its library, scheduled or pressed."""
+    library = await _library(db, tmp_path / "intel", reachable=True, last_scan=None)
+    db.add(Scan(library_id=library.id, status="running", files_seen=3000, files_new=1315))
+    db.add(Scan(library_id=library.id, status="paused", files_seen=10))
+    db.add(Scan(library_id=library.id, status="completed", files_seen=9000))
+    await db.commit()
+
+    await scanner._requeue_interrupted_scans(db)
+    rows = (await db.execute(select(Scan.status, Scan.files_seen, Scan.files_new))).all()
+    assert sorted(rows) == [("completed", 9000, 0), ("paused", 10, 0), ("pending", 0, 0)], (
+        "the interrupted scan starts over; a pause is the operator's and stays"
+    )

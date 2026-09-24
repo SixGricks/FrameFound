@@ -28,21 +28,37 @@ the catalogue and the web UI.
 
 ### Needs the operator — the fixes code cannot make
 
-1. **Restore the shares** (the package install is a host change; a session
-   cannot make it on your behalf):
-   `sudo apt install --no-install-recommends linux-modules-extra-6.8.0-138-generic linux-image-extra-virtual`
-   then `sudo mount -a -t cifs`. The meta package makes every future kernel
-   bring the modules with it; `manage.sh doctor` should then report clean.
-2. **Rescan.** GELCO's next scheduled scan (and every library's recovery
-   check) brings the 7,162 assets back online; press **Scan now** on each
-   library to do it at once. Set **Intel 2026** to *Rescan hourly* on the
-   Libraries page — until today no library but GELCO had a schedule, and the
-   file watcher cannot see files copied to the NAS from another machine, so a
-   new shoot only appeared after someone pressed Scan.
+1. ~~Restore the shares~~ — **done 2026-09-24 20:08 UTC**: modules installed,
+   shares remounted. The 20:00 GELCO scan failed as *unmounted* (the new
+   guard, instead of flagging 7,164 files missing); the 20:08 rescan brought
+   7,332 back with 166 new, and Intel 2026 found 1,315 shoots added since
+   August.
+2. ~~Rescan and set schedules~~ — done the same evening.
 3. **Copy backups off the machine.** The new service writes to the data disk,
    which protects against a failed root disk and nothing larger.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
+
+### 2026-09-24 (evening) — the Intel share as one library
+
+The operator asked for `/intel` as a single library instead of three
+sub-folder libraries (2026, Breeze Video, PROMO VIDEO). Neither obvious route
+is safe: deleting the old libraries cascades away every embedding, face,
+transcript, listing and edit on ~9,700 assets, and adding `/intel` beside them
+catalogues every file twice. `python -m framefound.ops.merge_libraries
+/media/intel --name Intel` re-parents instead — every asset keeps its id, and
+with it all its work, while its path gains the old folder as a prefix
+(`2026/09-22 - …/IMG_1.jpg`). Intel 2026 is the library kept (its id,
+settings and history survive; excludes are the union, the schedule the most
+frequent). Planning is read-only; `--apply` is one transaction.
+
+The first scan of `/intel` then catalogues what no library covered: `2025`
+(8,829 files, 144 GB), `2024` (757), `Sort` (512), `Outback fencing` (277) —
+roughly doubling the Intel catalogue, about a day of background processing.
+
+Found on the way: a scanner restart mid-scan left the scan "running" for good,
+blocking every later scan of that library, scheduled or pressed. Interrupted
+scans are now re-queued at startup.
 
 ### Measured state — 2026-09-24
 

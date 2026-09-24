@@ -97,6 +97,36 @@ def _utc(when: datetime) -> datetime:
     return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
+async def _requeue_interrupted_scans(db: AsyncSession) -> None:
+    """Put scans the scanner was in the middle of when it stopped back in the queue.
+
+    There is one scanner, so a scan still marked `running` at startup is one
+    whose process died under it — a deploy, a reboot. Left as it was, it
+    blocked every later scan of its library for good: scheduled scans and the
+    Scan now button both refuse to start while one is "running". A scan is a
+    series of restart-safe upserts, so running it again from the top is
+    correct, and its counters start over with it.
+    """
+    result = await db.execute(
+        update(Scan)
+        .where(Scan.status == "running")
+        .values(
+            status="pending",
+            started_at=None,
+            files_seen=0,
+            files_new=0,
+            files_changed=0,
+            files_moved=0,
+            files_missing=0,
+            files_deferred=0,
+        )
+    )
+    await db.commit()
+    count = getattr(result, "rowcount", 0) or 0
+    if count:
+        log.info("scanner.interrupted_scans_requeued", count=count)
+
+
 async def _schedule_due_scans(db: AsyncSession) -> None:
     libraries = (await db.execute(select(Library).where(Library.enabled.is_(True)))).scalars().all()
     now = datetime.now(UTC)
@@ -549,6 +579,12 @@ async def main() -> None:
     # start a second one for the same share on the next pass.
     starting: set[uuid.UUID] = set()
     last_requeue = 0.0
+
+    try:
+        async with factory() as db:
+            await _requeue_interrupted_scans(db)
+    except Exception:
+        log.error("scanner.startup_recovery_failed", exc_info=True)
 
     while True:
         try:

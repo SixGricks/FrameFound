@@ -27,6 +27,8 @@ from framefound.scanner import __main__ as scanner
 REQUIRED_SWEEPS = (
     "_requeue_stuck_assets",
     "_requeue_missing_transcripts",
+    "_requeue_missing_visuals",
+    "_requeue_interrupted_scans",
     "_cluster_new_faces",
     "_reap_orphaned_jobs",
     "_refresh_statistics",
