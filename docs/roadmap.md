@@ -56,6 +56,16 @@ The first scan of `/intel` then catalogues what no library covered: `2025`
 (8,829 files, 144 GB), `2024` (757), `Sort` (512), `Outback fencing` (277) —
 roughly doubling the Intel catalogue, about a day of background processing.
 
+**Done 21:30–21:49 UTC.** Plan and apply ran with the scanner and workers
+stopped and a pre-merge dump beside the nightly backups; every sampled path
+and all 379 listing photos resolved afterwards. The scan of `/intel`: 21,753
+files seen, 10,376 new, 0 moved, so **Intel is now 21,807 assets** in three
+libraries instead of five. It also flagged 58 files missing — Premiere render
+previews under `Breeze Video/Adobe Premiere Pro Video Previews`, catalogued
+only because Breeze Video lacked the `Adobe Premiere*` exclude every other
+Intel library had. Nothing the operator made is attached to them; they are
+left flagged rather than deleted until the operator says otherwise.
+
 Found on the way: a scanner restart mid-scan left the scan "running" for good,
 blocking every later scan of that library, scheduled or pressed. Interrupted
 scans are now re-queued at startup.
