@@ -133,6 +133,30 @@ Findings, in order of how much they matter:
 The bake-off itself cost **$9.72** in API calls (Sonnet and Opus on all 429,
 Fable on Davis Rd).
 
+## The live test: 901 Smyrna Rd
+
+This listing was not in the training set. Auto-edit (learned look + Sonnet)
+landed at ΔE 8.0 from what went to MLS. The learned look alone scored 7.7
+and was the closest method on 62 of 70 photos. Untouched was 12.6 and the
+preset 11.0.
+
+## What Fotello actually costs, and the API alternatives
+
+The account is **Fotello Ultimate: $220 a month for 10 listings of up to 75
+photos**, renewing Oct 17. On Sep 25 it showed 5 listings rolled over and 15
+remaining. At about 53 shoots a year, that's roughly $50 per listing
+actually sent. At about 300 photos a month, a per-photo service
+breaks even at about **$0.73/photo**.
+
+| Option | ≈ $/month at your volume | Automated from FrameFound | Notes |
+|---|---|---|---|
+| FrameFound (learned look + Sonnet naming) | ≈ $2 | yes, already | Smyrna live test ΔE 8.0 |
+| Fotello, a plan sized to ~5 listings | ≈ $110? (ask) | only if their API is real | "API Access" ticked on the pricing page, but no public docs; ask support@fotello.co |
+| Stager AI | ≈ $70–75 | REST, signed webhooks | $0.23–0.25/photo; quality unproven |
+| Autoenhance.ai | ≈ $90–145 | REST, webhooks, 500/day | $0.29–0.44/photo on monthly plans; lens + vertical correction, window pull, sky and HDR included; 6K output |
+| Imagen AI | ≈ $96 | API on the Business plan only (via sales) | $0.32/photo in the web app; personal profile needs 2,000+ Lightroom edits |
+| AutoHDR, PhotoUp, BoxBrownie | $135–600 | varies | not cheaper |
+
 ## Recommendation
 
 - **Keep the learned look installed**: done, 429 examples,

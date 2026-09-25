@@ -39,6 +39,41 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-25 (afternoon) — the live test, and runs that say what happened
+
+**901 Smyrna Rd was the first real listing through the learned look.** It was
+not one of the seven training shoots. Measured against the 72 photos that
+went to MLS:
+
+| Method | ΔE |
+|---|---|
+| Untouched | 12.6 |
+| Preset | 11.0 |
+| **Saved auto-edit** (learned look + Sonnet) | **8.0** |
+| Learned look alone | 7.7 (closest on 62 of 70) |
+| Best possible sliders | 5.4 |
+
+The sheets are in the Drive folder `Claude outputs/Fotello bake-off
+2026-09-25/901 Smyrna Rd - your auto-edit vs MLS`.
+
+**The run itself went wrong in two ways, both fixed** (migration 0021).
+- A second press started a second run beside the first.
+- At about 12:27, every API call from both runs came back 400 for a minute.
+  48 photos failed with no reason recorded. Most likely the account's credit
+  ran out and then refilled.
+
+Now:
+- The API's own error message is kept and shown.
+- Busy responses are retried.
+- Account-level refusals (credit, key, model) stop the run at once.
+- The run lives on the listing: a second press is refused, a reload shows
+  it, and it ends with a line saying what it did.
+
+**Fotello's real cost is $220/month** (Ultimate, 10 listings of up to 75
+photos, renewing Oct 17). About 5 listings a month are used, so each costs
+about $50. API options at or under that price are in
+[ai-editing-models.md](ai-editing-models.md).
+
 ### 2026-09-25 — squashed skies, and the bake-off tool
 
 **Replacement skies were squashed.** The sky photograph was resized to
