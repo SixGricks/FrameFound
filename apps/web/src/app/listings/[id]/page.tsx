@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 
+import ListingNamingTable from "@/components/ListingNamingTable";
 import Shell from "@/components/Shell";
 import SkyPicker from "@/components/SkyPicker";
 import Thumb from "@/components/Thumb";
@@ -23,6 +24,8 @@ import {
   type SkyAsset,
   type ListingDetail,
   type ListingFolder,
+  type ListingItem,
+  type ListingNaming,
   type RemovalSuggestion,
   type RoomOption,
   type SearchResponse,
@@ -56,10 +59,17 @@ export default function ListingPage() {
   const [quality, setQuality] = useState(85);
   const [suggestions, setSuggestions] = useState<RemovalSuggestion[] | null>(null);
   const [curating, setCurating] = useState(false);
-  // Each photo's edited_at when the auto-edit run started: a photo is done
-  // when its timestamp moves. "edited" alone is already true for every photo
-  // the second time a listing is auto-edited.
+  const [view, setView] = useState<"grid" | "names">("grid");
+  const [naming, setNaming] = useState<ListingNaming>("seo");
+  const [includeIndex, setIncludeIndex] = useState(true);
+  const [suffixDraft, setSuffixDraft] = useState<string | null>(null);
+  const [notesDraft, setNotesDraft] = useState<string | null>(null);
+  // Each photo's edited_at (or named_at, for a naming run) when the run
+  // started: a photo is done when its timestamp moves. "edited" alone is
+  // already true for every photo the second time a listing is auto-edited.
+  // A ref, not state: the polling callback outlives the render it was made in.
   const runSnapshot = useRef<Map<string, string | null>>(new Map());
+  const runKind = useRef<"edit" | "describe">("edit");
   const dragFrom = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -139,34 +149,52 @@ export default function ListingPage() {
     setFolderAssets(await api.folderAssets(folder.library_id, folder.path));
   }
 
-  async function aiEditAll() {
+  async function aiEditAll(kind: "edit" | "describe" = "edit") {
     setBusy(true);
     setError(null);
     // Before the request: a quick preset run can finish photos before the
     // response comes back, and a later snapshot would count them as untouched.
+    runKind.current = kind;
     runSnapshot.current = new Map(
       (listing?.items ?? [])
         .filter((i) => i.media_type === "image")
-        .map((i) => [i.asset_id, i.edited_at]),
+        .map((i) => [i.asset_id, kind === "describe" ? i.named_at : i.edited_at]),
     );
     try {
-      const { queued, mode } = await api.aiEditListing(listingId, skyChoice || null);
+      const { queued, mode } = await api.aiEditListing(
+        listingId,
+        kind === "edit" ? skyChoice || null : null,
+        kind,
+      );
+      if (mode === "describe" && queued === 0) {
+        setNotice("Every photo already has a name you confirmed — nothing to send.");
+        return;
+      }
       setAiRunning(true);
       setNotice(
-        mode === "ai"
-          ? `AI editing ${queued} photos — a preview of each goes to the Claude API, ` +
-              `slider values come back, and the full-resolution render happens here.` +
+        mode === "describe"
+          ? `Naming ${queued} photos — a small preview of each goes to the Claude API and ` +
+              `a caption and file name come back. Nothing is edited; names you typed are kept.`
+          : mode === "ai"
+            ? `AI editing ${queued} photos — a preview of each goes to the Claude API, ` +
+              `slider values and a name come back, and the full-resolution render happens here.` +
               (skyChoice ? ` Skies swap in wherever the photo has sky.` : "")
-          : `Auto-editing ${queued} photos with the listing preset, entirely on this ` +
+            : `Auto-editing ${queued} photos with the listing preset, entirely on this ` +
               `machine.` +
               (skyChoice ? ` Skies swap in wherever the photo has sky.` : "") +
-              ` Add an Anthropic key on Security for per-photo AI judgment.`,
+              ` Add an Anthropic key on Security for per-photo AI judgment and naming.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start auto-editing");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveListingField(patch: { file_suffix?: string; notes?: string }) {
+    await act(() => api.updateListing(listingId, patch));
+    setSuffixDraft(null);
+    setNotesDraft(null);
   }
 
   // While an AI run is in flight, refresh so tiles turn over as photos land.
@@ -195,9 +223,10 @@ export default function ListingPage() {
         setAiRunning(false);
       } else if (now - lastProgress > 3 * 60 * 1000 || now - started > 15 * 60 * 1000) {
         setAiRunning(false);
+        const verb = runKind.current === "describe" ? "named" : "edited";
         setNotice(
-          `Auto-edit stopped reporting progress with ${done} of ${images.length} photos ` +
-            `edited — the rest were skipped (see the server log) or are still running.`,
+          `The run stopped reporting progress with ${done} of ${images.length} photos ` +
+            `${verb} — the rest were skipped (see the server log) or are still running.`,
         );
       }
     }, 5000);
@@ -205,8 +234,14 @@ export default function ListingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiRunning]);
 
-  function doneThisRun(item: { asset_id: string; edited_at: string | null }): boolean {
-    return item.edited_at !== null && item.edited_at !== runSnapshot.current.get(item.asset_id);
+  function doneThisRun(item: ListingItem): boolean {
+    const before = runSnapshot.current.get(item.asset_id);
+    if (runKind.current === "describe") {
+      // Confirmed names are skipped by the run, so they count as done.
+      if (item.naming_source === "confirmed") return true;
+      return item.named_at !== null && item.named_at !== before;
+    }
+    return item.edited_at !== null && item.edited_at !== before;
   }
 
   function togglePick(assetId: string) {
@@ -335,6 +370,23 @@ export default function ListingPage() {
         </Link>
         <button className="btn" disabled={busy} onClick={() => setAdding((v) => !v)}>
           {adding ? "Close" : "Add photos"}
+        </button>
+        <span style={{ flex: 1 }} />
+        <button
+          className="btn"
+          style={view === "grid" ? { borderColor: "var(--amber)" } : undefined}
+          onClick={() => setView("grid")}
+          title="Arrange: drag to reorder, label rooms"
+        >
+          Photos
+        </button>
+        <button
+          className="btn"
+          style={view === "names" ? { borderColor: "var(--amber)" } : undefined}
+          onClick={() => setView("names")}
+          title="File names and the photo index, as the delivery will read"
+        >
+          Names &amp; index
         </button>
       </div>
 
@@ -568,7 +620,20 @@ export default function ListingPage() {
         </div>
       )}
 
-      <div className="grid">
+      {view === "names" && (
+        <ListingNamingTable
+          items={items}
+          busy={busy}
+          onSave={(assetId, caption, slug) =>
+            act(() => api.setListingNaming(listingId, assetId, caption, slug))
+          }
+        />
+      )}
+
+      {/* Hidden rather than unmounted so a drag in progress is never torn
+          down by a view switch; style, not the hidden attribute, because
+          .grid sets display and would override it. */}
+      <div className="grid" style={view !== "grid" ? { display: "none" } : undefined}>
         {items.map((item, index) => (
           <div
             key={item.asset_id}
@@ -601,7 +666,8 @@ export default function ListingPage() {
                   className="pill mono"
                   style={{ position: "absolute", bottom: 6, left: 6 }}
                 >
-                  <span className="spinner" /> editing…
+                  <span className="spinner" />{" "}
+                  {runKind.current === "describe" ? "naming…" : "editing…"}
                 </span>
               )}
               {aiRunning && item.media_type === "image" && doneThisRun(item) && (
@@ -609,10 +675,25 @@ export default function ListingPage() {
                   className="pill mono"
                   style={{ position: "absolute", bottom: 6, left: 6 }}
                 >
-                  ✓ edited
+                  {runKind.current === "describe" ? "✓ named" : "✓ edited"}
                 </span>
               )}
             </div>
+            {item.export_name && (
+              // What it will ship as — the caption, when there is one, on hover.
+              <span
+                className="faint mono"
+                style={{
+                  fontSize: "0.66rem",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={item.caption ? `${item.export_name}\n${item.caption}` : item.export_name}
+              >
+                {item.export_name}
+              </span>
+            )}
             <select
               className="select"
               aria-label={`Room for ${item.filename}`}
@@ -696,21 +777,90 @@ export default function ListingPage() {
               className="btn btn-primary"
               style={{ width: "100%", marginTop: 6 }}
               disabled={busy || aiRunning || !items.some((i) => i.media_type === "image")}
-              onClick={aiEditAll}
+              onClick={() => aiEditAll("edit")}
               title={
                 aiSettings?.configured && aiSettings.enabled
                   ? "Per-photo AI judgment via the Claude API; renders happen here at full resolution"
                   : "Tuned listing preset, entirely local. Add an Anthropic key on Security for per-photo AI judgment."
               }
             >
-              {aiRunning
+              {aiRunning && runKind.current === "edit"
                 ? `Editing ${doneImages}/${imageCount}…`
                 : "Auto-edit photos"}
             </button>
             <span className="faint" style={{ fontSize: "0.72rem" }}>
               {aiSettings?.configured && aiSettings.enabled
-                ? "Claude picks per-photo settings; renders stay local."
+                ? "Claude picks per-photo settings and names each photo; renders stay local."
                 : "Local preset. Add a key on Security for per-photo AI."}
+            </span>
+          </div>
+
+          <div className="card">
+            <div className="mono" style={{ marginBottom: 6 }}>Names &amp; index</div>
+            <label className="faint" style={{ fontSize: "0.72rem" }} htmlFor="file-suffix">
+              Every file name ends with
+            </label>
+            <input
+              id="file-suffix"
+              className="input mono"
+              style={{ width: "100%", padding: "6px 9px", fontSize: "0.8rem" }}
+              placeholder={listing?.suggested_suffix || "address-auction"}
+              value={suffixDraft ?? listing?.file_suffix ?? ""}
+              disabled={busy}
+              onChange={(e) => setSuffixDraft(e.target.value)}
+              onBlur={() => {
+                if (suffixDraft !== null && suffixDraft !== listing?.file_suffix) {
+                  saveListingField({ file_suffix: suffixDraft });
+                } else setSuffixDraft(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+            <label
+              className="faint"
+              style={{ fontSize: "0.72rem", display: "block", marginTop: 6 }}
+              htmlFor="index-notes"
+            >
+              Notes that head the photo index
+            </label>
+            <textarea
+              id="index-notes"
+              className="input"
+              rows={3}
+              style={{ width: "100%", fontSize: "0.8rem", resize: "vertical" }}
+              placeholder="Auction date, terms, open house…"
+              value={notesDraft ?? listing?.notes ?? ""}
+              disabled={busy}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              onBlur={() => {
+                if (notesDraft !== null && notesDraft !== listing?.notes) {
+                  saveListingField({ notes: notesDraft });
+                } else setNotesDraft(null);
+              }}
+            />
+            <button
+              className="btn"
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={
+                busy ||
+                aiRunning ||
+                !(aiSettings?.configured && aiSettings.enabled) ||
+                !items.some((i) => i.media_type === "image")
+              }
+              onClick={() => aiEditAll("describe")}
+              title={
+                aiSettings?.configured && aiSettings.enabled
+                  ? "Caption and file name for each photo, without editing it — names you typed are kept"
+                  : "Needs an Anthropic key on Security"
+              }
+            >
+              {aiRunning && runKind.current === "describe"
+                ? `Naming ${doneImages}/${imageCount}…`
+                : "Name photos with AI"}
+            </button>
+            <span className="faint" style={{ fontSize: "0.72rem" }}>
+              For shoots still edited elsewhere. Auto-edit names photos as it goes.
             </span>
           </div>
 
@@ -773,11 +923,34 @@ export default function ListingPage() {
               <option value={85}>Quality 85</option>
               <option value={90}>Quality 90</option>
             </select>
+            <select
+              className="select"
+              style={{ width: "100%", marginTop: 6 }}
+              aria-label="File names"
+              value={naming}
+              onChange={(e) => setNaming(e.target.value as ListingNaming)}
+            >
+              <option value="seo">SEO names (01-kitchen-…-address)</option>
+              <option value="simple">Simple names (01_kitchen)</option>
+            </select>
+            <label
+              className="faint"
+              style={{ fontSize: "0.75rem", display: "flex", gap: 6, marginTop: 6 }}
+            >
+              <input
+                type="checkbox"
+                checked={includeIndex}
+                onChange={(e) => setIncludeIndex(e.target.checked)}
+              />
+              Photo index + contact sheets
+            </label>
             <button
               className="btn btn-primary"
               style={{ width: "100%", marginTop: 6 }}
               disabled={busy || exporting || !items.some((i) => i.media_type === "image")}
-              onClick={() => act(() => api.exportListing(listingId, maxEdge, quality))}
+              onClick={() =>
+                act(() => api.exportListing(listingId, maxEdge, quality, naming, includeIndex))
+              }
             >
               {exporting ? "Exporting…" : "Export zip"}
             </button>

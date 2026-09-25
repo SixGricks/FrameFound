@@ -39,6 +39,35 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-24 (night) — the freeze, and the Fotello batch package
+
+**"The system seems to have frozen."** It had: Slideshows > Propose compared
+up to 4,000 photos pairwise in pure Python, on the API's only event-loop
+thread, so every page hung while it ran. It is now one matrix product (~0.7 s
+for 4,000 real photos in production, 1,217 near-duplicates collapsed, with
+results pinned against the old loop) in a worker thread. Curation, theme
+scoring and room labels had the same pattern and are vectorised too. A
+**loop watchdog** now logs the blocking stack whenever the API stalls for
+more than 5 s, and the alert banner reports the stall. The same push fixed
+the Listings index, which failed on Postgres (`min(uuid)` exists only on
+SQLite), and raised the worker from 4 to 8 GB after OOM kills.
+
+**Canon `.HIF` photos were invisible.** They are the R8's HEIF mode, and 347
+Intel photos were never catalogued because the extension was not on the list.
+They are now; thumbnails decode through the ffmpeg fallback.
+
+**The listing export is now the Fotello batch package.** The
+photo-organizer skill's hand work before each paid batch (SEO file names,
+"Photo Index.md", contact sheets) comes out of the export (migration 0020):
+AI captions and slugs ride along with auto-edit or come from a naming-only
+run; `NN-{slug}-{address-suffix}.jpg` names; `_index/` holds the index as
+Markdown and CSV plus the sheets; a Names & index table edits it all, and a
+rename marks the zip out of date. The case for replacing Fotello, and the
+other paid services FrameFound can and cannot take over, is in
+[future-features.md](future-features.md#2026-09-24--where-framefound-can-replace-paid-services).
+Measured: 53 shoots in 2025, 53 so far in 2026. 130 Davis Rd (72 photos sent
+to Fotello, 70 returned) is the benchmark for the bake-off.
+
 ### 2026-09-24 (evening) — the Intel share as one library
 
 The operator asked for `/intel` as a single library instead of three
@@ -134,12 +163,21 @@ reliability plus one loop, and let "1.0" mean that loop in daily use:
 ### Next up (replaces the list below dated 2026-08)
 
 1. Operator actions above (shares, rescans, backup copies, cache).
-2. Listing delivery to Drive — export writes the ordered, edited set into the
-   property's folder; the organizer's manifest makes it undoable.
-3. Push notifications for the alert banner's conditions.
-4. Postgres in CI; a browser smoke test per page.
-5. Bracket fusion (enfuse) — still the quality ceiling for interiors.
-6. The review's remaining findings (listed at the end of the next section).
+2. **Fotello bake-off** on 130 Davis Rd: auto-edit the same 72 photos, show
+   them side by side with Fotello's 70, log the API cost per run. This decides
+   whether batches stop going out.
+3. Listing delivery to Drive: the export writes the package (photos, Photo
+   Index, sheets) into the property's folder, where the brochure skill reads
+   it. The organizer's manifest makes it undoable.
+4. Draft listings from new shoot folders (scanner-triggered).
+5. Push notifications for the alert banner's conditions, plus "draft ready".
+6. Postgres in CI; a browser smoke test per page.
+7. ~~Bracket fusion~~ deprioritised: the R8 shoots single exposures (AEB
+   off), so there are no brackets to fuse. Window pull and highlight recovery
+   carry the interiors.
+8. The review's remaining findings (listed at the end of the section below).
+9. 58 Premiere render previews in Intel are flagged missing. Delete them only
+   when you say so.
 
 ### 2026-09-24 — what the review fixed
 

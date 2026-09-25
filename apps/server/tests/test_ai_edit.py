@@ -96,6 +96,8 @@ def test_pick_recipe_parses_and_clamps(monkeypatch: pytest.MonkeyPatch) -> None:
                             "sharpen": 1,  # off-schema: must drop
                             "needs_sky_replacement": True,
                             "notes": "Neutralised warm cast, lifted shadows.",
+                            "caption": "Kitchen island with\npendant lights",
+                            "seo_slug": "Kitchen Island / 130 Pendants",
                         },
                     }
                 ]
@@ -109,7 +111,14 @@ def test_pick_recipe_parses_and_clamps(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["recipe"]["auto_wb"] == 0.8
     assert result["recipe"]["exposure"] == 2.0, "clamped, not trusted"
     assert "sharpen" not in result["recipe"], "off-schema keys dropped"
+    assert "caption" not in result["recipe"] and "seo_slug" not in result["recipe"]
     assert result["needs_sky_replacement"] is True
+    # Named in the same call, and cleaned: one line, and a slug with no path
+    # characters and no house number.
+    assert result["caption"] == "Kitchen island with pendant lights"
+    assert result["slug"] == "kitchen-island-pendants"
+    schema = captured["body"]["tools"][0]["input_schema"]
+    assert {"caption", "seo_slug"} <= set(schema["required"])
 
     assert captured["headers"]["x-api-key"] == "sk-ant-test"
     assert captured["body"]["model"] == "claude-sonnet-5"
@@ -126,6 +135,42 @@ def test_pick_recipe_surfaces_api_failure(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(429, json={"error": "rate"}))
     with pytest.raises(recipe_picker.RecipePickUnavailable):
         recipe_picker.pick_recipe(b"x", "k", "m")
+
+
+def test_describe_photo_names_without_asking_for_sliders(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from framefound.ai import recipe_picker
+
+    captured: dict = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: ANN001
+        captured["body"] = json
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "describe_photo",
+                        "input": {
+                            "caption": "Aerial of the horse barn and paddocks",
+                            "seo_slug": "aerial-horse-barn",
+                        },
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    named = recipe_picker.describe_photo(b"\xff\xd8fake", "sk-ant-test", "claude-sonnet-5")
+    assert named == {
+        "caption": "Aerial of the horse barn and paddocks",
+        "slug": "aerial-horse-barn",
+    }
+    assert captured["body"]["tool_choice"] == {"type": "tool", "name": "describe_photo"}
+    tool = captured["body"]["tools"][0]
+    assert "exposure" not in tool["input_schema"]["properties"], "naming only; no sliders"
 
 
 # ------------------------------------------------------------------ API
@@ -429,6 +474,125 @@ async def test_auto_edit_judges_the_object_removed_version(
     with Image.open(io_module.BytesIO(seen[0])) as judged:
         red, _green, blue = np.asarray(judged.convert("RGB"), dtype=float).mean(axis=(0, 1))
     assert blue > 150 and red < 80, "the model saw the removal result, not the original"
+
+
+# ----------------------------------------------------------------- naming
+
+
+async def _named_listing(env: dict, name: str) -> dict:
+    client = env["client"]
+    await client.put("/api/v1/develop/settings/ai", json={"api_key": "sk-ant-test"})
+    return (
+        await client.post(
+            "/api/v1/listings",
+            json={"name": name, "asset_ids": [env["ids"]["a1"], env["ids"]["a2"]]},
+        )
+    ).json()
+
+
+async def test_auto_edit_names_photos_but_never_overwrites_the_operator(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same contract as room labels: the AI suggests, typing confirms, and a
+    confirmed name survives every later run."""
+    from framefound.ai import recipe_picker
+    from framefound.processing import tasks as tasks_module
+
+    client = env["client"]
+    listing = await _named_listing(env, "Naming")
+    url = f"/api/v1/listings/{listing['id']}"
+    resp = await client.put(
+        f"{url}/items/{env['ids']['a1']}/naming",
+        json={"caption": "Bank barn, south side", "slug": "Bank Barn South"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    monkeypatch.setattr(
+        recipe_picker,
+        "pick_recipe",
+        lambda preview, key, model: {
+            "recipe": {"exposure": 0.3},
+            "needs_sky_replacement": False,
+            "notes": "",
+            "caption": "Front exterior, straight-on",
+            "slug": "front-exterior",
+        },
+    )
+    await asyncio.to_thread(tasks_module.ai_edit_listing, listing["id"], None, "ai")
+
+    items = {i["asset_id"]: i for i in (await client.get(url)).json()["items"]}
+    mine, theirs = items[env["ids"]["a1"]], items[env["ids"]["a2"]]
+    assert (mine["caption"], mine["slug"], mine["naming_source"]) == (
+        "Bank barn, south side",
+        "bank-barn-south",
+        "confirmed",
+    )
+    assert (theirs["caption"], theirs["slug"], theirs["naming_source"]) == (
+        "Front exterior, straight-on",
+        "front-exterior",
+        "suggested",
+    )
+    assert theirs["named_at"] is not None
+    assert (
+        theirs["export_name"].startswith("0") and "front-exterior-naming" in (theirs["export_name"])
+    ), "the slug and the listing's suffix make the file name"
+
+
+async def test_describe_mode_names_without_editing_and_skips_confirmed(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from framefound.ai import recipe_picker
+    from framefound.processing import tasks as tasks_module
+
+    client = env["client"]
+    listing = await _named_listing(env, "Describe")
+    url = f"/api/v1/listings/{listing['id']}"
+    await client.put(f"{url}/items/{env['ids']['a1']}/naming", json={"caption": "Mine"})
+
+    resp = await client.post(f"{url}/ai-edit", json={"mode": "describe"})
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"queued": 1, "mode": "describe"}, "the confirmed photo is not counted"
+
+    calls: list[bytes] = []
+
+    def describe(preview: bytes, key: str, model: str) -> dict:
+        calls.append(preview)
+        return {"caption": "Primary bedroom with tray ceiling", "slug": "primary-bedroom"}
+
+    monkeypatch.setattr(recipe_picker, "describe_photo", describe)
+    monkeypatch.setattr(
+        recipe_picker, "pick_recipe", lambda *a: pytest.fail("describe must not edit")
+    )
+    await asyncio.to_thread(tasks_module.ai_edit_listing, listing["id"], None, "describe")
+
+    assert len(calls) == 1, "one paid call, for the one photo not already named"
+    items = {i["asset_id"]: i for i in (await client.get(url)).json()["items"]}
+    assert items[env["ids"]["a1"]]["caption"] == "Mine"
+    assert items[env["ids"]["a2"]]["slug"] == "primary-bedroom"
+    async with env["factory"]() as db:
+        assert not (await db.execute(select(AssetEdit))).scalars().all(), "nothing edited"
+
+
+async def test_describe_mode_needs_a_key(env: dict) -> None:
+    listing = (
+        await env["client"].post(
+            "/api/v1/listings", json={"name": "K", "asset_ids": [env["ids"]["a1"]]}
+        )
+    ).json()
+    resp = await env["client"].post(
+        f"/api/v1/listings/{listing['id']}/ai-edit", json={"mode": "describe"}
+    )
+    assert resp.status_code == 400
+    assert "Anthropic key" in resp.json()["error"]["message"]
+
+
+async def test_clearing_a_name_hands_the_photo_back_to_the_ai(env: dict) -> None:
+    listing = await _named_listing(env, "Clear")
+    url = f"/api/v1/listings/{listing['id']}/items/{env['ids']['a1']}/naming"
+    await env["client"].put(url, json={"caption": "Something"})
+    items = (await env["client"].put(url, json={"caption": "  ", "slug": ""})).json()["items"]
+    item = next(i for i in items if i["asset_id"] == env["ids"]["a1"])
+    assert (item["caption"], item["naming_source"]) == ("", "")
 
 
 # --------------------------------------------------------------- curation

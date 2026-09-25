@@ -17,6 +17,11 @@ IMAGE_EXTENSIONS = {
     "webp",
     "heic",
     "heif",
+    # Canon's extension for the same HEIF container (EOS R8 "HEIF" mode).
+    # Pillow cannot open HEIF here; thumbnails decode through the ffmpeg
+    # fallback, which reads it. 347 of the Intel photos were invisible
+    # before this line (Sep 2026).
+    "hif",
     "bmp",
     "gif",
     # Camera RAW (metadata + preview support; full decode arrives with rawpy in M3)

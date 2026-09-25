@@ -224,15 +224,17 @@ async def test_export_names_files_in_order_and_closes_ranks_on_a_bad_file(env: d
         assert zip_path.is_file()
 
     with zipfile.ZipFile(zip_path) as archive:
-        names = archive.namelist()
-        assert names == [
-            "01_front_exterior.jpg",
-            "02_kitchen.jpg",
-            "03_bedroom.jpg",
+        photos = [n for n in archive.namelist() if not n.startswith("_index/")]
+        assert photos == [
+            "01-front-exterior-12-maple-st.jpg",
+            "02-kitchen-12-maple-st.jpg",
+            "03-bedroom-12-maple-st.jpg",
         ], "ordered, contiguous, and no video in a photo gallery"
-        with archive.open(names[0]) as fh, Image.open(io.BytesIO(fh.read())) as img:
+        with archive.open(photos[0]) as fh, Image.open(io.BytesIO(fh.read())) as img:
             assert img.format == "JPEG"
             assert max(img.size) <= 3840
+        index = archive.read("_index/Photo Index.md").decode()
+        assert "ghost.jpg" not in index, "the index lists what the zip holds, not what failed"
 
     resp = await env["client"].get(f"/api/v1/listings/{listing_id}/export/download")
     assert resp.status_code == 200
@@ -274,6 +276,97 @@ async def test_export_resizes_to_the_requested_edge(env: dict, tmp_path: Path) -
         Image.open(io.BytesIO(fh.read())) as img,
     ):
         assert max(img.size) == 2048
+
+
+async def _export_now(env: dict, listing_id: str, *args: object) -> zipfile.ZipFile:
+    from framefound.processing.tasks import export_listing_zip
+
+    await env["client"].post(f"/api/v1/listings/{listing_id}/export", json={})
+    await asyncio.to_thread(export_listing_zip, listing_id, 3840, 85, *args)
+    zip_path = get_settings().data_dir / "exports" / "listings" / f"{listing_id}.zip"
+    return zipfile.ZipFile(zip_path)
+
+
+async def test_the_export_is_the_delivery_package(env: dict) -> None:
+    """Named files, a Photo Index that says what each one shows, a CSV of
+    the same, and contact sheets — the package that used to be assembled by
+    hand before every paid editing batch."""
+    client = env["client"]
+    body = await _create(env, ["front", "kitchen", "bedroom"], name="09-24 130 Davis Rd")
+    url = f"/api/v1/listings/{body['id']}"
+    resp = await client.patch(
+        url, json={"file_suffix": "130 Davis Rd. Auction!", "notes": "Auction Oct 12, 10 AM"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["file_suffix"] == "130-davis-rd-auction", "cleaned to what a name can hold"
+    resp = await client.put(
+        f"{url}/items/{env['ids']['kitchen']}/naming",
+        json={"caption": "Kitchen | island with pendants", "slug": "kitchen island"},
+    )
+    detail = resp.json()
+
+    with await _export_now(env, body["id"]) as archive:
+        names = archive.namelist()
+        photos = [n for n in names if not n.startswith("_index/")]
+        assert photos == [
+            "01-front-exterior-130-davis-rd-auction.jpg",
+            "02-kitchen-island-130-davis-rd-auction.jpg",
+            "03-bedroom-130-davis-rd-auction.jpg",
+        ]
+        assert [i["export_name"] for i in detail["items"]] == photos, (
+            "the page previews exactly the names the zip holds"
+        )
+        index = archive.read("_index/Photo Index.md").decode()
+        assert index.startswith("# 09-24 130 Davis Rd — Photo Index")
+        assert "Auction Oct 12, 10 AM" in index, "the notes head the index"
+        assert "| 02 | 02-kitchen-island-130-davis-rd-auction.jpg |" in index
+        assert "Kitchen \\| island with pendants" in index, "a pipe cannot split the table"
+        assert "| kit.jpg |" in index, "the original file name, for finding the source"
+        assert "| Bedroom |" in index, "an unnamed photo falls back to its room"
+        csv_text = archive.read("_index/photo-index.csv").decode("utf-8-sig")
+        assert csv_text.splitlines()[0].startswith("number,filename,what_it_shows")
+        assert len(csv_text.splitlines()) == 4
+        with Image.open(io.BytesIO(archive.read("_index/sheet01.jpg"))) as sheet:
+            assert sheet.format == "JPEG"
+            assert sheet.width > sheet.height, "one row of three on a four-column sheet"
+
+
+async def test_simple_naming_without_the_index_is_the_old_zip(env: dict) -> None:
+    body = await _create(env, ["front", "kitchen"])
+    with await _export_now(env, body["id"], "simple", False) as archive:
+        assert archive.namelist() == ["01_front_exterior.jpg", "02_kitchen.jpg"]
+
+
+async def test_a_suffix_falls_back_to_the_name_without_its_date(env: dict) -> None:
+    body = await _create(env, ["front"], name="00-00 5096 Old Philadelphia Pike Kinzers")
+    assert body["suggested_suffix"] == "5096-old-philadelphia-pike-kinzers"
+    assert body["items"][0]["export_name"] == (
+        "01-front-exterior-5096-old-philadelphia-pike-kinzers.jpg"
+    )
+    cleared = (
+        await env["client"].patch(f"/api/v1/listings/{body['id']}", json={"file_suffix": ""})
+    ).json()
+    assert cleared["file_suffix"] == ""
+    assert cleared["items"][0]["export_name"].endswith("-5096-old-philadelphia-pike-kinzers.jpg")
+
+
+async def test_renaming_a_photo_or_the_listing_makes_the_zip_stale(env: dict) -> None:
+    client = env["client"]
+    body = await _create(env, ["front", "kitchen"])
+    url = f"/api/v1/listings/{body['id']}"
+    (await _export_now(env, body["id"])).close()
+    assert (await client.get(url)).json()["export_stale"] is False
+
+    await client.put(f"{url}/items/{env['ids']['kitchen']}/naming", json={"caption": "New words"})
+    assert (await client.get(url)).json()["export_stale"] is True
+
+    (await _export_now(env, body["id"])).close()
+    await client.patch(url, json={"file_suffix": "somewhere-else"})
+    assert (await client.get(url)).json()["export_stale"] is True
+
+    (await _export_now(env, body["id"])).close()
+    await client.patch(url, json={"notes": "Terms: 10% down"})
+    assert (await client.get(url)).json()["export_stale"] is True
 
 
 async def test_deleting_a_listing_removes_the_zip_and_leaves_a_trace(env: dict) -> None:

@@ -1315,14 +1315,26 @@ async def _render_sources(
     # again, so retrying automatically would only burn the media queue.
     max_retries=0,
 )
-def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85) -> None:
-    """Write a listing's images as a numbered, room-named zip.
+def export_listing_zip(
+    listing_id: str,
+    max_edge: int = 3840,
+    quality: int = 85,
+    naming: str = "seo",
+    include_index: bool = True,
+) -> None:
+    """Write a listing's images as a numbered, named zip — the delivery
+    package.
 
     The filenames are the product: MLS galleries display in upload order, so
-    `01_front_exterior.jpg` sorting first *is* the feature. Numbering is
+    `01-front-exterior-…` sorting first *is* the feature, and the words after
+    the number are what portals and search engines read. Numbering is
     contiguous over the images that actually export — a gallery with a hole
     in its sequence reads as a mistake, so an unreadable file is skipped,
     named in `export_error`, and the rest close ranks.
+
+    With include_index, `_index/` carries the Photo Index (Markdown and CSV)
+    and contact sheets. It is a folder so that selecting every JPEG at the
+    top of the zip for an MLS upload never picks up a contact sheet.
     """
     import io
     import zipfile
@@ -1330,6 +1342,7 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
     from PIL import Image
 
     from framefound.db.models import AssetEdit, Listing, ListingItem
+    from framefound.media import contact_sheet, photo_index
     from framefound.media import develop as develop_lib
     from framefound.media.export_state import listing_fingerprint
 
@@ -1354,7 +1367,9 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
             log.warning("listing.export_no_segmentation")
             return None
 
-    def to_jpeg(path: Path, recipe: dict[str, Any] | None, is_inpaint: bool = False) -> bytes:
+    def to_jpeg(
+        path: Path, recipe: dict[str, Any] | None, is_inpaint: bool = False
+    ) -> tuple[bytes, Any]:
         # Upright (a sideways kitchen is not a feature) and flattened to sRGB
         # (MLS portals assume it; a ProPhoto JPEG goes dull the moment they
         # do) — by the same loader the editor preview uses, so the colours
@@ -1377,6 +1392,13 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
             image = develop_lib.render(image, recipe, load_sky=_load_sky, mask_for=_mask_for)
         out = io.BytesIO()
         image.save(out, "JPEG", quality=quality, optimize=True)
+        # The contact-sheet tile comes from this render, so the sheets show
+        # the edits — and nothing is decoded twice.
+        return out.getvalue(), contact_sheet.thumbnail(image) if include_index else None
+
+    def sheet_jpeg(tiles: list[tuple[str, Any]], title: str) -> bytes:
+        out = io.BytesIO()
+        contact_sheet.compose(tiles, title).save(out, "JPEG", quality=85, optimize=True)
         return out.getvalue()
 
     async def run() -> None:
@@ -1395,6 +1417,9 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                     return
                 listing.export_status = "exporting"
                 await db.commit()
+                title = listing.name
+                notes = listing.notes
+                suffix = listing.file_suffix or photo_index.default_suffix(listing.name)
                 # Digested before the inputs are read, so a change made while
                 # this runs leaves the finished zip stale — the safe direction.
                 fingerprint = await listing_fingerprint(db, listing.id)
@@ -1432,6 +1457,9 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                 zip_path = out_dir / f"{listing.id}.zip"
                 skipped: list[str] = []
                 written = 0
+                index_rows: list[photo_index.IndexRow] = []
+                tiles: list[tuple[str, Any]] = []
+                sheets: list[bytes] = []
                 try:
                     # JPEGs do not compress again; ZIP_STORED skips the wasted CPU.
                     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
@@ -1441,7 +1469,7 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                                 if source is None:
                                     raise PathValidationError("unresolvable source")
                                 path, from_inpaint = source
-                                data = await asyncio.to_thread(
+                                data, tile = await asyncio.to_thread(
                                     to_jpeg, path, recipes.get(asset.id), from_inpaint
                                 )
                             except Exception:
@@ -1453,10 +1481,48 @@ def export_listing_zip(listing_id: str, max_edge: int = 3840, quality: int = 85)
                                 )
                                 continue
                             written += 1
-                            slug = item.room if item.room in ROOM_LABELS else "photo"
-                            archive.writestr(f"{written:02d}_{slug}.jpg", data)
-                    if not written:
-                        raise RuntimeError("No image in this listing could be read")
+                            room = item.room if item.room in ROOM_LABELS else ""
+                            name = photo_index.export_filename(
+                                written,
+                                len(rows),
+                                slug=item.slug,
+                                room=room,
+                                suffix=suffix,
+                                naming=naming,
+                            )
+                            archive.writestr(name, data)
+                            if not include_index:
+                                continue
+                            index_rows.append(
+                                photo_index.IndexRow(
+                                    number=written,
+                                    filename=name,
+                                    caption=item.caption,
+                                    room_label=ROOM_LABELS.get(room, ""),
+                                    original=asset.filename,
+                                    edited=asset.id in recipes,
+                                )
+                            )
+                            # Flushed a sheet at a time: a 400-photo listing
+                            # holds twenty thumbnails, not four hundred.
+                            tiles.append((name.removesuffix(".jpg"), tile))
+                            if len(tiles) == contact_sheet.PER_SHEET:
+                                sheets.append(await asyncio.to_thread(sheet_jpeg, tiles, title))
+                                tiles = []
+                        if not written:
+                            raise RuntimeError("No image in this listing could be read")
+                        if include_index:
+                            if tiles:
+                                sheets.append(await asyncio.to_thread(sheet_jpeg, tiles, title))
+                            for number, sheet in enumerate(sheets, start=1):
+                                archive.writestr(f"_index/sheet{number:02d}.jpg", sheet)
+                            archive.writestr(
+                                "_index/Photo Index.md",
+                                photo_index.index_markdown(title, notes, index_rows),
+                            )
+                            archive.writestr(
+                                "_index/photo-index.csv", photo_index.index_csv(index_rows)
+                            )
                 except Exception as exc:
                     await db.rollback()
                     zip_path.unlink(missing_ok=True)
@@ -1617,11 +1683,17 @@ def inpaint_asset(inpaint_id: str) -> None:
 def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "ai") -> None:
     """Auto-edit a listing's photographs.
 
-    mode "ai": the recipe-picker judges each photograph. mode "preset": the
-    tuned listing preset, no network at all. Either way, when the operator
-    chose a sky it is composited wherever segmentation finds enough sky —
-    interiors pass through untouched, which is what makes one choice safe
-    across a whole shoot.
+    mode "ai": the recipe-picker judges each photograph, and names it in the
+    same call (caption and file-name slug). mode "preset": the tuned listing
+    preset, no network at all. Either way, when the operator chose a sky it
+    is composited wherever segmentation finds enough sky — interiors pass
+    through untouched, which is what makes one choice safe across a whole
+    shoot.
+
+    mode "describe": name the photographs without editing them — for a shoot
+    whose editing still happens elsewhere. Photographs whose names the
+    operator confirmed are skipped: nothing would change, and each one is a
+    paid API call.
 
     Sequential by design: the point is per-photo judgment, not throughput,
     and one preview in flight at a time keeps the operator's API bill and
@@ -1655,7 +1727,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
         )
 
     async def run() -> None:
-        from sqlalchemy import func, select
+        from sqlalchemy import func, select, update
 
         settings = get_settings()
         engine = create_async_engine(settings.db_url)
@@ -1667,9 +1739,36 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     log.warning("ai_edit.listing_gone", listing_id=listing_id)
                     return
                 config = await load_ai_edit_config(db)
-                use_ai = mode == "ai" and config.ready
+                describe_only = mode == "describe"
+                use_ai = mode in ("ai", "describe") and config.ready
+                if describe_only and not use_ai:
+                    # The endpoint refuses this; a key removed between the
+                    # request and this worker picking it up lands here.
+                    log.warning("ai_edit.describe_without_key", listing_id=listing_id)
+                    return
                 api_key = config.api_key() if use_ai else ""
                 model = config.model
+
+                async def save_naming(item_id: uuid.UUID, naming: dict[str, str]) -> None:
+                    if not (naming["caption"] or naming["slug"]):
+                        return
+                    # A bulk UPDATE rather than an ORM write: nothing here is
+                    # loaded that a rollback could expire, and the WHERE is
+                    # the confirmed-never-overwritten rule in one place.
+                    await db.execute(
+                        update(ListingItem)
+                        .where(
+                            ListingItem.id == item_id,
+                            ListingItem.naming_source != "confirmed",
+                        )
+                        .values(
+                            caption=naming["caption"],
+                            slug=naming["slug"],
+                            naming_source="suggested",
+                            named_at=datetime.now(UTC),
+                        )
+                    )
+                    await db.commit()
 
                 rows = (
                     await db.execute(
@@ -1690,21 +1789,38 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                 # — so the first failure used to end the whole run, not skip
                 # one photograph.
                 photos = [
-                    (asset.id, asset.filename, sources.get(asset.id)) for _item, asset, _lib in rows
+                    (item.id, asset.id, asset.filename, sources.get(asset.id))
+                    for item, asset, _lib in rows
+                    if not (describe_only and item.naming_source == "confirmed")
                 ]
 
                 edited = skipped = 0
-                for asset_id, filename, source in photos:
+                for item_id, asset_id, filename, source in photos:
                     try:
                         if source is None:
                             raise PathValidationError("unresolvable source")
                         path, normalized = source
+                        if describe_only:
+                            preview = await asyncio.to_thread(build_preview, path, normalized)
+                            await save_naming(
+                                item_id,
+                                await asyncio.to_thread(
+                                    recipe_picker.describe_photo, preview, api_key, model
+                                ),
+                            )
+                            edited += 1
+                            continue
+                        naming: dict[str, str] | None = None
                         if use_ai:
                             preview = await asyncio.to_thread(build_preview, path, normalized)
                             picked = await asyncio.to_thread(
                                 recipe_picker.pick_recipe, preview, api_key, model
                             )
                             recipe = dict(picked["recipe"])
+                            naming = {
+                                "caption": picked.get("caption", ""),
+                                "slug": picked.get("slug", ""),
+                            }
                         else:
                             recipe = dict(develop_lib.LISTING_PRESET)
 
@@ -1732,6 +1848,8 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                                 await db.rollback()
                         else:
                             raise RuntimeError("Could not allocate a recipe version")
+                        if naming:
+                            await save_naming(item_id, naming)
                         edited += 1
                     except Exception as exc:
                         await db.rollback()

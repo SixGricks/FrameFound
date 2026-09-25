@@ -626,6 +626,12 @@ class Listing(Base):
     # Digest of what the zip was made from (media/export_state.py); a listing
     # that no longer digests the same has a stale export.
     export_fingerprint: Mapped[str | None] = mapped_column(String(64), default=None)
+    # Ends every exported file name: the address and sale type, e.g.
+    # "130-davis-rd-auction". "" falls back to one derived from the name.
+    file_suffix: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    # Heads the photo index — auction date, terms, whatever the brochure and
+    # the editor need to know that the photographs cannot say.
+    notes: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -654,6 +660,14 @@ class ListingItem(Base):
     room: Mapped[str] = mapped_column(String(40), default="")
     room_source: Mapped[str] = mapped_column(String(16), default="suggested")
     room_score: Mapped[float | None] = mapped_column(Float, default=None)
+    # What the photograph shows, for the photo index, and the words its
+    # exported file name carries. Same contract as the room: "suggested" by
+    # the AI until the operator edits it, then "confirmed" and never
+    # overwritten by a later run. "" = nobody has named it yet.
+    caption: Mapped[str] = mapped_column(String(300), default="", server_default="")
+    slug: Mapped[str] = mapped_column(String(80), default="", server_default="")
+    naming_source: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    named_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

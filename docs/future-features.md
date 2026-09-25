@@ -1,5 +1,87 @@
 # Future features — proposed plan
 
+## 2026-09-24 — Where FrameFound can replace paid services
+
+Asked: make FrameFound more useful across the whole business workflow, and
+reduce reliance on paid services. The basis is measured, not assumed: the
+Intel library holds **53 shoots in 2025 (8,779 photos) and 53 so far in 2026
+(11,132 photos)**, about 50 videos a year, and the workflow around them runs
+through Fotello, Canva, an AI video editor, Google Drive, Todoist and
+Make.com, with Adobe CC, FreshBooks, M365, WordPress.com and Granola beside
+it. This ranks by *fit*: what FrameFound can actually take over. Rank by
+money once the real bills are beside it, because nothing here knows what each
+one costs.
+
+| Service | Its job today | Fit | What FrameFound does about it |
+|---|---|---|---|
+| **Fotello** | Per-photo MLS editing of each "Fotello Batch" | **Replace** | Auto-edit (Claude judges a 768px preview, the local engine renders at full resolution) already existed; as of today it also names every photo and exports the batch package (below). What's left is proving the quality. |
+| **AI video editor** | Transcripts, b-roll logs, selects | **Mostly replace** | Whisper transcripts, frame search and FCP7 export to Premiere already exist. Missing: a b-roll log document, and selects exported as Premiere markers. |
+| **Canva** | Brochures, mailers, the LF and Obertaul ads | **Feed, then partly replace** | Keep Canva for designed pieces. FrameFound supplies the inputs: Photo Index, captions, ordered photos. The two fixed-layout weekly ads could later render server-side from one template. |
+| **Make.com / Todoist triggers** | Kick off ads and brochures | **Replace one class** | "A new shoot folder appeared" belongs to the scanner, which already sees it. Outbound webhooks on *listing exported* would let the existing scenarios trigger from FrameFound instead of watching Drive. Not a general automation platform. |
+| **Google Drive** | Handing photos to Canva, clients and agents | **Keep as the channel** | FrameFound writes into it (delivery, next). Client share links would need public access switched on, which is off today by design. That is a security decision for you, not a default. |
+| **Adobe CC** | Lightroom, Premiere | **Reduce Lightroom use** | MLS editing no longer needs Lightroom. Premiere stays, and with it the subscription. |
+| **WordPress.com** | Website | **Later** | The new captions double as image alt text, so a "publish gallery" step would carry SEO for free. |
+| FreshBooks, M365, Granola | Invoicing, mail, meeting notes | **Not a fit** | FrameFound should not grow into these. |
+
+### Shipped today — the Fotello-style batch package
+
+The photo-organizer skill did the pre-Fotello work by hand: rename each
+select `01-front-exterior-brick-colonial-130-davis-rd-auction.jpg`, write
+"Photo Index.md", make contact sheets. The listing export now produces all of
+it:
+
+- **Named in the same API call as the edit.** The auto-edit tool also returns
+  a caption ("what it shows") and a file-name slug. **Name photos with AI**
+  does naming only (a smaller call), for shoots still edited elsewhere. Names
+  follow the room-label contract: the AI suggests, typing confirms, and
+  confirmed names are never overwritten.
+- **SEO file names**: `NN-{slug}-{suffix}.jpg`. The suffix is typed per listing
+  (address and sale type) or derived from its name, minus the shoot-folder
+  date. The name switches to three digits past 99 photos, so it still sorts.
+  "Simple" names (`01_kitchen.jpg`) remain an option.
+- **`_index/`** in the zip holds `Photo Index.md` (listing notes first, then #
+  | Filename | What it shows | Original), the same table as CSV, and numbered
+  contact sheets drawn from the rendered export. It sits in a folder so that
+  selecting every top-level JPEG for an MLS upload never picks up a sheet.
+- A **Names & index** view of the listing edits all of it in one table. Any
+  rename marks an existing zip out of date.
+
+### The plan, in order
+
+1. **Fotello bake-off — about one day, decides the largest replaceable
+   spend.** 130 Davis Rd is the one shoot with both sides catalogued: 72 photos
+   sent to Fotello and 70 returned edited. Auto-edit the same 72 and show the
+   pairs side by side; you judge. Log the API's reported token usage per run,
+   so the cost per listing is measured rather than estimated. If the results
+   hold, stop sending batches. If they don't, the pairs show exactly where
+   they fall short, which is the brief for the next engine change.
+2. **Deliver to Drive** (already next on the roadmap). The package lands in
+   the property's Drive folder, and the brochure skill reads `Photo Index.md`
+   from there instead of from a hand-built one. This turns two overlapping
+   tools into a chain.
+3. **Draft listings from new shoot folders.** When the scanner finds a new
+   dated folder with photos, it creates a draft listing: rooms labelled,
+   walk-through ordered, removals suggested, photos named if a key is set.
+   Opening it becomes review instead of setup. This saves your time rather
+   than a subscription, and it is the largest daily saving on this list.
+4. **Push alerts** (already on the roadmap), including "draft listing ready".
+5. **Listing reels.** The slideshow renderer, set to 9:16: ordered listing
+   photos plus the shoot's drone clips, titled with the address. That covers
+   the simple social video now made in the paid editor.
+6. **B-roll logs and selects as Premiere markers.** Transcripts and frame
+   search exist; the missing pieces are a per-shoot log document and marker
+   export (`fcp7.Marker` is already written).
+7. **Server-rendered weekly ads.** The LF and Obertaul ads have a fixed size
+   and layout each week, which suits a template render (HTML to PDF/JPEG)
+   triggered by the listing rather than by Todoist.
+8. **Client share links.** Only after a decision to open remote access.
+
+**Not doing:** rebuilding Make.com, a design editor to rival Canva, or
+anything in invoicing, mail or meeting notes. Each would be a second product
+with no connection to the photographs.
+
+---
+
 Drafted 2026-08-04 from a live system review, not from a wishlist. Each item
 says why it earns a place, grounded in what the catalogue measures today:
 25,349 assets · 8,121 faces · 5 named people · 2,230 unnamed clusters ·

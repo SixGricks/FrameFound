@@ -1,8 +1,10 @@
 """Listings: order and name a property shoot for upload.
 
 The deliverable is a zip whose filenames sort into gallery order —
-`01_front_exterior.jpg, 02_kitchen.jpg …` — because MLS galleries display in
-upload order and renaming by hand is the chore this feature deletes.
+`01-front-exterior-brick-colonial-130-davis-rd-auction.jpg, 02-kitchen-… ` —
+because MLS galleries display in upload order, portals and search engines
+read the words, and renaming by hand is the chore this feature deletes. The
+zip carries the photo index and contact sheets alongside (media/photo_index.py).
 
 Room labels come zero-shot from embeddings the catalogue already stores, and
 they are suggestions until confirmed or overridden. Ordering is the
@@ -13,7 +15,7 @@ then explicit reorder wins and nothing shuffles it afterwards.
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query
@@ -26,6 +28,7 @@ from framefound.ai import rooms as rooms_lib
 from framefound.ai.embeddings import EmbeddingUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.db.models import Asset, AssetEdit, AuditLog, Frame, Listing, ListingItem
+from framefound.media import photo_index
 from framefound.media.export_state import listing_fingerprint
 
 log = structlog.get_logger()
@@ -55,6 +58,16 @@ class ItemOut(BaseModel):
     # against a snapshot taken at the start of the run — "edited" alone is
     # already true for every photo when a listing is edited a second time.
     edited_at: datetime | None = None
+    # What it shows (the photo index) and the words in its file name.
+    # naming_source: "" unnamed, "suggested" by the AI, "confirmed" by you.
+    caption: str = ""
+    slug: str = ""
+    naming_source: str = ""
+    # When the AI last named it — naming-run progress, as edited_at is for edits.
+    named_at: datetime | None = None
+    # The name it will have in an SEO-named export; None for videos, which
+    # stay out of the photo zip.
+    export_name: str | None = None
 
 
 class ListingOut(BaseModel):
@@ -75,6 +88,11 @@ class ListingDetail(ListingOut):
     # rooms, edits, removals). The download refuses it; the UI offers a
     # re-export instead of shipping the old gallery to MLS.
     export_stale: bool = False
+    # The file-name suffix as typed ("" = not set), and what is used instead
+    # when it is empty — the UI shows the latter as the placeholder.
+    file_suffix: str = ""
+    suggested_suffix: str = ""
+    notes: str = ""
 
 
 class CreateListingRequest(BaseModel):
@@ -97,9 +115,36 @@ class ReorderRequest(BaseModel):
 class ExportRequest(BaseModel):
     max_edge: int = Field(default=3840, ge=1024, le=8192)
     quality: int = Field(default=85, ge=60, le=95)
+    # "seo": 01-kitchen-island-pantry-130-davis-rd-auction.jpg.
+    # "simple": 01_kitchen.jpg, for portals that rename on upload anyway.
+    naming: Literal["seo", "simple"] = "seo"
+    # Photo Index (Markdown + CSV) and contact sheets, in _index/.
+    include_index: bool = True
 
 
-def _item_out(item: ListingItem, asset: Asset, edited_at: datetime | None = None) -> ItemOut:
+class SetNamingRequest(BaseModel):
+    caption: str = Field(default="", max_length=300)
+    slug: str = Field(default="", max_length=200)
+
+
+class UpdateListingRequest(BaseModel):
+    """Only the fields present change."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    file_suffix: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+def _suffix_for(listing: Listing) -> str:
+    return listing.file_suffix or photo_index.default_suffix(listing.name)
+
+
+def _item_out(
+    item: ListingItem,
+    asset: Asset,
+    edited_at: datetime | None = None,
+    export_name: str | None = None,
+) -> ItemOut:
     return ItemOut(
         asset_id=item.asset_id,
         filename=asset.filename,
@@ -111,6 +156,11 @@ def _item_out(item: ListingItem, asset: Asset, edited_at: datetime | None = None
         room_score=item.room_score,
         edited=edited_at is not None,
         edited_at=edited_at,
+        caption=item.caption,
+        slug=item.slug,
+        naming_source=item.naming_source,
+        named_at=item.named_at,
+        export_name=export_name,
     )
 
 
@@ -199,7 +249,23 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
             )
         ).all()
     }
-    items = [_item_out(item, asset, edited_at.get(item.asset_id)) for item, asset in rows]
+    # The names an SEO export would give, numbered over images only, as the
+    # export numbers them — so the page previews exactly what the zip holds
+    # (short of a file that turns out to be unreadable, which closes ranks).
+    suffix = _suffix_for(listing)
+    total = sum(1 for _item, asset in rows if asset.media_type == "image")
+    names: dict[uuid.UUID, str] = {}
+    for item, asset in rows:
+        if asset.media_type != "image":
+            continue
+        room = item.room if item.room in rooms_lib.ROOM_LABELS else ""
+        names[item.asset_id] = photo_index.export_filename(
+            len(names) + 1, total, slug=item.slug, room=room, suffix=suffix
+        )
+    items = [
+        _item_out(item, asset, edited_at.get(item.asset_id), names.get(item.asset_id))
+        for item, asset in rows
+    ]
     return ListingDetail(
         id=listing.id,
         name=listing.name,
@@ -210,6 +276,9 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
         items=items,
         classified=classified,
         export_stale=await _export_stale(db, listing),
+        file_suffix=listing.file_suffix,
+        suggested_suffix=photo_index.default_suffix(listing.name),
+        notes=listing.notes,
     )
 
 
@@ -431,6 +500,24 @@ async def get_listing(listing_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> L
     return await _detail(db, await _get(db, listing_id), classified=True)
 
 
+@router.patch("/{listing_id}", response_model=ListingDetail)
+async def update_listing(
+    listing_id: uuid.UUID, body: UpdateListingRequest, _user: CurrentUser, db: DbDep
+) -> ListingDetail:
+    """Rename the listing, set the file-name suffix, or write the notes that
+    head the photo index. The suffix is cleaned to what a file name can
+    carry; clearing it falls back to the one derived from the name."""
+    listing = await _get(db, listing_id)
+    if body.name is not None:
+        listing.name = body.name.strip() or listing.name
+    if body.file_suffix is not None:
+        listing.file_suffix = photo_index.clean_suffix(body.file_suffix)
+    if body.notes is not None:
+        listing.notes = body.notes.strip()
+    await db.commit()
+    return await _detail(db, listing, classified=True)
+
+
 @router.post("/{listing_id}/items", response_model=ListingDetail)
 async def add_items(
     listing_id: uuid.UUID, body: AddItemsRequest, _user: CurrentUser, db: DbDep
@@ -478,6 +565,34 @@ async def set_room(
     item.room = body.room
     item.room_source = "confirmed"
     item.room_score = None
+    await db.commit()
+    return await _detail(db, listing, classified=True)
+
+
+@router.put("/{listing_id}/items/{asset_id}/naming", response_model=ListingDetail)
+async def set_naming(
+    listing_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    body: SetNamingRequest,
+    _user: CurrentUser,
+    db: DbDep,
+) -> ListingDetail:
+    """Set what a photograph shows and the words in its file name. Typing
+    them confirms them — a later AI run leaves them alone. Clearing both
+    hands the photograph back to the AI."""
+    listing = await _get(db, listing_id)
+    item = (
+        await db.execute(
+            select(ListingItem).where(
+                ListingItem.listing_id == listing_id, ListingItem.asset_id == asset_id
+            )
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Not in this listing")
+    item.caption = " ".join(body.caption.split())
+    item.slug = photo_index.clean_slug(body.slug)
+    item.naming_source = "confirmed" if (item.caption or item.slug) else ""
     await db.commit()
     return await _detail(db, listing, classified=True)
 
@@ -553,7 +668,9 @@ async def export_listing(
     try:
         from framefound.processing.tasks import export_listing_zip
 
-        export_listing_zip.delay(str(listing_id), body.max_edge, body.quality)
+        export_listing_zip.delay(
+            str(listing_id), body.max_edge, body.quality, body.naming, body.include_index
+        )
     except Exception:
         # Same contract as slideshow rendering: a dead broker is a plain
         # answer, not a listing stuck saying "queued" for ever.
@@ -566,6 +683,7 @@ async def export_listing(
         listing_id=str(listing_id),
         images=images,
         max_edge=body.max_edge,
+        naming=body.naming,
     )
     return await _detail(db, listing, classified=True)
 
@@ -575,6 +693,9 @@ class ProcessRequest(BaseModel):
     # None to leave every sky as shot. The operator chooses; nothing decides
     # for them.
     sky_name: str | None = Field(default=None, max_length=120)
+    # "edit": edit (and, with a key, name) every photograph.
+    # "describe": name them only — for a shoot still edited elsewhere.
+    mode: Literal["edit", "describe"] = "edit"
 
 
 @router.post("/{listing_id}/ai-edit", status_code=202)
@@ -592,24 +713,41 @@ async def ai_edit(
     locally. Either way the renders happen here at full resolution, the
     chosen sky is composited wherever segmentation finds sky, results land
     as ordinary recipe versions, and the operator tweaks from there.
+
+    With mode "describe", nothing is edited: each photograph not already
+    named by the operator gets a caption and file-name slug from the same
+    API. That needs the key — there is no local fallback for describing.
     """
     from framefound.media.maps_store import load_ai_edit_config
 
     body = body or ProcessRequest()
     await _get(db, listing_id)
     config = await load_ai_edit_config(db)
-    mode = "ai" if config.ready else "preset"
+    if body.mode == "describe":
+        if not config.ready:
+            raise HTTPException(
+                status_code=400,
+                detail="Naming photos uses the Claude API — add an Anthropic key on Security",
+            )
+        mode = "describe"
+    else:
+        mode = "ai" if config.ready else "preset"
     if body.sky_name and ("/" in body.sky_name or "\\" in body.sky_name or ".." in body.sky_name):
         raise HTTPException(status_code=400, detail="Not a sky name")
-    images = (
-        await db.execute(
-            select(func.count())
-            .select_from(ListingItem)
-            .join(Asset, Asset.id == ListingItem.asset_id)
-            .where(ListingItem.listing_id == listing_id, Asset.media_type == "image")
-        )
-    ).scalar_one()
+    stmt = (
+        select(func.count())
+        .select_from(ListingItem)
+        .join(Asset, Asset.id == ListingItem.asset_id)
+        .where(ListingItem.listing_id == listing_id, Asset.media_type == "image")
+    )
+    if mode == "describe":
+        # The worker skips these too; counting them would promise progress
+        # that never comes.
+        stmt = stmt.where(ListingItem.naming_source != "confirmed")
+    images = (await db.execute(stmt)).scalar_one()
     if not images:
+        if mode == "describe":
+            return {"queued": 0, "mode": mode}
         raise HTTPException(status_code=400, detail="No photographs to edit")
 
     try:

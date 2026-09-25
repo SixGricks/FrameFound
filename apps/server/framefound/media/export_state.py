@@ -19,22 +19,29 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from framefound.db.models import Asset, AssetEdit, AssetInpaint, ListingItem
+from framefound.db.models import Asset, AssetEdit, AssetInpaint, Listing, ListingItem
 
 
 async def listing_fingerprint(db: AsyncSession, listing_id: uuid.UUID) -> str:
     """A digest of the export's inputs: the photographs in gallery order,
-    their room labels, their current recipes and their object-removal state.
-    Mirrors the rows export_listing_zip reads, videos excluded as it does."""
+    their room labels and names, their current recipes and their
+    object-removal state, and the listing's name, suffix and notes (the file
+    names and the photo index are made from them). Mirrors the rows
+    export_listing_zip reads, videos excluded as it does."""
+    header = (
+        await db.execute(
+            select(Listing.name, Listing.file_suffix, Listing.notes).where(Listing.id == listing_id)
+        )
+    ).one_or_none()
     items = (
         await db.execute(
-            select(ListingItem.asset_id, ListingItem.room)
+            select(ListingItem.asset_id, ListingItem.room, ListingItem.slug, ListingItem.caption)
             .join(Asset, Asset.id == ListingItem.asset_id)
             .where(ListingItem.listing_id == listing_id, Asset.media_type == "image")
             .order_by(ListingItem.position, ListingItem.created_at)
         )
     ).all()
-    ids = [asset_id for asset_id, _room in items]
+    ids = [row.asset_id for row in items]
 
     recipes: dict[uuid.UUID, str] = {}
     removals: dict[uuid.UUID, str] = {}
@@ -63,7 +70,18 @@ async def listing_fingerprint(db: AsyncSession, listing_id: uuid.UUID) -> str:
             removals[asset_id] = str(round_id)
 
     digest = hashlib.sha256()
-    for asset_id, room in items:
-        line = f"{asset_id}|{room}|{recipes.get(asset_id, '')}|{removals.get(asset_id, '')}\n"
-        digest.update(line.encode())
+    # JSON rather than "|"-joined text: captions and notes are free text, and
+    # a caption containing the separator must not be able to collide with a
+    # different split of the same characters.
+    digest.update(json.dumps(list(header or ()), ensure_ascii=False).encode() + b"\n")
+    for asset_id, room, slug, caption in items:
+        line = [
+            str(asset_id),
+            room,
+            slug,
+            caption,
+            recipes.get(asset_id, ""),
+            removals.get(asset_id, ""),
+        ]
+        digest.update(json.dumps(line, ensure_ascii=False).encode() + b"\n")
     return digest.hexdigest()

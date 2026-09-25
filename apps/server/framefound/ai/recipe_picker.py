@@ -20,6 +20,7 @@ from typing import Any
 import structlog
 
 from framefound.media import develop as develop_lib
+from framefound.media import photo_index
 
 log = structlog.get_logger()
 
@@ -85,8 +86,41 @@ RECIPE_TOOL = {
                 "photo is an exterior that would benefit from a sky swap.",
             },
             "notes": {"type": "string", "description": "One short sentence on what you did."},
+            # caption and seo_slug are added from NAMING_PROPERTIES below: the
+            # same fields describe_photo asks for, so naming the photograph
+            # rides along with editing it at no extra request.
         },
-        "required": ["auto_wb", "exposure", "shadows", "notes"],
+        "required": ["auto_wb", "exposure", "shadows", "notes", "caption", "seo_slug"],
+    },
+}
+
+# What a photograph shows, in the words the listing's Photo Index and file
+# names use — the job the operator's photo-organizer skill did by hand before
+# each Fotello upload ("01-front-exterior-brick-colonial-130-davis-rd-auction").
+NAMING_PROPERTIES = {
+    "caption": {
+        "type": "string",
+        "description": "One line for the photo index saying what the photograph shows, "
+        "e.g. 'Front exterior, straight-on full facade over the front lawn' or "
+        "'Kitchen island with pendant lights, looking toward the dining room'. "
+        "Plain and specific; no marketing adjectives, no address.",
+    },
+    "seo_slug": {
+        "type": "string",
+        "description": "Two to six lowercase words joined by hyphens naming what the "
+        "photograph shows, for its file name: e.g. 'front-exterior-brick-colonial', "
+        "'aerial-horse-barn', 'kitchen-island-pantry'. No address, no numbers.",
+    },
+}
+RECIPE_TOOL["input_schema"]["properties"].update(NAMING_PROPERTIES)  # type: ignore[index]
+
+DESCRIBE_TOOL = {
+    "name": "describe_photo",
+    "description": "Describe this real-estate photograph for the listing's photo index.",
+    "input_schema": {
+        "type": "object",
+        "properties": NAMING_PROPERTIES,
+        "required": ["caption", "seo_slug"],
     },
 }
 
@@ -96,9 +130,27 @@ SYSTEM = (
     "highlights with the view visible, straight verticals, tasteful colour. "
     "The photograph must remain honest — corrected, never exaggerated. Look at "
     "the photograph and call set_develop_recipe with the slider values that get "
-    "it there. The sliders are applied by a deterministic engine to the "
-    "full-resolution original."
+    "it there, and describe what it shows for the listing's photo index. The "
+    "sliders are applied by a deterministic engine to the full-resolution "
+    "original."
 )
+
+DESCRIBE_SYSTEM = (
+    "You catalogue real-estate and farm-auction photographs. Say plainly what "
+    "each photograph shows — the room or structure, the view, what is notable "
+    "in frame — the way a photo index for a listing would. Never exaggerate."
+)
+
+
+def clean_slug(text: str) -> str:
+    """Hyphenated lowercase words, at most six and 60 characters. Numbers go
+    too: the model's most likely number is the house number, and the listing
+    suffix already carries the address."""
+    return photo_index.slugify(text, max_words=6, max_chars=60, digits=False)
+
+
+def clean_caption(text: str) -> str:
+    return " ".join(str(text).split())[:200]
 
 
 class RecipePickUnavailable(RuntimeError):
@@ -119,17 +171,25 @@ def preview_bytes(image: Any) -> bytes:
     return out.getvalue()
 
 
-def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]:
-    """One photograph in, one cleaned recipe out. Synchronous — callers run
-    it in a worker or a thread."""
+def _ask(
+    preview_jpeg: bytes,
+    api_key: str,
+    model: str,
+    *,
+    system: str,
+    tool: dict[str, Any],
+    instruction: str,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """One forced tool call about one preview; returns the tool's input."""
     import httpx
 
     body = {
         "model": model,
-        "max_tokens": 700,
-        "system": SYSTEM,
-        "tools": [RECIPE_TOOL],
-        "tool_choice": {"type": "tool", "name": "set_develop_recipe"},
+        "max_tokens": max_tokens,
+        "system": system,
+        "tools": [tool],
+        "tool_choice": {"type": "tool", "name": tool["name"]},
         "messages": [
             {
                 "role": "user",
@@ -142,7 +202,7 @@ def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]
                             "data": base64.b64encode(preview_jpeg).decode(),
                         },
                     },
-                    {"type": "text", "text": "Edit this photograph to MLS-final standard."},
+                    {"type": "text", "text": instruction},
                 ],
             }
         ],
@@ -163,12 +223,27 @@ def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]
     try:
         payload = response.json()
         tool_use = next(block for block in payload["content"] if block.get("type") == "tool_use")
-        raw: dict[str, Any] = dict(tool_use["input"])
+        return dict(tool_use["input"])
     except (KeyError, StopIteration, ValueError, json.JSONDecodeError) as err:
-        raise RecipePickUnavailable("The model returned no recipe") from err
+        raise RecipePickUnavailable("The model returned no answer") from err
 
+
+def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]:
+    """One photograph in, one cleaned recipe and its description out.
+    Synchronous — callers run it in a worker or a thread."""
+    raw = _ask(
+        preview_jpeg,
+        api_key,
+        model,
+        system=SYSTEM,
+        tool=RECIPE_TOOL,
+        instruction="Edit this photograph to MLS-final standard and describe what it shows.",
+        max_tokens=800,
+    )
     notes = str(raw.pop("notes", ""))[:200]
     needs_sky = bool(raw.pop("needs_sky_replacement", False))
+    caption = clean_caption(raw.pop("caption", ""))
+    slug = clean_slug(str(raw.pop("seo_slug", "")))
     recipe = develop_lib.clean_recipe(raw)  # clamps; drops anything off-schema
     log.info(
         "recipe_picker.picked",
@@ -176,4 +251,28 @@ def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]
         needs_sky=needs_sky,
         notes=notes,
     )
-    return {"recipe": recipe, "needs_sky_replacement": needs_sky, "notes": notes}
+    return {
+        "recipe": recipe,
+        "needs_sky_replacement": needs_sky,
+        "notes": notes,
+        "caption": caption,
+        "slug": slug,
+    }
+
+
+def describe_photo(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, str]:
+    """A caption and file-name slug, without editing — for photographs that
+    will still be edited elsewhere, or were edited by hand."""
+    raw = _ask(
+        preview_jpeg,
+        api_key,
+        model,
+        system=DESCRIBE_SYSTEM,
+        tool=DESCRIBE_TOOL,
+        instruction="Describe what this photograph shows.",
+        max_tokens=300,
+    )
+    return {
+        "caption": clean_caption(raw.get("caption", "")),
+        "slug": clean_slug(str(raw.get("seo_slug", ""))),
+    }

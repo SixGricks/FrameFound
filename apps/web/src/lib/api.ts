@@ -500,6 +500,16 @@ export interface ListingItem {
   /** When the newest recipe was saved — how a run's progress is told apart
    *  from edits that were already there. */
   edited_at: string | null;
+  /** What it shows — the photo index line. */
+  caption: string;
+  /** The words in its exported file name. */
+  slug: string;
+  /** "" unnamed, "suggested" by the AI, "confirmed" by you. */
+  naming_source: "" | "suggested" | "confirmed";
+  /** When the AI last named it — naming-run progress. */
+  named_at: string | null;
+  /** Its name in an SEO-named export; null for videos. */
+  export_name: string | null;
 }
 
 export interface ListingSummary {
@@ -516,7 +526,14 @@ export interface ListingDetail extends ListingSummary {
   classified: boolean;
   /** A zip exists but the listing changed since; the download refuses it. */
   export_stale: boolean;
+  /** Ends every exported file name ("" = use suggested_suffix). */
+  file_suffix: string;
+  suggested_suffix: string;
+  /** Heads the photo index: auction date, terms. */
+  notes: string;
 }
+
+export type ListingNaming = "seo" | "simple";
 
 export interface SkyChoice {
   name: string;
@@ -1037,11 +1054,34 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ asset_ids: assetIds }),
     }),
-  exportListing: (id: string, maxEdge = 3840, quality = 85) =>
+  exportListing: (
+    id: string,
+    maxEdge = 3840,
+    quality = 85,
+    naming: ListingNaming = "seo",
+    includeIndex = true,
+  ) =>
     request<ListingDetail>(`/listings/${id}/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ max_edge: maxEdge, quality }),
+      body: JSON.stringify({
+        max_edge: maxEdge,
+        quality,
+        naming,
+        include_index: includeIndex,
+      }),
+    }),
+  updateListing: (id: string, patch: { name?: string; file_suffix?: string; notes?: string }) =>
+    request<ListingDetail>(`/listings/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  setListingNaming: (id: string, assetId: string, caption: string, slug: string) =>
+    request<ListingDetail>(`/listings/${id}/items/${assetId}/naming`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caption, slug }),
     }),
   deleteListing: (id: string) => request<void>(`/listings/${id}`, { method: "DELETE" }),
   searchFolders: (q: string) =>
@@ -1054,11 +1094,11 @@ export const api = {
     request<ListingDetail>(`/listings/${id}/classify`, { method: "POST" }),
   curateListing: (id: string) =>
     request<RemovalSuggestion[]>(`/listings/${id}/curate`, { method: "POST" }),
-  aiEditListing: (id: string, skyName: string | null) =>
-    request<{ queued: number; mode: "ai" | "preset" }>(`/listings/${id}/ai-edit`, {
+  aiEditListing: (id: string, skyName: string | null, mode: "edit" | "describe" = "edit") =>
+    request<{ queued: number; mode: "ai" | "preset" | "describe" }>(`/listings/${id}/ai-edit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sky_name: skyName }),
+      body: JSON.stringify({ sky_name: skyName, mode }),
     }),
   aiEditSettings: () => request<AiEditSettings>("/develop/settings/ai"),
   updateAiEditSettings: (patch: { api_key?: string; enabled?: boolean; model?: string }) =>
