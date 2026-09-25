@@ -1795,6 +1795,15 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                 ]
 
                 edited = skipped = 0
+                # What the API says each call cost, summed per run: the cost
+                # of an auto-edit is measured, not estimated from a price
+                # sheet and a guess at the prompt size.
+                tokens: dict[str, int] = {}
+
+                def count(usage: dict[str, int] | None) -> None:
+                    for key, value in (usage or {}).items():
+                        tokens[key] = tokens.get(key, 0) + int(value)
+
                 for item_id, asset_id, filename, source in photos:
                     try:
                         if source is None:
@@ -1802,12 +1811,11 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                         path, normalized = source
                         if describe_only:
                             preview = await asyncio.to_thread(build_preview, path, normalized)
-                            await save_naming(
-                                item_id,
-                                await asyncio.to_thread(
-                                    recipe_picker.describe_photo, preview, api_key, model
-                                ),
+                            described = await asyncio.to_thread(
+                                recipe_picker.describe_photo, preview, api_key, model
                             )
+                            count(described.get("usage"))
+                            await save_naming(item_id, described)
                             edited += 1
                             continue
                         naming: dict[str, str] | None = None
@@ -1817,6 +1825,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                                 recipe_picker.pick_recipe, preview, api_key, model
                             )
                             recipe = dict(picked["recipe"])
+                            count(picked.get("usage"))
                             naming = {
                                 "caption": picked.get("caption", ""),
                                 "slug": picked.get("slug", ""),
@@ -1862,8 +1871,11 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                 log.info(
                     "ai_edit.finished",
                     listing_id=listing_id,
+                    mode=mode,
+                    model=model if use_ai else "",
                     edited=edited,
                     skipped=skipped,
+                    **{f"tokens_{key}": value for key, value in tokens.items()},
                 )
         finally:
             await engine.dispose()

@@ -352,6 +352,65 @@ def test_composite_replaces_sky_and_leaves_the_ground() -> None:
     assert abs(ground[0] - 60) <= 4, "the house is still the house"
 
 
+def _runs(values: list[bool]) -> list[int]:
+    """Lengths of the interior runs of equal values (the clipped ends dropped)."""
+    runs, count = [], 1
+    for before, after in zip(values, values[1:], strict=False):
+        if after == before:
+            count += 1
+        else:
+            runs.append(count)
+            count = 1
+    return runs[1:]
+
+
+def test_a_replacement_sky_keeps_its_shape() -> None:
+    """A 1.9:1 sky in a 4:3 drone frame was resized to width × 1.5·height —
+    clouds squashed to half their width. A checkerboard sky must come out
+    with square cells: one scale for both axes."""
+    import numpy as np
+
+    from framefound.media.sky import composite_sky
+
+    cell = 20
+    board = np.zeros((100, 300, 3), dtype="uint8")
+    for y in range(100):
+        for x in range(300):
+            board[y, x] = (250, 30, 30) if (x // cell + y // cell) % 2 else (30, 30, 250)
+    sky = Image.fromarray(board, "RGB")
+
+    scene = Image.new("RGB", (100, 100), (225, 225, 225))  # bright where the sky is
+    mask = np.zeros((100, 100), dtype="float32")
+    mask[:60] = 1.0  # sky down to a skyline at row 60
+    out = np.asarray(composite_sky(scene, mask, sky, feather=0.0, relight=0.0))
+    red = out[..., 0] > 128
+
+    across = _runs(list(red[25, 5:95]))
+    down = _runs(list(red[3:57, 50]))
+    assert across and down, "the pattern made it through"
+    assert abs(float(np.median(across)) - float(np.median(down))) <= 1.0, (
+        f"cells {np.median(across)} wide but {np.median(down)} tall — the sky was stretched"
+    )
+
+
+def test_the_sky_fills_the_sky_area_not_the_whole_frame() -> None:
+    """The chosen photograph's own bottom (its horizon) should sit near the
+    skyline, not hidden behind the house: fitted to the sky area, a sky whose
+    lower half is orange shows orange just above the skyline."""
+    import numpy as np
+
+    from framefound.media.sky import composite_sky
+
+    sky = Image.new("RGB", (200, 100), (40, 90, 220))
+    sky.paste((240, 140, 40), (0, 50, 200, 100))  # lower half: the glow
+    scene = Image.new("RGB", (100, 100), (225, 225, 225))
+    mask = np.zeros((100, 100), dtype="float32")
+    mask[:40] = 1.0
+    out = composite_sky(scene, mask, sky, feather=0.0, relight=0.0)
+    assert out.getpixel((50, 4))[2] > 150, "blue at the top"
+    assert out.getpixel((50, 34))[0] > 200, "the glow just above the skyline"
+
+
 def test_composite_on_an_interior_is_a_silent_no_op() -> None:
     """The batch-apply guarantee: one recipe over a listing must not wreck
     the hallway photos."""

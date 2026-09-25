@@ -21,9 +21,11 @@ from typing import Any
 # for batch apply — one recipe over a whole listing must not wreck hallways.
 MIN_SKY_FRACTION = 0.02
 
-# The sky image is rendered taller than the frame by this factor so `shift`
-# has somewhere to move it.
-OVERSCAN = 1.5
+# The sky photograph is scaled this much beyond "just covers the sky area",
+# so `shift` has room to move it vertically.
+OVERSCAN = 1.15
+# A mask row with less sky than this is below the skyline.
+_SKY_ROW_FRACTION = 0.01
 
 
 def composite_sky(
@@ -46,13 +48,7 @@ def composite_sky(
         return image
 
     width, height = image.size
-
-    # Cover-fit the sky with vertical overscan, then crop the window `shift`
-    # selects. Skies tolerate stretch far better than buildings do.
-    sky_h = round(height * OVERSCAN)
-    sky = sky_image.convert("RGB").resize((width, sky_h), Image.Resampling.LANCZOS)
-    y0 = round((sky_h - height) * min(1.0, max(0.0, 0.5 + shift)))
-    sky = sky.crop((0, y0, width, y0 + height))
+    sky = _fit_sky(sky_image, mask, width, height, shift, np, Image)
 
     # Build the matte in three steps, all aimed at trees:
     #
@@ -90,6 +86,45 @@ def composite_sky(
     return Image.fromarray((out * 255.0 + 0.5).astype("uint8"), "RGB")
 
 
+def _fit_sky(
+    sky_image: Any, mask: Any, width: int, height: int, shift: float, np: Any, Image: Any
+) -> Any:
+    """The sky photograph, scaled evenly to cover the part of the frame that
+    is sky, as a full-frame image.
+
+    It used to be resized to exactly width × 1.5·height, whatever its own
+    shape — a 1.9:1 sky in a 4:3 drone frame came out squeezed to half its
+    width, clouds visibly squashed (Sep 2026). Now one scale factor serves
+    both axes, and the surplus is cropped: centred across, and chosen by
+    `shift` vertically.
+
+    The target is the sky *area* — from the top of the frame down to the
+    skyline — rather than the whole frame, so the photograph the operator
+    chose (its clouds, its glow at the horizon) is what shows above the
+    roofline, instead of its top third with the rest hidden behind the
+    house. Below the skyline the last row is repeated: the matte is zero
+    there, but feathering can reach a few pixels down.
+    """
+    rows = np.flatnonzero(np.asarray(mask).mean(axis=1) > _SKY_ROW_FRACTION)
+    skyline = int(rows[-1]) + 1 if rows.size else height
+    # A sliver of sky still gets a sensibly scaled photograph, not a
+    # panorama of its top edge.
+    skyline = max(skyline, round(height * 0.25))
+
+    source = sky_image.convert("RGB")
+    scale = max(width / source.width, skyline * OVERSCAN / source.height)
+    fitted_w = max(width, round(source.width * scale))
+    fitted_h = max(skyline, round(source.height * scale))
+    fitted = source.resize((fitted_w, fitted_h), Image.Resampling.LANCZOS, reducing_gap=3.0)
+
+    x0 = (fitted_w - width) // 2
+    y0 = round((fitted_h - skyline) * min(1.0, max(0.0, 0.5 + shift)))
+    window = np.asarray(fitted.crop((x0, y0, x0 + width, y0 + skyline)))
+    if skyline < height:
+        window = np.pad(window, ((0, height - skyline), (0, 0), (0, 0)), mode="edge")
+    return Image.fromarray(window, "RGB")
+
+
 def _relight(fg: Any, bg: Any, soft: Any, strength: float, np: Any) -> Any:
     """Make the whole photograph agree with its new sky.
 
@@ -100,7 +135,14 @@ def _relight(fg: Any, bg: Any, soft: Any, strength: float, np: Any) -> Any:
     carries a trace of its colour, and that global whisper is what makes a
     composite read as one photograph instead of two.
     """
-    sky_mean = bg.reshape(-1, 3).mean(axis=0)
+    # The sky that shows, weighted by the matte: not the padding repeated
+    # below the skyline, and not the parts of the photograph cropped away.
+    weight = soft[..., 0]
+    total = float(weight.sum())
+    if total > 1e-3:
+        sky_mean = (bg * weight[..., None]).reshape(-1, 3).sum(axis=0) / total
+    else:
+        sky_mean = bg.reshape(-1, 3).mean(axis=0)
     tone = sky_mean / max(float(sky_mean.mean()), 1e-4)  # colour, not brightness
     # At most ±12% per channel at full strength on the ground...
     gains = 1.0 + (np.clip(tone, 0.7, 1.3) - 1.0) * 0.4 * strength

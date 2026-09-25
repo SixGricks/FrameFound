@@ -137,6 +137,49 @@ def test_pick_recipe_surfaces_api_failure(monkeypatch: pytest.MonkeyPatch) -> No
         recipe_picker.pick_recipe(b"x", "k", "m")
 
 
+def test_thinking_models_get_the_tool_offered_not_forced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opus 5.5 and Fable 5.1 reject a forced tool_choice with a 400, and
+    think before answering: auto choice, strict schema, low effort, and room
+    in max_tokens for the thinking. Sonnet keeps the forced call."""
+    import httpx
+
+    from framefound.ai import recipe_picker
+
+    bodies: list[dict] = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: ANN001
+        bodies.append(json)
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "thinking", "thinking": "", "signature": "x"},
+                    {
+                        "type": "tool_use",
+                        "name": "set_develop_recipe",
+                        "input": {"exposure": 0.3, "caption": "Den", "seo_slug": "den"},
+                    },
+                ],
+                "usage": {"input_tokens": 1900, "output_tokens": 640},
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    picked = recipe_picker.pick_recipe(b"\xff\xd8fake", "k", "claude-opus-5-5")
+    assert picked["recipe"] == {"exposure": 0.3}, "the tool_use block is found past the thinking"
+    assert picked["usage"]["output_tokens"] == 640
+    opus = bodies[-1]
+    assert opus["tool_choice"] == {"type": "auto"}
+    assert opus["tools"][0]["strict"] is True
+    assert opus["output_config"] == {"effort": "low"}
+    assert opus["max_tokens"] >= 4096
+
+    recipe_picker.pick_recipe(b"\xff\xd8fake", "k", "claude-sonnet-5")
+    sonnet = bodies[-1]
+    assert sonnet["tool_choice"] == {"type": "tool", "name": "set_develop_recipe"}
+    assert "output_config" not in sonnet and "strict" not in sonnet["tools"][0]
+
+
 def test_describe_photo_names_without_asking_for_sliders(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx
 
@@ -164,10 +207,9 @@ def test_describe_photo_names_without_asking_for_sliders(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(httpx, "post", fake_post)
     named = recipe_picker.describe_photo(b"\xff\xd8fake", "sk-ant-test", "claude-sonnet-5")
-    assert named == {
-        "caption": "Aerial of the horse barn and paddocks",
-        "slug": "aerial-horse-barn",
-    }
+    assert named["caption"] == "Aerial of the horse barn and paddocks"
+    assert named["slug"] == "aerial-horse-barn"
+    assert named["usage"]["input_tokens"] == 0, "absent usage reads as zero, not a crash"
     assert captured["body"]["tool_choice"] == {"type": "tool", "name": "describe_photo"}
     tool = captured["body"]["tools"][0]
     assert "exposure" not in tool["input_schema"]["properties"], "naming only; no sliders"

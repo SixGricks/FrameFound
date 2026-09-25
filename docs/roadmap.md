@@ -39,6 +39,25 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-25 — squashed skies, and the bake-off tool
+
+**Replacement skies were squashed.** The sky photograph was resized to
+exactly width × 1.5·height, whatever its shape; a 1.9:1 sky in a 4:3 drone
+frame lost half its width (reported on 475 Cocalico Rd). It is now scaled
+evenly, and fitted to the sky *area* (top of the frame to the skyline), so
+the clouds and horizon glow you chose sit above the roofline, not behind the
+house. Relight now reads the sky that shows, not the cropped-away parts.
+
+**Bake-off tool** (`python -m framefound.ops.bakeoff`): pairs originals with
+the finals that shipped (by name, or by picture content for SEO-renamed
+sets), renders the preset and each model's recipe, fits the sliders directly
+to the final (the engine's ceiling), and reports colour distance, measured
+API cost, and one side-by-side sheet per photo. Nothing in the catalogue
+changes. Auto-edit now also records the API's token counts per run, caches
+its instructions, and supports Opus 5.5 / Fable 5.1, which refuse forced tool
+calls and always think; they get the tool offered, with a strict schema and
+low effort. Results follow below once the runs finish.
+
 ### 2026-09-24 (night) — the freeze, and the Fotello batch package
 
 **"The system seems to have frozen."** It had: Slideshows > Propose compared

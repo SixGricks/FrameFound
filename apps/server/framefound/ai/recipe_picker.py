@@ -29,6 +29,19 @@ API_VERSION = "2023-06-01"
 TIMEOUT_S = 90.0
 PREVIEW_EDGE = 768
 
+# Models that always think before answering and refuse a forced tool call
+# (400: "tool_choice: type 'tool' and 'any' are not supported"): Opus 5.x and
+# Fable 5.x. They are offered the tool with tool_choice auto and strict schema
+# adherence instead, at low effort — choosing sliders is not long-horizon
+# reasoning, and thinking bills as output tokens.
+_THINKING_MODELS = ("claude-opus-5", "claude-fable-5")
+THINKING_MAX_TOKENS = 4096
+
+
+def thinks(model: str) -> bool:
+    return model.startswith(_THINKING_MODELS)
+
+
 # The tool schema *is* the contract: the model is forced to answer in slider
 # values, so there is nothing to parse and nothing to hallucinate around.
 RECIPE_TOOL = {
@@ -91,6 +104,7 @@ RECIPE_TOOL = {
             # rides along with editing it at no extra request.
         },
         "required": ["auto_wb", "exposure", "shadows", "notes", "caption", "seo_slug"],
+        "additionalProperties": False,
     },
 }
 
@@ -121,6 +135,7 @@ DESCRIBE_TOOL = {
         "type": "object",
         "properties": NAMING_PROPERTIES,
         "required": ["caption", "seo_slug"],
+        "additionalProperties": False,
     },
 }
 
@@ -180,14 +195,18 @@ def _ask(
     tool: dict[str, Any],
     instruction: str,
     max_tokens: int,
-) -> dict[str, Any]:
-    """One forced tool call about one preview; returns the tool's input."""
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """One tool call about one preview; returns the tool's input and the
+    token usage the API reported — the only honest cost figure."""
     import httpx
 
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": system,
+        # The tool schema and instructions are identical for every photo in
+        # a run; marking them cacheable bills repeats at the cache-read rate.
+        # (Below the model's minimum cacheable length this is a no-op.)
+        "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         "tools": [tool],
         "tool_choice": {"type": "tool", "name": tool["name"]},
         "messages": [
@@ -207,6 +226,14 @@ def _ask(
             }
         ],
     }
+    if thinks(model):
+        body["tools"] = [{**tool, "strict": True}]
+        body["tool_choice"] = {"type": "auto"}
+        body["output_config"] = {"effort": "low"}
+        body["max_tokens"] = max(max_tokens, THINKING_MAX_TOKENS)
+        body["messages"][0]["content"][1]["text"] = (
+            f"{instruction} Answer by calling {tool['name']}."
+        )
     response = httpx.post(
         API_URL,
         json=body,
@@ -223,15 +250,26 @@ def _ask(
     try:
         payload = response.json()
         tool_use = next(block for block in payload["content"] if block.get("type") == "tool_use")
-        return dict(tool_use["input"])
+        answer = dict(tool_use["input"])
     except (KeyError, StopIteration, ValueError, json.JSONDecodeError) as err:
         raise RecipePickUnavailable("The model returned no answer") from err
+    raw_usage = payload.get("usage") or {}
+    usage = {
+        key: int(raw_usage.get(key) or 0)
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    }
+    return answer, usage
 
 
 def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]:
     """One photograph in, one cleaned recipe and its description out.
     Synchronous — callers run it in a worker or a thread."""
-    raw = _ask(
+    raw, usage = _ask(
         preview_jpeg,
         api_key,
         model,
@@ -257,13 +295,14 @@ def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]
         "notes": notes,
         "caption": caption,
         "slug": slug,
+        "usage": usage,
     }
 
 
-def describe_photo(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, str]:
+def describe_photo(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]:
     """A caption and file-name slug, without editing — for photographs that
     will still be edited elsewhere, or were edited by hand."""
-    raw = _ask(
+    raw, usage = _ask(
         preview_jpeg,
         api_key,
         model,
@@ -275,4 +314,5 @@ def describe_photo(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, s
     return {
         "caption": clean_caption(raw.get("caption", "")),
         "slug": clean_slug(str(raw.get("seo_slug", ""))),
+        "usage": usage,
     }
