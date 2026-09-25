@@ -597,6 +597,9 @@ class AiEditSettingsOut(BaseModel):
     configured: bool
     enabled: bool
     model: str
+    # Shipped photographs the installed learned look was made from (0 = none):
+    # when present, auto-edit takes its tone from it (media/looks.py).
+    look_examples: int = 0
 
 
 class AiEditSettingsIn(BaseModel):
@@ -607,18 +610,22 @@ class AiEditSettingsIn(BaseModel):
 
 
 @router.get("/settings/ai", response_model=AiEditSettingsOut)
-async def ai_settings(_user: CurrentUser, db: DbDep) -> AiEditSettingsOut:
+async def ai_settings(_user: CurrentUser, db: DbDep, settings: SettingsDep) -> AiEditSettingsOut:
+    from framefound.media import looks
     from framefound.media.maps_store import load_ai_edit_config
 
     config = await load_ai_edit_config(db)
     return AiEditSettingsOut(
-        configured=bool(config.api_key_sealed), enabled=config.enabled, model=config.model
+        configured=bool(config.api_key_sealed),
+        enabled=config.enabled,
+        model=config.model,
+        look_examples=looks.examples(settings.data_dir),
     )
 
 
 @router.put("/settings/ai", response_model=AiEditSettingsOut, dependencies=[require_admin])
 async def update_ai_settings(
-    body: AiEditSettingsIn, _user: CurrentUser, db: DbDep
+    body: AiEditSettingsIn, _user: CurrentUser, db: DbDep, settings: SettingsDep
 ) -> AiEditSettingsOut:
     from framefound.media.maps_store import load_ai_edit_config, save_ai_edit_config
 
@@ -631,6 +638,11 @@ async def update_ai_settings(
         config.model = body.model.strip()
     await save_ai_edit_config(db, config)
     log.info("develop.ai_settings_updated", configured=bool(config.api_key_sealed))
+    from framefound.media import looks
+
     return AiEditSettingsOut(
-        configured=bool(config.api_key_sealed), enabled=config.enabled, model=config.model
+        configured=bool(config.api_key_sealed),
+        enabled=config.enabled,
+        model=config.model,
+        look_examples=looks.examples(settings.data_dir),
     )

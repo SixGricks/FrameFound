@@ -161,7 +161,7 @@ export default function ListingPage() {
         .map((i) => [i.asset_id, kind === "describe" ? i.named_at : i.edited_at]),
     );
     try {
-      const { queued, mode } = await api.aiEditListing(
+      const { queued, mode, look } = await api.aiEditListing(
         listingId,
         kind === "edit" ? skyChoice || null : null,
         kind,
@@ -171,10 +171,18 @@ export default function ListingPage() {
         return;
       }
       setAiRunning(true);
+      const lookNote =
+        look > 0
+          ? ` Tone comes from your learned look (${look} shipped photos, on this machine)` +
+            (mode === "ai" ? "; Claude straightens and names each photo." : ".")
+          : "";
       setNotice(
         mode === "describe"
           ? `Naming ${queued} photos — a small preview of each goes to the Claude API and ` +
               `a caption and file name come back. Nothing is edited; names you typed are kept.`
+          : look > 0
+            ? `Auto-editing ${queued} photos.${lookNote}` +
+              (skyChoice ? ` Skies swap in wherever the photo has sky.` : "")
           : mode === "ai"
             ? `AI editing ${queued} photos — a preview of each goes to the Claude API, ` +
               `slider values and a name come back, and the full-resolution render happens here.` +

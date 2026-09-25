@@ -86,6 +86,36 @@ def test_a_different_photograph_is_not_forced_into_a_pair() -> None:
     assert pairs == [] or pairs[0].score >= compare.MIN_MATCH
 
 
+def test_a_learned_look_edits_like_the_photographs_it_resembles() -> None:
+    """Dark originals were brightened when they shipped, bright ones pulled
+    down: a new dark original should be predicted a brightening."""
+    dark = [develop_lib.apply_recipe(_scene(n), {"exposure": -1.2}) for n in range(10)]
+    bright = [develop_lib.apply_recipe(_scene(n + 50), {"exposure": 0.9}) for n in range(10)]
+    look = compare.LearnedLook.fit(
+        [compare.features(img) for img in dark + bright],
+        [{"exposure": 1.0}] * 10 + [{"exposure": -0.5, "vibrance": 0.2}] * 10,
+    )
+    new_dark = develop_lib.apply_recipe(_scene(99), {"exposure": -1.2})
+    predicted = look.predict(compare.features(new_dark))
+    assert predicted["exposure"] > 0.6, predicted
+    assert len(compare.features(new_dark)) == len(compare.FEATURE_NAMES)
+
+
+def test_a_reframed_final_is_found_inside_the_original() -> None:
+    """Fotello crops tighter and re-tones; the comparison must line the two
+    frames up before it measures colour, or misregistration reads as colour."""
+    original = _scene(12, (300, 200))
+    crop = (45, 20, 45 + 240, 20 + 160)  # a 1.25x tighter crop, off-centre
+    final = develop_lib.apply_recipe(original.crop(crop), {"exposure": 0.4, "vibrance": 0.3})
+    framing = compare.align(original, final)
+    assert abs(framing.scale - 1.25) <= 0.03, framing
+    left, top, right, bottom = framing.box
+    assert abs(left * 300 - 45) <= 8 and abs(top * 200 - 20) <= 8, framing
+    aligned = compare.distance(framing.crop(original), final).delta_e
+    unaligned = compare.distance(original, final).delta_e
+    assert aligned < unaligned, "measured on the same regions, the difference is only the edit"
+
+
 def test_the_fit_finds_the_edit_that_made_the_reference() -> None:
     """Sliders fitted to a reference made by known sliders land close to it:
     the ceiling the bake-off reports is a real ceiling, not a guess."""

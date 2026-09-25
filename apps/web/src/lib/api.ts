@@ -614,6 +614,8 @@ export interface AiEditSettings {
   configured: boolean;
   enabled: boolean;
   model: string;
+  /** Shipped photos the installed learned look was made from; 0 = none. */
+  look_examples: number;
 }
 
 export interface GdriveSettings {
@@ -1095,11 +1097,14 @@ export const api = {
   curateListing: (id: string) =>
     request<RemovalSuggestion[]>(`/listings/${id}/curate`, { method: "POST" }),
   aiEditListing: (id: string, skyName: string | null, mode: "edit" | "describe" = "edit") =>
-    request<{ queued: number; mode: "ai" | "preset" | "describe" }>(`/listings/${id}/ai-edit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sky_name: skyName, mode }),
-    }),
+    request<{ queued: number; mode: "ai" | "preset" | "describe"; look: number }>(
+      `/listings/${id}/ai-edit`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sky_name: skyName, mode }),
+      },
+    ),
   aiEditSettings: () => request<AiEditSettings>("/develop/settings/ai"),
   updateAiEditSettings: (patch: { api_key?: string; enabled?: boolean; model?: string }) =>
     request<AiEditSettings>("/develop/settings/ai", {

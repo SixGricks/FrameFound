@@ -703,6 +703,7 @@ async def ai_edit(
     listing_id: uuid.UUID,
     _user: CurrentUser,
     db: DbDep,
+    settings: SettingsDep,
     body: ProcessRequest | None = None,
 ) -> dict[str, Any]:
     """Auto-edit every photograph in the listing.
@@ -745,9 +746,14 @@ async def ai_edit(
         # that never comes.
         stmt = stmt.where(ListingItem.naming_source != "confirmed")
     images = (await db.execute(stmt)).scalar_one()
+    from framefound.media import looks
+
+    # How many shipped photographs the learned look was made from; 0 = none
+    # installed, and the tone comes from the model or the preset instead.
+    look = 0 if mode == "describe" else looks.examples(settings.data_dir)
     if not images:
         if mode == "describe":
-            return {"queued": 0, "mode": mode}
+            return {"queued": 0, "mode": mode, "look": 0}
         raise HTTPException(status_code=400, detail="No photographs to edit")
 
     try:
@@ -761,9 +767,10 @@ async def ai_edit(
         listing_id=str(listing_id),
         images=images,
         mode=mode,
+        look=look,
         sky=body.sky_name or "",
     )
-    return {"queued": images, "mode": mode}
+    return {"queued": images, "mode": mode, "look": look}
 
 
 class RemovalSuggestion(BaseModel):

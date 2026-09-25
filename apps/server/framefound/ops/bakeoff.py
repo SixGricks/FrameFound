@@ -32,6 +32,7 @@ request auto-edit makes — and only when --models is given.
 import argparse
 import asyncio
 import json
+import re
 import statistics
 import sys
 import time
@@ -45,11 +46,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from framefound.config import get_settings
 from framefound.db.models import Asset, Library
-from framefound.media import compare
+from framefound.media import compare, looks
 from framefound.media import develop as develop_lib
 from framefound.scanner.paths import PathValidationError, safe_join
 
 WORK_EDGE = 1024  # renders and measurements
+# The library sky closest to what Fotello puts into overcast exteriors: blue
+# with scattered cumulus.
+DEFAULT_SKY = "blue-sky-scattered-clouds-302810758.jpg"
 PANEL_EDGE = 720  # each picture on a sheet
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 
@@ -64,9 +68,10 @@ PRICES = {
 }
 
 _EXTERIOR_WORDS = (
-    "exterior", "aerial", "drone", "dji", "front", "rear", "yard", "barn", "elevation",
-    "driveway", "lawn", "porch", "field", "pasture", "pond", "road", "street", "outbuilding",
-    "shed", "garage-exterior", "facade", "deck", "patio", "view", "acre", "property",
+    "exterior", "aerial", "drone", "dji_", "yard", "barn", "elevation", "driveway", "lawn",
+    "porch", "field", "pasture", "pond", "outbuilding", "shed", "facade", "deck", "patio",
+    "acreage", "parcel", "garden", "landscape", "frontage", "pool", "silo", "front-entry",
+    "flagstone", "walkway",
 )  # fmt: skip
 
 
@@ -83,9 +88,22 @@ def price_of(model: str, usage: dict[str, int]) -> float | None:
     ) / 1_000_000
 
 
-def is_exterior(*names: str) -> bool:
-    text = " ".join(names).lower()
-    return any(word in text for word in _EXTERIOR_WORDS)
+def is_exterior(pair: dict[str, Any]) -> bool:
+    """Outside or in, from the words that describe the photograph: the SEO
+    file name when there is one, else the first clause of a model's caption
+    ("Kitchen island, looking toward the deck" is a kitchen). Camera names
+    say nothing — except a drone's, which is outside."""
+    names = f"{pair['original']} {pair['reference']}".lower()
+    if "dji_" in names:
+        return True
+    if not re.search(r"(^|/)(img_|_mg_|dsc|\d{3}_img)", names):
+        return any(word in names for word in _EXTERIOR_WORDS)
+    captions = [
+        str((detail or {}).get("caption") or "").split(",")[0].lower()
+        for detail in pair.get("models", {}).values()
+    ]
+    votes = [any(word in c for word in _EXTERIOR_WORDS) for c in captions if c]
+    return sum(votes) * 2 > len(votes) if votes else False
 
 
 # ------------------------------------------------------------- resolving
@@ -237,17 +255,42 @@ def _sheet(panels: list[tuple[str, Any]], title: str) -> Any:
 def run(args: argparse.Namespace) -> int:
     from framefound.ai import recipe_picker
 
-    out_dir = get_settings().data_dir / "benchmarks" / args.name
+    settings = get_settings()
+    out_dir = settings.data_dir / "benchmarks" / args.name
     (out_dir / "sheets").mkdir(parents=True, exist_ok=True)
     models = [m for m in (args.models or "").split(",") if m]
+
+    # --reuse: the recipes an earlier run already paid for, re-rendered and
+    # re-measured with the engine as it is now.
+    prior: dict[str, dict[str, dict[str, Any]]] = {}
+    if args.reuse:
+        earlier = json.loads(
+            (settings.data_dir / "benchmarks" / args.reuse / "results.json").read_text()
+        )
+        for old in earlier["pairs"]:
+            for model in earlier["models"]:
+                variant = old["variants"].get(model)
+                if variant is not None:
+                    prior.setdefault(model, {})[old["original"]] = {
+                        "recipe": variant["recipe"],
+                        **(old["models"].get(model) or {}),
+                    }
+        models = list(dict.fromkeys([*earlier["models"], *models]))
 
     originals = asyncio.run(_resolve(args.originals, args.recursive))
     references = asyncio.run(_resolve(args.reference, False))
     print(f"{len(originals)} originals, {len(references)} references")
     key = ""
-    if models:
+    if any(m not in prior for m in models):
         key, configured = asyncio.run(_api_settings())
         models = [configured if m == "configured" else m for m in models]
+
+    sky_image = None
+    if args.sky and args.sky != "none":
+        from PIL import Image
+
+        sky_image = Image.open(settings.data_dir / "skies" / args.sky)
+        sky_image.load()
 
     started = time.time()
     orig_desc, orig_portrait = _describe_all(originals)
@@ -270,6 +313,10 @@ def run(args: argparse.Namespace) -> int:
     # network-bound part, and nothing about them depends on the renders.
     picks: dict[str, dict[str, dict[str, Any]]] = {m: {} for m in models}
     for model in models:
+        if model in prior:
+            picks[model] = prior[model]
+            print(f"  {model}: reusing {len(prior[model])} recipes from {args.reuse}")
+            continue
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {
@@ -286,65 +333,97 @@ def run(args: argparse.Namespace) -> int:
     for number, pair in enumerate(pairs, start=1):
         base = bases[pair.original]
         reference = _work(references[pair.reference])
-        portrait = base.height > base.width
+        # Every variant is measured through the frame the final used, so a
+        # crop or lens correction in the final is not charged to colour.
+        framing = compare.align(base, reference)
+        portrait = reference.height > reference.width
         ref_grid = compare.grid_lab(reference, portrait)
 
-        variants: list[tuple[str, dict[str, Any] | None]] = [
-            ("original", {}),
-            ("preset", dict(develop_lib.LISTING_PRESET)),
+        # (label, recipe as recorded, rendered image)
+        variants: list[tuple[str, dict[str, Any], Any]] = [
+            ("original", {}, base),
+            ("preset", dict(develop_lib.LISTING_PRESET), None),
         ]
         extra: dict[str, Any] = {}
+        wants_sky = False
         for model in models:
             picked = picks[model].get(pair.original, {})
-            variants.append((model, picked.get("recipe") if "recipe" in picked else None))
             extra[model] = {
                 k: picked.get(k)
                 for k in ("caption", "slug", "needs_sky_replacement", "usage", "error")
                 if k in picked
             }
+            if "recipe" in picked:
+                variants.append((model, picked["recipe"], None))
+                wants_sky = wants_sky or bool(picked.get("needs_sky_replacement"))
+
+        # The sky swap, where a model asked for one: FrameFound's own
+        # compositor with the operator's library sky — the step a
+        # slider-only comparison leaves out, and the one Fotello's exteriors
+        # lean on hardest.
+        sky_base = None
+        if sky_image is not None and wants_sky:
+            from framefound.ai import skyseg
+            from framefound.media.sky import composite_sky
+
+            try:
+                sky_base = composite_sky(base, skyseg.sky_mask(base), sky_image)
+            except Exception as exc:
+                print(f"  no sky for {pair.original}: {exc}", file=sys.stderr)
+            if sky_base is not None:
+                for model in models:
+                    picked = picks[model].get(pair.original, {})
+                    if "recipe" in picked and picked.get("needs_sky_replacement"):
+                        recipe = picked["recipe"]
+                        variants.append(
+                            (
+                                f"{model} + sky",
+                                {**recipe, "sky": {"name": args.sky}},
+                                develop_lib.render(sky_base, recipe),
+                            )
+                        )
+
         if not args.no_fit:
-            small = base.copy()
-            small.thumbnail((compare.FIT_EDGE, compare.FIT_EDGE))
-            fitted, _fit_de = compare.fit_recipe(
-                small,
-                ref_grid,
-                dict(develop_lib.LISTING_PRESET),
-                lambda img, recipe: develop_lib.apply_recipe(img, recipe),
-                develop_lib.RECIPE_FIELDS,
-            )
-            variants.append(("best sliders", fitted))
+            for label, start_image in (("best sliders", base), ("best sliders + sky", sky_base)):
+                if start_image is None:
+                    continue
+                small = framing.crop(start_image)
+                small.thumbnail((compare.FIT_EDGE, compare.FIT_EDGE))
+                fitted, _fit_de = compare.fit_recipe(
+                    small,
+                    ref_grid,
+                    dict(develop_lib.LISTING_PRESET),
+                    develop_lib.apply_recipe,
+                    develop_lib.RECIPE_FIELDS,
+                )
+                variants.append((label, fitted, develop_lib.render(start_image, fitted)))
 
         measured: dict[str, Any] = {}
         panels: list[tuple[str, Any]] = []
-        for label, recipe in variants:
-            if recipe is None:
-                continue
-            rendered = develop_lib.render(base, recipe) if recipe else base
-            dist = compare.distance_lab(compare.grid_lab(rendered, portrait), ref_grid)
+        for label, recipe, image in variants:
+            rendered = image if image is not None else develop_lib.render(base, recipe)
+            framed = framing.crop(rendered)
+            dist = compare.distance_lab(compare.grid_lab(framed, portrait), ref_grid)
             measured[label] = {"recipe": recipe, **dist.as_dict()}
-            panels.append((f"{label} — ΔE {dist.delta_e:.1f}", rendered))
+            # Plain ASCII: the sheet font has no glyph for a delta or an arrow.
+            panels.append((f"{label}   dE {dist.delta_e:.1f}", framed))
         panels.append((f"{args.label} (what shipped)", reference))
 
         ref_stem = Path(pair.reference).stem
-        title = f"{number:02d}  {pair.reference}  ←  {pair.original}  ({pair.method})"
+        title = f"{number:02d}  {pair.reference}  <-  {pair.original}  ({pair.method})"
         _sheet(panels, title).save(
             out_dir / "sheets" / f"{number:02d}-{ref_stem[:60]}.jpg", "JPEG", quality=85
         )
-        results.append(
-            {
-                "original": pair.original,
-                "reference": pair.reference,
-                "match": pair.method,
-                "match_score": pair.score,
-                "exterior": is_exterior(
-                    pair.original,
-                    pair.reference,
-                    *[str(extra.get(m, {}).get("caption") or "") for m in models],
-                ),
-                "variants": measured,
-                "models": extra,
-            }
-        )
+        entry = {
+            "original": pair.original,
+            "reference": pair.reference,
+            "match": pair.method,
+            "match_score": pair.score,
+            "framing": {"scale": framing.scale, "score": framing.score, "box": framing.box},
+            "variants": measured,
+            "models": extra,
+        }
+        results.append({**entry, "exterior": is_exterior(entry)})
         print(
             f"  {number:02d}/{len(pairs)} {ref_stem[:50]}: "
             + ", ".join(f"{k} {v['delta_e']:.1f}" for k, v in measured.items())
@@ -355,6 +434,8 @@ def run(args: argparse.Namespace) -> int:
         "label": args.label,
         "originals": args.originals,
         "reference": args.reference,
+        "recursive": args.recursive,
+        "sky": args.sky,
         "models": models,
         "unmatched_references": unmatched,
         "pairs": results,
@@ -404,7 +485,9 @@ def summarize(runs: list[dict[str, Any]]) -> str:
                 "|---|---|---|---|---|---|---|---|",
             ]
         )
-        contenders = [label for label in labels if label != "best sliders"]
+        # The fitted variants are ceilings (they peeked at the answer), so
+        # they are reported but never "closest".
+        contenders = [label for label in labels if not label.startswith("best sliders")]
         wins: dict[str, int] = dict.fromkeys(contenders, 0)
         for pair in subset:
             present = [c for c in contenders if c in pair["variants"]]
@@ -445,8 +528,11 @@ def summarize(runs: list[dict[str, Any]]) -> str:
         lines.append("")
 
     table(pairs, "All photographs")
-    table([p for p in pairs if p["exterior"]], "Exteriors and aerials")
-    table([p for p in pairs if not p["exterior"]], "Interiors")
+    # Re-classified here rather than read from the file, so earlier runs
+    # benefit when the rule improves.
+    outside = [is_exterior(p) for p in pairs]
+    table([p for p, out in zip(pairs, outside, strict=True) if out], "Exteriors and aerials")
+    table([p for p, out in zip(pairs, outside, strict=True) if not out], "Interiors")
 
     models = sorted({m for run in runs for m in run["models"]})
     if models:
@@ -475,6 +561,19 @@ def summarize(runs: list[dict[str, Any]]) -> str:
             )
         lines.append("")
 
+    scales = [p["framing"]["scale"] for p in pairs if "framing" in p]
+    if scales:
+        reframed = [s for s in scales if s >= 1.03]
+        lines += [
+            "## Framing",
+            "",
+            f"{len(reframed)} of {len(scales)} finals were re-framed tighter than the original "
+            f"(lens correction, straightening or a crop); median {statistics.median(scales):.2f}x. "
+            "Colour above is measured through each final's own frame, so this is not counted "
+            "against any variant.",
+            "",
+        ]
+
     worst_label = models[0] if models else "preset"
     ranked = sorted(
         (p for p in pairs if worst_label in p["variants"]),
@@ -497,6 +596,120 @@ def summarize(runs: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def learn(names: list[str]) -> int:
+    """Can FrameFound learn the look from what already shipped?
+
+    Every bake-off pair carries the sliders fitted to its final. Indexed by
+    what each original looked like, they predict sliders for a new
+    photograph (compare.LearnedLook) — locally, free, and in the operator's
+    own look. Scored honestly: each shoot is predicted by a look learned
+    from the *other* shoots only. Also scores a half-and-half blend of the
+    learned look with each model's recipe.
+
+    Writes learned-look.json (every example, for production use) and
+    learned-<names>.md beside the runs.
+    """
+    base_dir = get_settings().data_dir / "benchmarks"
+    runs = [json.loads((base_dir / n / "results.json").read_text()) for n in names]
+    samples: list[dict[str, Any]] = []
+    for run in runs:
+        recursive = any("/" in p["original"] for p in run["pairs"])
+        originals = asyncio.run(_resolve(run["originals"], recursive))
+        references = asyncio.run(_resolve(run["reference"], False))
+        for pair in run["pairs"]:
+            best = pair["variants"].get("best sliders")
+            if not best or pair["original"] not in originals:
+                continue
+            base = _work(originals[pair["original"]])
+            reference = _work(references[pair["reference"]])
+            portrait = reference.height > reference.width
+            recorded = pair.get("framing")
+            framing = (
+                compare.Framing(tuple(recorded["box"]), recorded["scale"], recorded["score"])
+                if recorded
+                else compare.align(base, reference)
+            )
+            small = framing.crop(base)
+            small.thumbnail((compare.FIT_EDGE, compare.FIT_EDGE))
+            samples.append(
+                {
+                    "run": run["name"],
+                    "pair": pair,
+                    "feat": compare.features(base),
+                    "small": small,
+                    "portrait": portrait,
+                    "ref": compare.grid_lab(reference, portrait),
+                    "best": best["recipe"],
+                }
+            )
+        print(f"  {run['name']}: {sum(1 for s in samples if s['run'] == run['name'])} examples")
+
+    def score(sample: dict[str, Any], recipe: dict[str, float]) -> dict[str, Any]:
+        rendered = develop_lib.apply_recipe(sample["small"], recipe)
+        dist = compare.distance_lab(compare.grid_lab(rendered, sample["portrait"]), sample["ref"])
+        return {"recipe": recipe, **dist.as_dict()}
+
+    drift: list[float] = []
+    for run in runs:
+        train = [s for s in samples if s["run"] != run["name"]]
+        if len(train) < 10:
+            continue
+        look = compare.LearnedLook.fit([s["feat"] for s in train], [s["best"] for s in train])
+        for sample in (s for s in samples if s["run"] == run["name"]):
+            variants = sample["pair"]["variants"]
+            predicted = look.predict(sample["feat"])
+            variants["learned look"] = score(sample, predicted)
+            for model in run["models"]:
+                recipe = (variants.get(model) or {}).get("recipe")
+                if recipe is None:
+                    continue
+                keys = set(recipe) | set(predicted)
+                blend = {
+                    k: round((recipe.get(k, 0.0) + predicted.get(k, 0.0)) / 2, 3)
+                    for k in keys
+                    if k in develop_lib.RECIPE_FIELDS
+                }
+                variants[f"learned + {model}"] = score(sample, blend)
+            # The runs measured at 1024px, this at 256: check they agree.
+            if "preset" in variants:
+                small_preset = score(sample, dict(develop_lib.LISTING_PRESET))["delta_e"]
+                drift.append(abs(small_preset - variants["preset"]["delta_e"]))
+
+    everything = compare.LearnedLook.fit([s["feat"] for s in samples], [s["best"] for s in samples])
+    look_json = json.dumps(
+        {
+            "features": list(compare.FEATURE_NAMES),
+            "mean": everything.mean.tolist(),
+            "scale": everything.scale.tolist(),
+            "examples": [
+                {
+                    "source": f"{s['run']}/{s['pair']['reference']}",
+                    "features": [round(float(x), 3) for x in s["feat"]],
+                    "recipe": s["best"],
+                }
+                for s in samples
+            ],
+        },
+        indent=1,
+    )
+    (base_dir / "learned-look.json").write_text(look_json)
+    # Installed where auto-edit reads it (media/looks.py): from the next run
+    # on, auto-edit takes its tone from these examples.
+    installed = get_settings().data_dir / looks.LOOK_PATH
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    installed.write_text(look_json)
+    print(f"Installed the learned look ({len(samples)} examples) at {installed}")
+    report = summarize(runs)
+    if drift:
+        report += (
+            f"\nLearned-look scores are measured on 256px renders; the preset measured both "
+            f"ways differs by {statistics.fmean(drift):.2f} ΔE on average.\n"
+        )
+    (base_dir / f"learned-{'-'.join(names)[:80]}.md").write_text(report)
+    print(report)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("name", nargs="?", help="output folder under /data/benchmarks")
@@ -508,9 +721,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=4, help="API calls in flight")
     parser.add_argument("--no-fit", action="store_true", help="skip the best-sliders fit")
+    parser.add_argument("--reuse", help="take model recipes from this earlier run (no API)")
+    parser.add_argument(
+        "--sky",
+        default=DEFAULT_SKY,
+        help="library sky to composite where a model asked for one ('none' to skip)",
+    )
     parser.add_argument("--combine", nargs="+", help="summarise earlier runs together")
+    parser.add_argument("--learn", nargs="+", help="learn the look from earlier runs")
     args = parser.parse_args(argv)
 
+    if args.learn:
+        return learn(args.learn)
     if args.combine:
         base = get_settings().data_dir / "benchmarks"
         runs = [json.loads((base / n / "results.json").read_text()) for n in args.combine]

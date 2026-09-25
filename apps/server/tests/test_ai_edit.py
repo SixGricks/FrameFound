@@ -54,6 +54,18 @@ def test_auto_wb_is_bounded_on_a_legitimately_warm_scene() -> None:
     assert r > b + 60, "still recognisably warm"
 
 
+def test_auto_wb_does_not_read_a_lawn_as_a_green_cast() -> None:
+    """Lawn fills the mid-bright band of a front exterior. Measured as a
+    cast, its correction turned the overcast sky purple and the house
+    magenta (Davis Rd, in the Fotello bake-off)."""
+    scene = Image.new("RGB", (64, 64), (205, 208, 212))  # overcast sky
+    scene.paste((90, 150, 50), (0, 24, 64, 64))  # lawn, most of the frame
+    out = develop.apply_recipe(scene, {"auto_wb": 1.0})
+    r, g, b = out.getpixel((32, 8))
+    assert abs(r - g) <= 6 and b >= r, f"the grey sky stays grey, got {(r, g, b)}"
+    assert out.getpixel((32, 50))[1] >= 145, "the grass stays green"
+
+
 def test_local_contrast_separates_regions_not_flats() -> None:
     image = Image.new("RGB", (96, 96), (110, 110, 110))
     for y in range(96):
@@ -518,6 +530,54 @@ async def test_auto_edit_judges_the_object_removed_version(
     assert blue > 150 and red < 80, "the model saw the removal result, not the original"
 
 
+# ------------------------------------------------------------ learned look
+
+
+async def test_an_installed_look_sets_the_tone_and_the_model_straightens(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bake-off's finding, wired in: tone from the learned look (closer
+    to what shipped than any model), straightening and naming from Claude."""
+    from test_looks import _install
+
+    from framefound.ai import recipe_picker
+    from framefound.processing import tasks as tasks_module
+
+    _install(get_settings().data_dir, {"exposure": 0.33, "vibrance": 0.21})
+    client = env["client"]
+    await client.put("/api/v1/develop/settings/ai", json={"api_key": "sk-ant-test"})
+    assert (await client.get("/api/v1/develop/settings/ai")).json()["look_examples"] == 12
+    listing = (
+        await client.post(
+            "/api/v1/listings", json={"name": "Look", "asset_ids": [env["ids"]["a1"]]}
+        )
+    ).json()
+    resp = await client.post(f"/api/v1/listings/{listing['id']}/ai-edit")
+    assert resp.json()["look"] == 12
+
+    monkeypatch.setattr(
+        recipe_picker,
+        "pick_recipe",
+        lambda preview, key, model: {
+            "recipe": {"exposure": 1.8, "rotate": -1.5},
+            "needs_sky_replacement": False,
+            "notes": "",
+            "caption": "Front",
+            "slug": "front",
+        },
+    )
+    await asyncio.to_thread(tasks_module.ai_edit_listing, listing["id"], None, "ai")
+    async with env["factory"]() as db:
+        edit = (
+            await db.execute(
+                select(AssetEdit).where(AssetEdit.asset_id == uuidlib.UUID(env["ids"]["a1"]))
+            )
+        ).scalar_one()
+    assert edit.recipe["exposure"] == 0.33, "tone from the look, not the model's 1.8"
+    assert edit.recipe["vibrance"] == 0.21
+    assert edit.recipe["rotate"] == -1.5, "the model's straightening kept"
+
+
 # ----------------------------------------------------------------- naming
 
 
@@ -593,7 +653,8 @@ async def test_describe_mode_names_without_editing_and_skips_confirmed(
 
     resp = await client.post(f"{url}/ai-edit", json={"mode": "describe"})
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"queued": 1, "mode": "describe"}, "the confirmed photo is not counted"
+    body = resp.json()
+    assert (body["queued"], body["mode"]) == (1, "describe"), "the confirmed photo is not counted"
 
     calls: list[bytes] = []
 

@@ -112,6 +112,103 @@ def distance(candidate: Any, reference: Any) -> Distance:
     return distance_lab(grid_lab(candidate, portrait), grid_lab(reference, portrait))
 
 
+# --------------------------------------------------------------- framing
+
+
+def _structure(grey: Any) -> Any:
+    """Tone-blind structure of a small grey array: ranks plus their gradient,
+    normalised, so a dot product is a correlation that an edit's tone curve
+    cannot move."""
+    import numpy as np
+
+    flat = grey.astype(np.float64).ravel()
+    ranks = np.argsort(np.argsort(flat)).astype(np.float64).reshape(grey.shape)
+    gy, gx = np.gradient(ranks)
+    parts = []
+    for part in (ranks, np.hypot(gx, gy)):
+        vector = part.ravel() - part.mean()
+        norm = float(np.linalg.norm(vector))
+        parts.append(vector / norm if norm > 1e-9 else vector)
+    return np.concatenate(parts) / np.sqrt(2.0)
+
+
+@dataclass
+class Framing:
+    box: tuple[float, float, float, float]  # of the original, as fractions
+    scale: float  # 1.0 = same framing; 1.15 = the final is a 15% tighter crop
+    score: float  # structural correlation at that framing
+
+    def crop(self, image: Any) -> Any:
+        left, top, right, bottom = self.box
+        w, h = image.size
+        return image.crop((round(left * w), round(top * h), round(right * w), round(bottom * h)))
+
+
+def align(base: Any, reference: Any) -> Framing:
+    """Where the final's frame sits inside the original's.
+
+    Finals are often re-framed as well as re-toned — lens correction,
+    straightened verticals, a tighter crop — and a colour distance measured
+    across two different framings charges the misregistration to the colour.
+    This finds the crop (scale and offset, at the final's aspect) of the
+    original whose structure best matches the final, coarse to fine, so the
+    comparison is made region for region. A match too weak to trust returns
+    the whole frame.
+    """
+    import numpy as np
+    from PIL import Image
+
+    grey = base.convert("L")
+    grey.thumbnail((192, 192), Image.Resampling.BOX)
+    width, height = grey.size
+    aspect = reference.width / reference.height
+    target = (40, max(8, round(40 / aspect))) if aspect >= 1 else (max(8, round(40 * aspect)), 40)
+    wanted = _structure(
+        np.asarray(reference.convert("L").resize(target, Image.Resampling.BOX), dtype=np.float64)
+    )
+    if width / height > aspect:
+        full_w, full_h = height * aspect, float(height)
+    else:
+        full_w, full_h = float(width), width / aspect
+
+    def score(x: float, y: float, s: float) -> float:
+        cw, ch = full_w / s, full_h / s
+        x = min(max(x, 0.0), width - cw)
+        y = min(max(y, 0.0), height - ch)
+        crop = grey.resize(target, Image.Resampling.BOX, box=(x, y, x + cw, y + ch))
+        return float(_structure(np.asarray(crop, dtype=np.float64)) @ wanted)
+
+    best = (-2.0, 0.0, 0.0, 1.0)
+    for s in np.arange(1.0, 1.37, 0.04):
+        cw, ch = full_w / s, full_h / s
+        for x in np.linspace(0.0, width - cw, 9):
+            for y in np.linspace(0.0, height - ch, 9):
+                value = score(float(x), float(y), float(s))
+                if value > best[0]:
+                    best = (value, float(x), float(y), float(s))
+    # Refine around the coarse answer.
+    _value, bx, by, bs = best
+    step_x, step_y = width * 0.03, height * 0.03
+    for s in np.arange(bs - 0.03, bs + 0.031, 0.01):
+        if s < 1.0:
+            continue
+        for x in np.linspace(bx - step_x, bx + step_x, 7):
+            for y in np.linspace(by - step_y, by + step_y, 7):
+                value = score(float(x), float(y), float(s))
+                if value > best[0]:
+                    best = (value, float(x), float(y), float(s))
+
+    value, x, y, s = best
+    if value < MIN_MATCH:
+        return Framing((0.0, 0.0, 1.0, 1.0), 1.0, round(value, 3))
+    cw, ch = full_w / s, full_h / s
+    x = min(max(x, 0.0), width - cw)
+    y = min(max(y, 0.0), height - ch)
+    return Framing(
+        (x / width, y / height, (x + cw) / width, (y + ch) / height), round(s, 3), round(value, 3)
+    )
+
+
 # ---------------------------------------------------------------- matching
 
 _NUMBERED = re.compile(r"^\d{1,3}_(?=[a-z])")
@@ -205,6 +302,99 @@ def match(
             pairs.append(Pair(left[j], unmatched[i], "content", round(score, 3)))
     pairs.sort(key=lambda pair: pair.reference)
     return pairs
+
+
+# ------------------------------------------------------- learning a look
+
+FEATURE_NAMES = (
+    "l_p2", "l_p10", "l_p25", "l_p50", "l_p75", "l_p90", "l_p98",
+    "a_mean", "b_mean", "chroma_mean", "clipped", "crushed",
+    "top_l", "bottom_l", "blue_sky", "green", "portrait",
+)  # fmt: skip
+
+
+def features(image: Any) -> Any:
+    """A photograph as the numbers an editor's first glance takes in: how
+    its brightness is spread, its cast, how much is blown or crushed, sky
+    above and grass below. What "photographs like this one" means when
+    looking up how similar photographs were edited."""
+    import numpy as np
+    from PIL import Image
+
+    small = image.convert("RGB")
+    small.thumbnail((128, 128), Image.Resampling.BOX)
+    lab = to_lab(np.asarray(small, dtype=np.float64) / 255.0)
+    lightness, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    third = max(1, lab.shape[0] // 3)
+    top = lab[:third]
+    return np.asarray(
+        [
+            *np.percentile(lightness, (2, 10, 25, 50, 75, 90, 98)),
+            float(a.mean()),
+            float(b.mean()),
+            float(np.hypot(a, b).mean()),
+            float((lightness > 95).mean()) * 100,
+            float((lightness < 12).mean()) * 100,
+            float(top[..., 0].mean()),
+            float(lab[-third:, ..., 0].mean()),
+            float(((top[..., 2] < -12) & (top[..., 0] > 45)).mean()) * 100,
+            float(((a < -12) & (lightness > 20)).mean()) * 100,
+            100.0 if image.height > image.width else 0.0,
+        ]
+    )
+
+
+@dataclass
+class LearnedLook:
+    """Slider recipes fitted to shipped edits, indexed by what the original
+    looked like. Predicting is a weighted average of the nearest examples'
+    recipes — k-nearest-neighbours on standardised features, no training
+    step, and every prediction explainable by the photographs it came from."""
+
+    feats: Any  # (n, f)
+    recipes: list[dict[str, float]]
+    mean: Any
+    scale: Any
+    k: int = 7
+
+    @classmethod
+    def fit(cls, feats: list[Any], recipes: list[dict[str, float]], k: int = 7) -> "LearnedLook":
+        import numpy as np
+
+        matrix = np.stack(feats)
+        mean = matrix.mean(axis=0)
+        scale = matrix.std(axis=0)
+        scale[scale < 1e-6] = 1.0
+        return cls((matrix - mean) / scale, list(recipes), mean, scale, k)
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any], k: int = 7) -> "LearnedLook":
+        """The look as `bakeoff --learn` saved it: raw features, the
+        standardisation, and each example's fitted recipe."""
+        import numpy as np
+
+        if list(payload.get("features", [])) != list(FEATURE_NAMES):
+            raise ValueError("saved look was made with a different feature set")
+        mean = np.asarray(payload["mean"], dtype=np.float64)
+        scale = np.asarray(payload["scale"], dtype=np.float64)
+        raw = np.asarray([e["features"] for e in payload["examples"]], dtype=np.float64)
+        recipes = [dict(e["recipe"]) for e in payload["examples"]]
+        return cls((raw - mean) / scale, recipes, mean, scale, k)
+
+    def predict(self, feat: Any) -> dict[str, float]:
+        import numpy as np
+
+        query = (np.asarray(feat) - self.mean) / self.scale
+        dist = np.sqrt(((self.feats - query) ** 2).sum(axis=1))
+        nearest = np.argsort(dist)[: self.k]
+        weights = 1.0 / (dist[nearest] + 0.5)
+        weights /= weights.sum()
+        keys = sorted({key for i in nearest for key in self.recipes[i]})
+        chosen = list(zip(nearest, weights, strict=True))
+        return {
+            key: round(float(sum(w * self.recipes[i].get(key, 0.0) for i, w in chosen)), 3)
+            for key in keys
+        }
 
 
 # ----------------------------------------------------------- the ceiling

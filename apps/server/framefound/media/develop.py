@@ -346,6 +346,13 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     return Image.fromarray((arr * 255.0 + 0.5).astype("uint8"), "RGB")
 
 
+# A warm camera-JPEG interior wall sits near 0.3 saturation; grass, red brick
+# and blue sky sit above 0.45. The cast is measured on what is below.
+NEUTRAL_MAX_SATURATION = 0.42
+# Fewer candidate neutrals than this share of the frame: no correction.
+NEUTRAL_MIN_FRACTION = 0.02
+
+
 def _neutralise(arr: Any, strength: float, np: Any) -> Any:
     """Remove the measured colour cast, by strength.
 
@@ -355,11 +362,21 @@ def _neutralise(arr: Any, strength: float, np: Any) -> Any:
     whole frame would try to neutralise the oak floor; this does not. Gains
     are bounded so a photograph that is legitimately one colour (a sunset,
     a red barn wall) is nudged, never bleached.
+
+    Only surfaces that could plausibly *be* neutral vote: a pixel more than
+    NEUTRAL_MAX_SATURATION saturated is lawn, brick or blue sky, not a grey
+    wall with a cast. Without that, a lawn-heavy exterior — lawn fills the
+    mid-bright band — read as a green cast, and its correction turned the
+    overcast sky purple and the house magenta (found by the Fotello
+    bake-off, Sep 2026). A photograph with almost nothing neutral in it is
+    left as it is: there is nothing to measure a cast against.
     """
     luma = arr @ np.asarray(_LUMA, dtype=np.float32)
     low, high = np.percentile(luma, (40.0, 95.0))
-    band = (luma >= low) & (luma <= high)
-    if not band.any():
+    brightest = arr.max(axis=-1)
+    saturation = (brightest - arr.min(axis=-1)) / np.maximum(brightest, 1e-4)
+    band = (luma >= low) & (luma <= high) & (saturation <= NEUTRAL_MAX_SATURATION)
+    if band.sum() < NEUTRAL_MIN_FRACTION * luma.size:
         return arr
     means = arr[band].reshape(-1, 3).mean(axis=0)
     target = float(means.mean())

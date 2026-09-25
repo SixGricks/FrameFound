@@ -1726,6 +1726,15 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
             develop_lib.open_for_render(source, already_normalized=normalized)
         )
 
+    def analyse(source: Path, normalized: bool, look: Any) -> tuple[bytes, dict[str, float]]:
+        """One decode for both jobs: the preview the model sees, and the
+        learned look's tone for this photograph."""
+        from framefound.media import looks
+
+        image = develop_lib.open_for_render(source, already_normalized=normalized)
+        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        return recipe_picker.preview_bytes(image), looks.predict(look, image)
+
     async def run() -> None:
         from sqlalchemy import func, select, update
 
@@ -1748,6 +1757,11 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     return
                 api_key = config.api_key() if use_ai else ""
                 model = config.model
+                # The operator's learned look sets the tone when installed
+                # (media/looks.py); the model keeps straightening and naming.
+                from framefound.media import looks
+
+                look = None if describe_only else looks.load(settings.data_dir)
 
                 async def save_naming(item_id: uuid.UUID, naming: dict[str, str]) -> None:
                     if not (naming["caption"] or naming["slug"]):
@@ -1819,8 +1833,14 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                             edited += 1
                             continue
                         naming: dict[str, str] | None = None
-                        if use_ai:
+                        learned: dict[str, float] | None = None
+                        if look is not None:
+                            preview, learned = await asyncio.to_thread(
+                                analyse, path, normalized, look
+                            )
+                        elif use_ai:
                             preview = await asyncio.to_thread(build_preview, path, normalized)
+                        if use_ai:
                             picked = await asyncio.to_thread(
                                 recipe_picker.pick_recipe, preview, api_key, model
                             )
@@ -1832,6 +1852,8 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                             }
                         else:
                             recipe = dict(develop_lib.LISTING_PRESET)
+                        if learned is not None:
+                            recipe = looks.combine(learned, recipe)
 
                         if sky_name:
                             fraction = await asyncio.to_thread(_sky_fraction_for, path, normalized)
@@ -1873,6 +1895,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     listing_id=listing_id,
                     mode=mode,
                     model=model if use_ai else "",
+                    look_examples=len(look.recipes) if look is not None else 0,
                     edited=edited,
                     skipped=skipped,
                     **{f"tokens_{key}": value for key, value in tokens.items()},
