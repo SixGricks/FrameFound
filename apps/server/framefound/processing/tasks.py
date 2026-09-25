@@ -1747,6 +1747,19 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                 if listing is None:
                     log.warning("ai_edit.listing_gone", listing_id=listing_id)
                     return
+                listing_uuid = listing.id
+
+                async def set_state(state: str, message: str = "") -> None:
+                    # A bulk UPDATE: nothing loaded can be expired by it, and
+                    # the page reads the state on its next poll.
+                    await db.execute(
+                        update(Listing)
+                        .where(Listing.id == listing_uuid)
+                        .values(ai_edit_state=state, ai_edit_message=message[:300])
+                    )
+                    await db.commit()
+
+                await set_state("running")
                 config = await load_ai_edit_config(db)
                 describe_only = mode == "describe"
                 use_ai = mode in ("ai", "describe") and config.ready
@@ -1754,6 +1767,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     # The endpoint refuses this; a key removed between the
                     # request and this worker picking it up lands here.
                     log.warning("ai_edit.describe_without_key", listing_id=listing_id)
+                    await set_state("failed", "No Anthropic key is configured (Security page)")
                     return
                 api_key = config.api_key() if use_ai else ""
                 model = config.model
@@ -1809,6 +1823,8 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                 ]
 
                 edited = skipped = 0
+                first_problem = ""  # the first skip's reason, for the page
+                stopped = ""  # set when the API says no further call can work
                 # What the API says each call cost, summed per run: the cost
                 # of an auto-edit is measured, not estimated from a price
                 # sheet and a guess at the prompt size.
@@ -1885,11 +1901,27 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     except Exception as exc:
                         await db.rollback()
                         skipped += 1
+                        first_problem = first_problem or f"{filename}: {str(exc)[:160]}"
                         log.warning(
                             "ai_edit.photo_skipped",
                             filename=filename,
                             error=str(exc)[:200],
                         )
+                        if isinstance(exc, recipe_picker.RecipePickUnavailable) and exc.fatal:
+                            # No credit, a bad key, a model the key cannot
+                            # use: every remaining call fails the same way.
+                            stopped = str(exc)[:200]
+                            break
+                verb = "named" if describe_only else "edited"
+                if stopped:
+                    await set_state(
+                        "failed", f"Stopped after {edited} of {len(photos)} {verb}: {stopped}"
+                    )
+                else:
+                    summary = f"{edited} {verb}"
+                    if skipped:
+                        summary += f", {skipped} skipped — first: {first_problem}"
+                    await set_state("done" if edited or not photos else "failed", summary)
                 log.info(
                     "ai_edit.finished",
                     listing_id=listing_id,
@@ -1898,6 +1930,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     look_examples=len(look.recipes) if look is not None else 0,
                     edited=edited,
                     skipped=skipped,
+                    stopped=stopped,
                     **{f"tokens_{key}": value for key, value in tokens.items()},
                 )
         finally:

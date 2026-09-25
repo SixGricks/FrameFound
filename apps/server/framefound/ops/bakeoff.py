@@ -152,6 +152,59 @@ async def _resolve(spec: str, recursive: bool) -> dict[str, Path]:
         await engine.dispose()
 
 
+async def _current_recipes(spec: str, recursive: bool) -> dict[str, dict[str, Any]]:
+    """The recipe each catalogued original carries right now — what an
+    export would render. Empty for a directory side (nothing catalogued)."""
+    from framefound.db.models import AssetEdit
+
+    if spec.startswith("/"):
+        return {}
+    library_name, _, folder = spec.partition(":")
+    folder = folder.strip("/")
+    engine = create_async_engine(get_settings().db_url)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+            rows = (
+                await db.execute(
+                    select(Asset.relative_path, AssetEdit.recipe)
+                    .join(Library, Library.id == Asset.library_id)
+                    .join(AssetEdit, AssetEdit.asset_id == Asset.id)
+                    .where(Library.name == library_name, Asset.relative_path.like(f"{folder}/%"))
+                    .order_by(Asset.relative_path, AssetEdit.version)
+                )
+            ).all()
+            current: dict[str, dict[str, Any]] = {}
+            for relpath, recipe in rows:  # ascending versions: the last wins
+                inside = relpath[len(folder) + 1 :]
+                if recursive or "/" not in inside:
+                    current[inside] = develop_lib.clean_recipe(recipe)
+            return current
+    finally:
+        await engine.dispose()
+
+
+def _installed_look(exclude_run: str) -> compare.LearnedLook | None:
+    """The installed learned look, minus any examples from this very shoot —
+    a run must never be scored by a look that has seen its answers."""
+    import numpy as np
+
+    path = get_settings().data_dir / looks.LOOK_PATH
+    if not path.is_file():
+        return None
+    saved = json.loads(path.read_text())
+    stem = exclude_run.removesuffix("-2")
+    kept = [
+        e
+        for e in saved["examples"]
+        if e["source"].split("/", 1)[0].removesuffix("-2") not in (exclude_run, stem)
+    ]
+    if len(kept) < 10:
+        return None
+    return compare.LearnedLook.fit(
+        [np.asarray(e["features"]) for e in kept], [e["recipe"] for e in kept]
+    )
+
+
 async def _api_settings() -> tuple[str, str]:
     from framefound.media.maps_store import load_ai_edit_config
 
@@ -329,6 +382,29 @@ def run(args: argparse.Namespace) -> int:
         failed = sum(1 for r in picks[model].values() if "error" in r)
         print(f"  {model}: {len(pairs) - failed} recipes, {failed} failed, {time.time() - t0:.0f}s")
 
+    # What FrameFound would ship today (the saved recipes), and what the
+    # installed learned look would do — both free, no API.
+    current = asyncio.run(_current_recipes(args.originals, args.recursive))
+    look = _installed_look(args.name)
+    if current:
+        print(f"  {len(current)} originals carry a saved edit")
+    if look is not None:
+        print(f"  learned look: {len(look.recipes)} examples from other shoots")
+
+    def render_full(image: Any, recipe: dict[str, Any]) -> Any:
+        """A saved recipe as export renders it, sky included."""
+        if "sky" not in recipe:
+            return develop_lib.render(image, recipe)
+        from PIL import Image
+
+        from framefound.ai import skyseg
+
+        def load_sky(name: str) -> Any:
+            path = settings.data_dir / "skies" / name
+            return Image.open(path) if path.is_file() else None
+
+        return develop_lib.render(image, recipe, load_sky=load_sky, mask_for=skyseg.sky_mask)
+
     results = []
     for number, pair in enumerate(pairs, start=1):
         base = bases[pair.original]
@@ -344,6 +420,11 @@ def run(args: argparse.Namespace) -> int:
             ("original", {}, base),
             ("preset", dict(develop_lib.LISTING_PRESET), None),
         ]
+        if look is not None:
+            variants.append(("learned look", looks.predict(look, base), None))
+        if pair.original in current:
+            saved = current[pair.original]
+            variants.append(("FrameFound (as edited)", saved, render_full(base, saved)))
         extra: dict[str, Any] = {}
         wants_sky = False
         for model in models:

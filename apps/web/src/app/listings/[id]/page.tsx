@@ -52,7 +52,6 @@ export default function ListingPage() {
   const [openFolder, setOpenFolder] = useState<ListingFolder | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [aiSettings, setAiSettings] = useState<AiEditSettings | null>(null);
-  const [aiRunning, setAiRunning] = useState(false);
   const [skies, setSkies] = useState<SkyAsset[]>([]);
   const [skyChoice, setSkyChoice] = useState<string>("");
   const [maxEdge, setMaxEdge] = useState(3840);
@@ -64,12 +63,6 @@ export default function ListingPage() {
   const [includeIndex, setIncludeIndex] = useState(true);
   const [suffixDraft, setSuffixDraft] = useState<string | null>(null);
   const [notesDraft, setNotesDraft] = useState<string | null>(null);
-  // Each photo's edited_at (or named_at, for a naming run) when the run
-  // started: a photo is done when its timestamp moves. "edited" alone is
-  // already true for every photo the second time a listing is auto-edited.
-  // A ref, not state: the polling callback outlives the render it was made in.
-  const runSnapshot = useRef<Map<string, string | null>>(new Map());
-  const runKind = useRef<"edit" | "describe">("edit");
   const dragFrom = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -152,14 +145,6 @@ export default function ListingPage() {
   async function aiEditAll(kind: "edit" | "describe" = "edit") {
     setBusy(true);
     setError(null);
-    // Before the request: a quick preset run can finish photos before the
-    // response comes back, and a later snapshot would count them as untouched.
-    runKind.current = kind;
-    runSnapshot.current = new Map(
-      (listing?.items ?? [])
-        .filter((i) => i.media_type === "image")
-        .map((i) => [i.asset_id, kind === "describe" ? i.named_at : i.edited_at]),
-    );
     try {
       const { queued, mode, look } = await api.aiEditListing(
         listingId,
@@ -170,7 +155,9 @@ export default function ListingPage() {
         setNotice("Every photo already has a name you confirmed — nothing to send.");
         return;
       }
-      setAiRunning(true);
+      // The run's state now lives on the listing; loading it starts the
+      // progress polling below.
+      await load();
       const lookNote =
         look > 0
           ? ` Tone comes from your learned look (${look} shipped photos, on this machine)` +
@@ -205,51 +192,35 @@ export default function ListingPage() {
     setNotesDraft(null);
   }
 
-  // While an AI run is in flight, refresh so tiles turn over as photos land.
-  // Stop when every photo has a new recipe, when nothing has moved for three
-  // minutes (longer than one slow API call plus its render — a photo the run
-  // skipped never lands), or at fifteen minutes regardless.
+  // The run is the server's: queued/running on the listing means a run is
+  // live — in this tab, another tab, or before a reload. Poll while it is,
+  // and say what it did when it ends. (It used to live in this tab only: a
+  // reload lost it, and a second press started a second run beside the
+  // first — Smyrna Rd, Sep 2026.)
+  const aiRunning =
+    listing?.ai_edit_state === "queued" || listing?.ai_edit_state === "running";
+  const runIsNaming = listing?.ai_edit_mode === "describe";
+  const lastState = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!aiRunning) return;
-    const started = Date.now();
-    let lastProgress = Date.now();
-    let lastDone = -1;
-    const timer = setInterval(async () => {
-      // The fresh copy, not `listing`: this callback closed over the state
-      // from when the run began, so checking that could never see the run
-      // finish — the button sat on "Editing 12/12…" and polled for the full
-      // fifteen minutes.
-      const fresh = await load();
-      const images = (fresh?.items ?? []).filter((i) => i.media_type === "image");
-      const done = images.filter((i) => doneThisRun(i)).length;
-      if (done !== lastDone) {
-        lastDone = done;
-        lastProgress = Date.now();
-      }
-      const now = Date.now();
-      if (images.length > 0 && done === images.length) {
-        setAiRunning(false);
-      } else if (now - lastProgress > 3 * 60 * 1000 || now - started > 15 * 60 * 1000) {
-        setAiRunning(false);
-        const verb = runKind.current === "describe" ? "named" : "edited";
-        setNotice(
-          `The run stopped reporting progress with ${done} of ${images.length} photos ` +
-            `${verb} — the rest were skipped (see the server log) or are still running.`,
-        );
-      }
-    }, 5000);
+    const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiRunning]);
+  }, [aiRunning, load]);
+  useEffect(() => {
+    const state = listing?.ai_edit_state;
+    const was = lastState.current;
+    lastState.current = state;
+    if (!listing || !(was === "queued" || was === "running")) return;
+    if (state === "done") setNotice(`Auto-edit finished: ${listing.ai_edit_message}`);
+    if (state === "failed") setError(`Auto-edit ${listing.ai_edit_message || "failed"}`);
+  }, [listing]);
 
   function doneThisRun(item: ListingItem): boolean {
-    const before = runSnapshot.current.get(item.asset_id);
-    if (runKind.current === "describe") {
-      // Confirmed names are skipped by the run, so they count as done.
-      if (item.naming_source === "confirmed") return true;
-      return item.named_at !== null && item.named_at !== before;
-    }
-    return item.edited_at !== null && item.edited_at !== before;
+    // Landed since the run started — edited, or named for a naming run.
+    const started = listing?.ai_edit_started_at ? Date.parse(listing.ai_edit_started_at) : NaN;
+    if (runIsNaming && item.naming_source === "confirmed") return true;
+    const stamp = runIsNaming ? item.named_at : item.edited_at;
+    return stamp !== null && !Number.isNaN(started) && Date.parse(stamp) >= started;
   }
 
   function togglePick(assetId: string) {
@@ -675,7 +646,7 @@ export default function ListingPage() {
                   style={{ position: "absolute", bottom: 6, left: 6 }}
                 >
                   <span className="spinner" />{" "}
-                  {runKind.current === "describe" ? "naming…" : "editing…"}
+                  {runIsNaming ? "naming…" : "editing…"}
                 </span>
               )}
               {aiRunning && item.media_type === "image" && doneThisRun(item) && (
@@ -683,7 +654,7 @@ export default function ListingPage() {
                   className="pill mono"
                   style={{ position: "absolute", bottom: 6, left: 6 }}
                 >
-                  {runKind.current === "describe" ? "✓ named" : "✓ edited"}
+                  {runIsNaming ? "✓ named" : "✓ edited"}
                 </span>
               )}
             </div>
@@ -792,7 +763,7 @@ export default function ListingPage() {
                   : "Tuned listing preset, entirely local. Add an Anthropic key on Security for per-photo AI judgment."
               }
             >
-              {aiRunning && runKind.current === "edit"
+              {aiRunning && !runIsNaming
                 ? `Editing ${doneImages}/${imageCount}…`
                 : "Auto-edit photos"}
             </button>
@@ -863,7 +834,7 @@ export default function ListingPage() {
                   : "Needs an Anthropic key on Security"
               }
             >
-              {aiRunning && runKind.current === "describe"
+              {aiRunning && runIsNaming
                 ? `Naming ${doneImages}/${imageCount}…`
                 : "Name photos with AI"}
             </button>

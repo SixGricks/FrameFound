@@ -169,7 +169,44 @@ def clean_caption(text: str) -> str:
 
 
 class RecipePickUnavailable(RuntimeError):
-    """The API refused or the response was not usable."""
+    """The API refused or the response was not usable.
+
+    `fatal` means every further call will fail the same way — no credit,
+    a bad or revoked key, a model this key cannot use — so a run should
+    stop and say so rather than fail the rest of the listing one photo at
+    a time (Smyrna Rd, Sep 2026: 48 photos in a minute, reason unrecorded).
+    """
+
+    def __init__(self, message: str, *, fatal: bool = False) -> None:
+        super().__init__(message)
+        self.fatal = fatal
+
+
+# Worth another try: rate limits, overload, the API's own hiccups.
+_TRANSIENT = {408, 409, 429, 500, 502, 503, 504, 529}
+# Seconds between tries; the list's length is the number of retries.
+RETRY_DELAYS: tuple[float, ...] = (2.0, 6.0, 15.0)
+
+
+def _explain(response: Any) -> RecipePickUnavailable:
+    """The API's own error type and message: they name the problem ("credit
+    balance is too low", "invalid x-api-key") and never echo the key or the
+    image, so they are safe to log and to show the operator."""
+    try:
+        error = response.json().get("error") or {}
+    except (ValueError, AttributeError):
+        error = {}
+    if not isinstance(error, dict):
+        error = {"message": str(error)}
+    kind = str(error.get("type") or "")
+    message = " ".join(str(error.get("message") or "").split())[:180]
+    status = response.status_code
+    text = f"Anthropic API returned {status}" + (f" ({kind}): {message}" if message else "")
+    lowered = message.lower()
+    fatal = status in (401, 403, 404) or (
+        status == 400 and ("credit" in lowered or "billing" in lowered or "balance" in lowered)
+    )
+    return RecipePickUnavailable(text, fatal=fatal)
 
 
 def preview_bytes(image: Any) -> bytes:
@@ -234,19 +271,34 @@ def _ask(
         body["messages"][0]["content"][1]["text"] = (
             f"{instruction} Answer by calling {tool['name']}."
         )
-    response = httpx.post(
-        API_URL,
-        json=body,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": API_VERSION,
-            "content-type": "application/json",
-        },
-        timeout=TIMEOUT_S,
-    )
+    import time
+
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        last_try = attempt == len(RETRY_DELAYS)
+        try:
+            response = httpx.post(
+                API_URL,
+                json=body,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": API_VERSION,
+                    "content-type": "application/json",
+                },
+                timeout=TIMEOUT_S,
+            )
+        except httpx.HTTPError as err:
+            if last_try:
+                raise RecipePickUnavailable(
+                    f"Anthropic API unreachable ({type(err).__name__})"
+                ) from err
+            time.sleep(RETRY_DELAYS[attempt])
+            continue
+        if response.status_code in _TRANSIENT and not last_try:
+            time.sleep(RETRY_DELAYS[attempt])
+            continue
+        break
     if response.status_code != 200:
-        # The status line is safe to surface; the body may echo request data.
-        raise RecipePickUnavailable(f"Anthropic API returned {response.status_code}")
+        raise _explain(response)
     try:
         payload = response.json()
         tool_use = next(block for block in payload["content"] if block.get("type") == "tool_use")

@@ -14,7 +14,7 @@ then explicit reorder wins and nothing shuffles it afterwards.
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import structlog
@@ -36,6 +36,10 @@ log = structlog.get_logger()
 router = APIRouter(prefix="/listings", tags=["listings"])
 
 MAX_ITEMS = 500
+# A queued or running auto-edit older than this is assumed dead (the worker
+# restarted mid-run) and no longer blocks a new one. Generous: a 75-photo
+# listing with retries runs well under it.
+AI_EDIT_STALE = timedelta(minutes=45)
 
 
 class RoomOut(BaseModel):
@@ -93,6 +97,12 @@ class ListingDetail(ListingOut):
     file_suffix: str = ""
     suggested_suffix: str = ""
     notes: str = ""
+    # The auto-edit run: idle | queued | running | done | failed, which kind
+    # ("ai" | "preset" | "describe"), when it started, and what it did.
+    ai_edit_state: str = "idle"
+    ai_edit_mode: str = ""
+    ai_edit_started_at: datetime | None = None
+    ai_edit_message: str = ""
 
 
 class CreateListingRequest(BaseModel):
@@ -279,6 +289,10 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
         file_suffix=listing.file_suffix,
         suggested_suffix=photo_index.default_suffix(listing.name),
         notes=listing.notes,
+        ai_edit_state=listing.ai_edit_state,
+        ai_edit_mode=listing.ai_edit_mode,
+        ai_edit_started_at=listing.ai_edit_started_at,
+        ai_edit_message=listing.ai_edit_message,
     )
 
 
@@ -722,7 +736,20 @@ async def ai_edit(
     from framefound.media.maps_store import load_ai_edit_config
 
     body = body or ProcessRequest()
-    await _get(db, listing_id)
+    listing = await _get(db, listing_id)
+    # One run per listing. A second press used to start a second run beside
+    # the first (Smyrna Rd, Sep 2026); now it is refused while one is live.
+    # A run that has said nothing for AI_EDIT_STALE is taken as dead (a
+    # worker restart) and may be replaced.
+    if listing.ai_edit_state in ("queued", "running") and listing.ai_edit_started_at:
+        started = listing.ai_edit_started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        if datetime.now(UTC) - started < AI_EDIT_STALE:
+            raise HTTPException(
+                status_code=409,
+                detail="Auto-edit is already running on this listing — it will finish on its own",
+            )
     config = await load_ai_edit_config(db)
     if body.mode == "describe":
         if not config.ready:
@@ -756,11 +783,19 @@ async def ai_edit(
             return {"queued": 0, "mode": mode, "look": 0}
         raise HTTPException(status_code=400, detail="No photographs to edit")
 
+    listing.ai_edit_state = "queued"
+    listing.ai_edit_mode = mode
+    listing.ai_edit_started_at = datetime.now(UTC)
+    listing.ai_edit_message = ""
+    await db.commit()
     try:
         from framefound.processing.tasks import ai_edit_listing
 
         ai_edit_listing.delay(str(listing_id), body.sky_name, mode)
     except Exception:
+        listing.ai_edit_state = "failed"
+        listing.ai_edit_message = "The processing queue is unavailable"
+        await db.commit()
         raise HTTPException(status_code=503, detail="The processing queue is unavailable") from None
     log.info(
         "listing.ai_edit_queued",

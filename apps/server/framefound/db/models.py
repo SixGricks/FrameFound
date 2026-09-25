@@ -632,6 +632,15 @@ class Listing(Base):
     # Heads the photo index — auction date, terms, whatever the brochure and
     # the editor need to know that the photographs cannot say.
     notes: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Auto-edit run: idle | queued | running | done | failed. One at a time
+    # per listing, held here rather than in a browser tab (migration 0021).
+    ai_edit_state: Mapped[str] = mapped_column(String(20), default="idle", server_default="idle")
+    ai_edit_mode: Mapped[str] = mapped_column(String(12), default="", server_default="")
+    ai_edit_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # What the last run did, in a line the page shows as-is.
+    ai_edit_message: Mapped[str] = mapped_column(String(300), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

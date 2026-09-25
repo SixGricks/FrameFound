@@ -531,6 +531,12 @@ export interface ListingDetail extends ListingSummary {
   suggested_suffix: string;
   /** Heads the photo index: auction date, terms. */
   notes: string;
+  /** The auto-edit run, held on the server: one at a time per listing. */
+  ai_edit_state: "idle" | "queued" | "running" | "done" | "failed";
+  ai_edit_mode: "" | "ai" | "preset" | "describe";
+  ai_edit_started_at: string | null;
+  /** What the last run did, e.g. "62 edited, 1 skipped — first: …". */
+  ai_edit_message: string;
 }
 
 export type ListingNaming = "seo" | "simple";

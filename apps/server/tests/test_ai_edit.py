@@ -144,9 +144,62 @@ def test_pick_recipe_surfaces_api_failure(monkeypatch: pytest.MonkeyPatch) -> No
 
     from framefound.ai import recipe_picker
 
+    monkeypatch.setattr(recipe_picker, "RETRY_DELAYS", ())
     monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(429, json={"error": "rate"}))
-    with pytest.raises(recipe_picker.RecipePickUnavailable):
+    with pytest.raises(recipe_picker.RecipePickUnavailable) as caught:
         recipe_picker.pick_recipe(b"x", "k", "m")
+    assert not caught.value.fatal, "a rate limit passes; the run carries on"
+
+
+def test_a_busy_api_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from framefound.ai import recipe_picker
+
+    replies = [
+        httpx.Response(529, json={"error": {"type": "overloaded_error", "message": "Overloaded"}}),
+        httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "tool_use", "input": {"exposure": 0.2, "caption": "", "seo_slug": ""}}
+                ]
+            },
+        ),
+    ]
+    monkeypatch.setattr(recipe_picker, "RETRY_DELAYS", (0.0,))
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: replies.pop(0))
+    assert recipe_picker.pick_recipe(b"x", "k", "m")["recipe"] == {"exposure": 0.2}
+
+
+def test_no_credit_is_fatal_and_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Smyrna Rd: 48 photos failed with a bare "returned 400" and nothing
+    said why. The API's own message names the problem; it is kept, and an
+    account-level refusal is marked fatal so the run stops."""
+    import httpx
+
+    from framefound.ai import recipe_picker
+
+    monkeypatch.setattr(recipe_picker, "RETRY_DELAYS", (0.0,))
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda *a, **k: httpx.Response(
+            400,
+            json={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Your credit balance is too low to access the Anthropic API.",
+                },
+            },
+        ),
+    )
+    with pytest.raises(recipe_picker.RecipePickUnavailable) as caught:
+        recipe_picker.pick_recipe(b"x", "sk-ant-secret", "m")
+    assert caught.value.fatal
+    assert "credit balance is too low" in str(caught.value)
+    assert "sk-ant-secret" not in str(caught.value)
 
 
 def test_thinking_models_get_the_tool_offered_not_forced(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -528,6 +581,58 @@ async def test_auto_edit_judges_the_object_removed_version(
     with Image.open(io_module.BytesIO(seen[0])) as judged:
         red, _green, blue = np.asarray(judged.convert("RGB"), dtype=float).mean(axis=(0, 1))
     assert blue > 150 and red < 80, "the model saw the removal result, not the original"
+
+
+async def test_an_account_error_stops_the_run_and_the_listing_says_so(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from framefound.ai import recipe_picker
+    from framefound.db.models import Listing
+    from framefound.processing import tasks as tasks_module
+
+    client = env["client"]
+    await client.put("/api/v1/develop/settings/ai", json={"api_key": "sk-ant-test"})
+    listing = (
+        await client.post(
+            "/api/v1/listings",
+            json={"name": "Broke", "asset_ids": [env["ids"]["a1"], env["ids"]["a2"]]},
+        )
+    ).json()
+    assert (await client.post(f"/api/v1/listings/{listing['id']}/ai-edit")).status_code == 202
+    detail = (await client.get(f"/api/v1/listings/{listing['id']}")).json()
+    assert detail["ai_edit_state"] == "queued"
+
+    calls = {"n": 0}
+
+    def broke(preview: bytes, key: str, model: str) -> dict:
+        calls["n"] += 1
+        raise recipe_picker.RecipePickUnavailable(
+            "Anthropic API returned 400 (invalid_request_error): Your credit balance is too low",
+            fatal=True,
+        )
+
+    monkeypatch.setattr(recipe_picker, "pick_recipe", broke)
+    await asyncio.to_thread(tasks_module.ai_edit_listing, listing["id"], None, "ai")
+    assert calls["n"] == 1, "stopped at the first account-level refusal, not 1 per photo"
+    async with env["factory"]() as db:
+        row = await db.get(Listing, uuidlib.UUID(listing["id"]))
+        assert row is not None and row.ai_edit_state == "failed"
+        assert "credit balance is too low" in row.ai_edit_message
+        assert row.ai_edit_message.startswith("Stopped after 0 of 2")
+
+
+async def test_a_second_press_is_refused_while_a_run_is_live(env: dict) -> None:
+    client = env["client"]
+    listing = (
+        await client.post(
+            "/api/v1/listings", json={"name": "Twice", "asset_ids": [env["ids"]["a1"]]}
+        )
+    ).json()
+    url = f"/api/v1/listings/{listing['id']}/ai-edit"
+    assert (await client.post(url)).status_code == 202
+    second = await client.post(url)
+    assert second.status_code == 409, "one run per listing"
+    assert "already running" in second.json()["error"]["message"]
 
 
 # ------------------------------------------------------------ learned look
