@@ -89,7 +89,10 @@ services:
           cpus: "3.0"
           # Was 1000M against 5.9 GB installed, when every limit here was carved
           # out of every other. With 58 GB there is no longer a trade to make.
-          memory: 4G
+          # 4G was OOM-killed (Sep 2026) catalogueing the 2024/2025 Intel
+          # folders: three concurrent thumbnails of large RAW/TIFF/video posters
+          # (ffmpeg children count against this limit too).
+          memory: 8G
     command: ["celery", "-A", "framefound.worker", "worker", "-Q", "visuals,metadata,default", "--concurrency=3"]
     env_file: .env
     environment:

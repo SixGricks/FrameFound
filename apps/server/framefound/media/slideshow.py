@@ -44,12 +44,6 @@ class Selection:
     people_missing: list[str]
 
 
-def _similar(a: list[float] | None, b: list[float] | None) -> float:
-    if not a or not b:
-        return 0.0
-    return float(sum(x * y for x, y in zip(a, b, strict=False)))
-
-
 def collapse_near_duplicates(
     candidates: list[Candidate], threshold: float = NEAR_DUPLICATE_SIMILARITY
 ) -> tuple[list[Candidate], int]:
@@ -58,21 +52,51 @@ def collapse_near_duplicates(
     Compared against what has already been kept rather than pairwise across
     everything: three shots of the same moment collapse to one, but a person
     photographed twice an hour apart is two moments and stays two.
+
+    Every similarity is computed up front in one matrix product, and the
+    greedy pass only reads it. Written as a Python loop it cost n²/2 dot
+    products of 512 floats in the interpreter — fine for a few hundred photos,
+    hours for the 4,000 a proposal can consider — and it ran on the API's only
+    request thread, so pressing Propose froze every page (Sep 2026). A
+    matrix-vector product per candidate still took ~20 s on these CPUs; one
+    matrix-matrix product lets BLAS use every core and the cache.
     """
+    import numpy as np
+
+    dims = next((len(c.embedding) for c in candidates if c.embedding), 0)
+    if dims == 0:
+        return list(candidates), 0
+
+    n = len(candidates)
+    matrix = np.zeros((n, dims), dtype=np.float32)
+    usable = np.zeros(n, dtype=bool)
+    for i, candidate in enumerate(candidates):
+        if candidate.embedding and len(candidate.embedding) == dims:
+            matrix[i] = candidate.embedding
+            usable[i] = True
+    similarity = matrix @ matrix.T
+
     kept: list[Candidate] = []
+    # Which candidate currently holds each kept slot, in slot order.
+    holders = np.empty(n, dtype=np.intp)
     dropped = 0
-    for candidate in candidates:
-        twin = next(
-            (k for k in kept if _similar(k.embedding, candidate.embedding) >= threshold),
-            None,
-        )
-        if twin is None:
+    for i, candidate in enumerate(candidates):
+        twin_slot: int | None = None
+        # A frame without a (well-formed) vector matches nothing, as before.
+        if kept and usable[i]:
+            hits = np.flatnonzero(similarity[i, holders[: len(kept)]] >= threshold)
+            if hits.size:
+                twin_slot = int(hits[0])  # the first kept match, as the loop found it
+        if twin_slot is None:
+            holders[len(kept)] = i
             kept.append(candidate)
             continue
         dropped += 1
+        twin = kept[twin_slot]
         # Prefer the sharper frame; tie-break on theme fit.
         if (candidate.sharpness, candidate.theme_score) > (twin.sharpness, twin.theme_score):
-            kept[kept.index(twin)] = candidate
+            kept[twin_slot] = candidate
+            holders[twin_slot] = i
     return kept, dropped
 
 

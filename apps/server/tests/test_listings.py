@@ -360,3 +360,18 @@ async def test_export_with_no_images_is_refused(env: dict) -> None:
     body = await _create(env, ["video"], name="Video Only")
     resp = await env["client"].post(f"/api/v1/listings/{body['id']}/export", json={})
     assert resp.status_code == 400
+
+
+async def test_the_cover_is_the_first_photo_even_after_the_first_was_removed(env: dict) -> None:
+    """The index took min(asset_id) at position 0: Postgres has no min() for
+    UUIDs (the Listings page failed in production), and a listing whose first
+    photo was removed had no position 0 and so no cover."""
+    body = await _create(env, ["front", "kitchen", "bedroom"])
+    items = sorted(body["items"], key=lambda i: i["position"])
+    first, second = items[0]["asset_id"], items[1]["asset_id"]
+    resp = await env["client"].delete(f"/api/v1/listings/{body['id']}/items/{first}")
+    assert resp.status_code in (200, 204), resp.text
+
+    listed = (await env["client"].get("/api/v1/listings")).json()
+    mine = next(entry for entry in listed if entry["id"] == body["id"])
+    assert mine["cover_asset_id"] == second

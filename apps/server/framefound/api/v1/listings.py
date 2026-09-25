@@ -391,14 +391,21 @@ async def list_listings(_user: CurrentUser, db: DbDep) -> list[ListingOut]:
         )
     ).all()
     counts: dict[uuid.UUID, int] = {lid: n for lid, n in count_rows}
+    # The cover is each listing's first photograph in gallery order. This was
+    # min(asset_id) over position 0: SQLite accepts min() of a UUID, Postgres
+    # has no such function — the Listings page failed in production while
+    # every test passed — and a listing whose first item was removed had no
+    # position 0 and so no cover at all.
     cover_rows = (
         await db.execute(
-            select(ListingItem.listing_id, func.min(ListingItem.asset_id))
-            .where(ListingItem.position == 0)
-            .group_by(ListingItem.listing_id)
+            select(ListingItem.listing_id, ListingItem.asset_id).order_by(
+                ListingItem.listing_id, ListingItem.position, ListingItem.created_at
+            )
         )
     ).all()
-    covers: dict[uuid.UUID, uuid.UUID] = {lid: aid for lid, aid in cover_rows}
+    covers: dict[uuid.UUID, uuid.UUID] = {}
+    for listing_id, asset_id in cover_rows:
+        covers.setdefault(listing_id, asset_id)
     return [
         ListingOut(
             id=listing.id,

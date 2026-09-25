@@ -3,6 +3,9 @@
 Run: uvicorn framefound.main:app
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -10,6 +13,7 @@ from fastapi.responses import JSONResponse
 from framefound import __version__
 from framefound.api.public_gate import PublicAccessGate
 from framefound.api.v1.router import api_v1
+from framefound.api.watchdog import LoopWatchdog
 from framefound.config import get_settings
 from framefound.errors import error_response, register_error_handlers
 from framefound.logging import configure_logging
@@ -23,11 +27,23 @@ def create_app() -> FastAPI:
     if not settings.secret_key:
         log.warning("config.secret_key_missing", hint="set FRAMEFOUND_SECRET_KEY in .env")
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # One event loop serves every request; the watchdog names whatever
+        # blocks it (see api/watchdog.py).
+        watchdog = LoopWatchdog()
+        watchdog.start()
+        try:
+            yield
+        finally:
+            watchdog.stop()
+
     app = FastAPI(
         title="FrameFound API",
         version=__version__,
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
+        lifespan=lifespan,
     )
     register_error_handlers(app)
     app.add_middleware(PublicAccessGate)

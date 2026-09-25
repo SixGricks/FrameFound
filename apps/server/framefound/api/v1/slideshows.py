@@ -34,7 +34,7 @@ from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.db.models import Asset, Face, Frame, Slideshow
 from framefound.media import slideshow as selector
 from framefound.media.streaming import range_file_response
-from framefound.media.theming import THEMES, get_theme, score_against_theme
+from framefound.media.theming import THEMES, get_theme, score_many
 
 log = structlog.get_logger()
 
@@ -186,27 +186,41 @@ async def propose(body: ProposeRequest, _user: CurrentUser, db: DbDep) -> Propos
     previews = await _preview_assets(db, asset_ids)
 
     positive, negative = await _theme_vectors(theme)
-    candidates = [
-        selector.Candidate(
-            asset_id=str(asset.id),
-            captured_at=asset.captured_at,
-            embedding=frame.embedding,
-            theme_score=score_against_theme(frame.embedding, positive, negative),
-            # Without a sharpness measure every frame ties, and selection falls
-            # through to theme score then capture order. A real sharpness pass
-            # would improve this; ranking on a number we do not have would not.
-            sharpness=1.0,
-            person_ids=[str(p) for p in people_by_asset.get(asset.id, [])],
-        )
-        for frame, asset in rows
+    vectors = [frame.embedding for frame, _asset in rows]
+    facts = [
+        (str(asset.id), asset.captured_at, [str(p) for p in people_by_asset.get(asset.id, [])])
+        for _frame, asset in rows
     ]
 
-    selection = selector.select(
-        candidates,
-        target_count=body.target_count,
-        required_people=[str(p) for p in body.required_people],
-        themed=bool(positive),
-    )
+    def choose() -> tuple[list[selector.Candidate], selector.Selection]:
+        # Off the event loop: thousands of candidates is real CPU work, and on
+        # the loop it stalls every other request the API is serving.
+        scores = score_many(vectors, positive, negative)
+        built = [
+            selector.Candidate(
+                asset_id=asset_id,
+                captured_at=captured_at,
+                embedding=vector,
+                theme_score=score,
+                # Without a sharpness measure every frame ties, and selection
+                # falls through to theme score then capture order. A real
+                # sharpness pass would improve this; ranking on a number we do
+                # not have would not.
+                sharpness=1.0,
+                person_ids=people,
+            )
+            for (asset_id, captured_at, people), vector, score in zip(
+                facts, vectors, scores, strict=True
+            )
+        ]
+        return built, selector.select(
+            built,
+            target_count=body.target_count,
+            required_people=[str(p) for p in body.required_people],
+            themed=bool(positive),
+        )
+
+    candidates, selection = await asyncio.to_thread(choose)
 
     by_id = {str(row[1].id): row[1] for row in rows}
     slides = [

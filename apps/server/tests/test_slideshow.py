@@ -161,3 +161,96 @@ def test_negatives_nudge_rather_than_veto() -> None:
 
 def test_a_frame_with_no_embedding_scores_zero_rather_than_crashing() -> None:
     assert score_against_theme(None, [_vec(0.0)], []) == 0.0
+
+
+def _reference_collapse(candidates, threshold):  # type: ignore[no-untyped-def]
+    """The original pure-Python loop, kept as the definition of correct."""
+    kept, dropped = [], 0
+    for candidate in candidates:
+        twin = next(
+            (
+                k
+                for k in kept
+                if k.embedding
+                and candidate.embedding
+                and sum(x * y for x, y in zip(k.embedding, candidate.embedding, strict=False))
+                >= threshold
+            ),
+            None,
+        )
+        if twin is None:
+            kept.append(candidate)
+            continue
+        dropped += 1
+        if (candidate.sharpness, candidate.theme_score) > (twin.sharpness, twin.theme_score):
+            kept[kept.index(twin)] = candidate
+    return kept, dropped
+
+
+def _random_bursts(n: int, seed: int) -> list[Candidate]:
+    import random
+
+    rng = random.Random(seed)
+    centres = [[rng.gauss(0, 1) for _ in range(32)] for _ in range(max(1, n // 4))]
+    out = []
+    for i in range(n):
+        base = rng.choice(centres)
+        v = [x + rng.gauss(0, 0.15) for x in base]
+        norm = sum(x * x for x in v) ** 0.5
+        out.append(
+            Candidate(
+                asset_id=str(i),
+                captured_at=None,
+                embedding=[x / norm for x in v] if i % 17 else None,
+                sharpness=rng.random(),
+                theme_score=rng.random(),
+            )
+        )
+    return out
+
+
+def test_the_fast_collapse_matches_the_original_exactly() -> None:
+    for seed in range(5):
+        candidates = _random_bursts(300, seed)
+        fast_kept, fast_dropped = collapse_near_duplicates(candidates, threshold=0.94)
+        slow_kept, slow_dropped = _reference_collapse(candidates, 0.94)
+        assert [c.asset_id for c in fast_kept] == [c.asset_id for c in slow_kept]
+        assert fast_dropped == slow_dropped
+
+
+def test_a_full_proposal_collapses_in_seconds_not_hours() -> None:
+    """4,000 candidates is the proposal cap. The Python loop needed hours for
+    this on the production CPUs and froze the API while it ran."""
+    import random
+    import time as clock
+
+    rng = random.Random(7)
+    candidates = []
+    for i in range(4000):
+        v = [rng.gauss(0, 1) for _ in range(512)]
+        norm = sum(x * x for x in v) ** 0.5
+        candidates.append(
+            Candidate(asset_id=str(i), captured_at=None, embedding=[x / norm for x in v])
+        )
+    started = clock.monotonic()
+    kept, _ = collapse_near_duplicates(candidates)
+    assert clock.monotonic() - started < 20
+    assert len(kept) == 4000, "random photographs are all distinct moments"
+
+
+def test_batch_theme_scores_equal_the_single_scorer() -> None:
+    import random
+
+    from framefound.media.theming import score_many
+
+    rng = random.Random(3)
+    positive = [[rng.gauss(0, 1) for _ in range(16)] for _ in range(3)]
+    negative = [[rng.gauss(0, 1) for _ in range(16)] for _ in range(2)]
+    frames: list[list[float] | None] = [[rng.gauss(0, 1) for _ in range(16)] for _ in range(20)]
+    frames[4] = None
+    batch = score_many(frames, positive, negative)
+    single = [score_against_theme(f, positive, negative) for f in frames]
+    import pytest
+
+    assert batch == pytest.approx(single, abs=1e-6)
+    assert score_many(frames, [], negative) == [0.0] * len(frames)

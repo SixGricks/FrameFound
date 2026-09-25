@@ -204,15 +204,21 @@ def room_vectors() -> list[list[float]]:
 
 def classify(embedding: list[float], vectors: list[list[float]]) -> tuple[str, float]:
     """Best room for one image embedding: ("kitchen", 0.31), or ("", score)
-    when nothing clears the floor."""
-    best_key, best_score = "", 0.0
-    for room, vector in zip(ROOMS, vectors, strict=True):
-        score = sum(a * b for a, b in zip(embedding, vector, strict=False))
-        if score > best_score:
-            best_key, best_score = room.key, score
-    if best_score < MIN_ROOM_SCORE:
+    when nothing clears the floor. One matrix-vector product; a listing
+    classifies hundreds of photographs inside a request."""
+    import numpy as np
+
+    width = min(len(embedding), len(vectors[0])) if vectors else 0
+    if not width:
+        return "", 0.0
+    scores = np.asarray(vectors, dtype=np.float64)[:, :width] @ np.asarray(
+        embedding[:width], dtype=np.float64
+    )
+    index = int(np.argmax(scores))  # the first of equal bests, as the loop kept
+    best_score = max(float(scores[index]), 0.0)
+    if best_score <= 0.0 or best_score < MIN_ROOM_SCORE:
         return "", best_score
-    return best_key, best_score
+    return ROOMS[index].key, best_score
 
 
 def canonical_sort_key(room: str, score: float | None) -> tuple[int, float]:

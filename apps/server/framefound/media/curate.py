@@ -42,13 +42,15 @@ def sharpness(image: Any) -> float:
     return float(np.abs(lap).mean())
 
 
-def cosine(a: list[float], b: list[float]) -> float:
-    return float(sum(x * y for x, y in zip(a, b, strict=False)))
-
-
 def group_duplicates(embeddings: dict[str, list[float]]) -> list[list[str]]:
-    """Connected groups of near-identical frames, greedily built. n is a
-    listing (≤500), so the quadratic pass is nothing."""
+    """Connected groups of near-identical frames.
+
+    Every pair is compared, in one matrix product. As a Python loop over pairs
+    this was 125,000 dot products of 512 floats for a 500-photo listing — tens
+    of seconds on these CPUs, and the API served nothing else meanwhile.
+    """
+    import numpy as np
+
     ids = list(embeddings)
     parent = {i: i for i in ids}
 
@@ -58,10 +60,13 @@ def group_duplicates(embeddings: dict[str, list[float]]) -> list[list[str]]:
             x = parent[x]
         return x
 
-    for index, a in enumerate(ids):
-        for b in ids[index + 1 :]:
-            if cosine(embeddings[a], embeddings[b]) >= DUPLICATE_SIMILARITY:
-                parent[find(a)] = find(b)
+    dims = len(embeddings[ids[0]]) if ids else 0
+    comparable = [i for i in ids if len(embeddings[i]) == dims and dims]
+    if len(comparable) > 1:
+        matrix = np.asarray([embeddings[i] for i in comparable], dtype=np.float32)
+        similar = np.triu(matrix @ matrix.T >= DUPLICATE_SIMILARITY, k=1)
+        for a, b in np.argwhere(similar):
+            parent[find(comparable[a])] = find(comparable[b])
 
     groups: dict[str, list[str]] = {}
     for item_id in ids:

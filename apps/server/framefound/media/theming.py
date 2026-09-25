@@ -151,3 +151,30 @@ def score_against_theme(
     best = max(dot(frame_vector, p) for p in positive)
     worst = max((dot(frame_vector, n) for n in negative), default=0.0)
     return round(best - 0.35 * worst, 6)
+
+
+def score_many(
+    frame_vectors: list[list[float] | None],
+    positive: list[list[float]],
+    negative: list[list[float]],
+) -> list[float]:
+    """score_against_theme for a whole proposal at once: two matrix products
+    instead of a Python dot product per frame per prompt. Same numbers."""
+    if not positive:
+        return [0.0] * len(frame_vectors)
+    import numpy as np
+
+    dims = len(positive[0])
+    usable = [i for i, v in enumerate(frame_vectors) if v and len(v) == dims]
+    scores = [0.0] * len(frame_vectors)
+    if not usable:
+        return scores
+    frames = np.asarray([frame_vectors[i] for i in usable], dtype=np.float64)
+    best = (frames @ np.asarray(positive, dtype=np.float64).T).max(axis=1)
+    if negative:
+        worst = (frames @ np.asarray(negative, dtype=np.float64).T).max(axis=1)
+    else:
+        worst = np.zeros(len(usable))
+    for row, index in enumerate(usable):
+        scores[index] = round(float(best[row] - 0.35 * worst[row]), 6)
+    return scores

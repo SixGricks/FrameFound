@@ -477,3 +477,39 @@ def test_sharpness_orders_blur_correctly() -> None:
             detailed.putpixel((x, y), ((x * 7 + y * 13) % 256,) * 3)
     blurred = detailed.filter(ImageFilter.GaussianBlur(4))
     assert curate.sharpness(detailed) > curate.sharpness(blurred) * 2
+
+
+def test_duplicate_grouping_matches_the_pairwise_definition() -> None:
+    """The matrix version must group exactly as comparing every pair did."""
+    import random
+
+    from framefound.media import curate
+
+    rng = random.Random(11)
+    centres = [[rng.gauss(0, 1) for _ in range(24)] for _ in range(12)]
+    embeddings: dict[str, list[float]] = {}
+    for i in range(90):
+        v = [x + rng.gauss(0, 0.2) for x in rng.choice(centres)]
+        norm = sum(x * x for x in v) ** 0.5
+        embeddings[f"p{i}"] = [x / norm for x in v]
+
+    ids = list(embeddings)
+    parent = {i: i for i in ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    for a_index, a in enumerate(ids):
+        for b in ids[a_index + 1 :]:
+            dot = sum(x * y for x, y in zip(embeddings[a], embeddings[b], strict=True))
+            if dot >= curate.DUPLICATE_SIMILARITY:
+                parent[find(a)] = find(b)
+    expected: dict[str, list[str]] = {}
+    for item in ids:
+        expected.setdefault(find(item), []).append(item)
+
+    got = curate.group_duplicates(embeddings)
+    assert sorted(got) == sorted(g for g in expected.values() if len(g) > 1)
+    assert got, "the fixture does contain near-duplicates"

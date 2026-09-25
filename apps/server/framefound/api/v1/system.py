@@ -285,6 +285,21 @@ async def system_alerts(_user: CurrentUser, db: DbDep, settings: SettingsDep) ->
                 href="/health",
             )
         )
+    from framefound.api.watchdog import last_stall
+
+    stall = last_stall()
+    if stall is not None and stall.seconds >= 10:
+        alerts.append(
+            Alert(
+                level="warning",
+                title=f"The server stopped responding for {stall.seconds:.0f} seconds",
+                detail=(
+                    f"At {stall.started_at:%H:%M} UTC, in {stall.where}. Pages will have "
+                    "seemed frozen; the cause is in the server log (api.event_loop_blocked)."
+                ),
+                href="/health",
+            )
+        )
     backup = _backup_status(settings)
     if backup.status != "ok":
         alerts.append(
