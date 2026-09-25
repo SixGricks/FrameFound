@@ -56,7 +56,38 @@ API cost, and one side-by-side sheet per photo. Nothing in the catalogue
 changes. Auto-edit now also records the API's token counts per run, caches
 its instructions, and supports Opus 5.5 / Fable 5.1, which refuse forced tool
 calls and always think; they get the tool offered, with a strict schema and
-low effort. Results follow below once the runs finish.
+low effort.
+
+**The bake-off: 429 shipped photos, 7 shoots** (full write-up:
+[ai-editing-models.md](ai-editing-models.md)). Fotello's own finals were
+Davis Rd and Skook; the other five were your shipped sets from the Drive.
+
+Mean colour distance from what shipped (lower is closer):
+
+| Method | ΔE |
+|---|---|
+| Untouched | 15.0 |
+| Sonnet 5 | 13.3 |
+| Preset | 12.7 |
+| Opus 5.5 | 11.6 |
+| **Learned look** | **9.3** |
+
+The learned look edits each photo the way the most similar shipped photos
+were edited. It is local and free, and was scored on shoots it hadn't seen.
+It is closest on 226 of 429 photos. Fable 5.1 is no better than Opus at
+three times the price.
+
+Shipped with this entry:
+- Auto-edit takes its tone from the installed look (429 examples) and keeps
+  the model for naming, straightening and the sky flag.
+- The preset's white balance no longer reads a lawn as a green cast (Davis
+  Rd: 18.1 → 12.3).
+- The Security page picks the model.
+
+API cost, measured: Sonnet $0.0070 and Opus $0.0109 per photo, about
+$21–33 a year at 3,000 photos. The whole bake-off cost $9.72. The
+side-by-side sheets are in the Drive folder `Claude outputs/Fotello
+bake-off 2026-09-25`.
 
 ### 2026-09-24 (night) — the freeze, and the Fotello batch package
 
@@ -182,9 +213,11 @@ reliability plus one loop, and let "1.0" mean that loop in daily use:
 ### Next up (replaces the list below dated 2026-08)
 
 1. Operator actions above (shares, rescans, backup copies, cache).
-2. **Fotello bake-off** on 130 Davis Rd: auto-edit the same 72 photos, show
-   them side by side with Fotello's 70, log the API cost per run. This decides
-   whether batches stop going out.
+2. ~~Fotello bake-off~~ **done 2026-09-25**: learned look ΔE 9.3 vs Opus
+   11.6 across 429 photos (entry above). Remaining step is yours: auto-edit
+   the next listing, compare it with Fotello's result, and stop the batches
+   if it holds. After that: lens-profile correction (Lensfun) for the ~29%
+   of finals Fotello re-frames.
 3. Listing delivery to Drive: the export writes the package (photos, Photo
    Index, sheets) into the property's folder, where the brochure skill reads
    it. The organizer's manifest makes it undoable.
