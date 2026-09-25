@@ -82,9 +82,12 @@ saw it first.
 The realistic automated alternative is **Autoenhance.ai at ≈ $232/month**:
 documented API, full-size output, unproven on these shoots. Next step is a
 free trial on one shoot, judged by eye against Fotello. General image
-models (OpenAI, Gemini, Grok, via OpenRouter or direct) all redraw the frame. Cloudinary (reviewed on request) is ≈ $89–99/month and automatable, but its Enhance is global like our sliders, with no window pull or verticals;
-and top out at 2–17 MP, so they are not the base editor. A generative-edit
-transfer was tried and dropped. Full chart:
+models (OpenAI, Gemini, Grok, via OpenRouter or direct) all redraw the frame
+and top out at 2–17 MP, so they are not the base editor. Cloudinary,
+re-reviewed on request (first reviewed Aug 5), is ≈ $89–99/month and
+automatable. But its Enhance adjusts the whole photo like our sliders, with
+no window pull or verticals. A generative-edit transfer was tried and
+dropped. Full chart:
 [ai-editing-models.md](ai-editing-models.md).
 
 ### 2026-09-25 — squashed skies, and the bake-off tool
