@@ -178,6 +178,7 @@ used most months (2–3 shoots a week). That is about **750 photos/month,
 | Imagen AI | ≈ $240 | only through sales (Business plan) | 42 vs Fotello's 73¹ | weakest in the scored test |
 | AutoHDR | $440–500 | no public API | 66¹ | twice the price |
 | Claid.ai | ≈ $44 | yes | — | no sky, verticals or window pull |
+| Cloudinary (Enhance + Generative Restore, sky via Generative Replace) | ≈ $89–99 (Plus plan: 225 credits; about 150 for Enhance and Restore on 750 photos at 100 transformations each, about 24 for skies at 120, about 15 for storage and delivery) | yes (URL/upload API; 40 MP limit on paid plans) | Enhance is global (exposure, colour, white balance), trained on "vacation or food shots" | no window pull, verticals, local tone work, twilight or staging; the sky is a generative redraw; Restore (denoise, sharpen) is good for drone/high-ISO |
 | FrameFound's own editor | ≈ $5 | yes | clearly worse by eye (above) | not a replacement |
 
 ¹ WGAN-TV, Sep 2025: one reviewer's scores over 24 photo sets.
