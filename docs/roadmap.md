@@ -70,8 +70,21 @@ Now:
   it, and it ends with a line saying what it did.
 
 **Fotello's real cost is $220/month** (Ultimate, 10 listings of up to 75
-photos, renewing Oct 17). About 5 listings a month are used, so each costs
-about $50. API options at or under that price are in
+photos, all used most months: ≈ 750 photos, ≈ $0.29 each; renews Oct 17).
+Its API is partner-plan only (50+ listings a month).
+
+**Correction, same day: FrameFound's own editor is not a Fotello
+replacement.** The ΔE numbers above (8.0 on Smyrna) are colour averages. At
+full size, side by side, the edits are clearly worse: blown whites and halos
+in the bathroom, grey dim ceilings, over-saturated exteriors. The operator
+saw it first.
+
+The realistic automated alternative is **Autoenhance.ai at ≈ $232/month**:
+documented API, full-size output, unproven on these shoots. Next step is a
+free trial on one shoot, judged by eye against Fotello. General image
+models (OpenAI, Gemini, Grok, via OpenRouter or direct) all redraw the frame
+and top out at 2–17 MP, so they are not the base editor. A generative-edit
+transfer was tried and dropped. Full chart:
 [ai-editing-models.md](ai-editing-models.md).
 
 ### 2026-09-25 — squashed skies, and the bake-off tool

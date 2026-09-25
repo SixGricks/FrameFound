@@ -133,31 +133,84 @@ Findings, in order of how much they matter:
 The bake-off itself cost **$9.72** in API calls (Sonnet and Opus on all 429,
 Fable on Davis Rd).
 
-## The live test: 901 Smyrna Rd
+## The live test: 901 Smyrna Rd, and what ΔE hides
 
-This listing was not in the training set. Auto-edit (learned look + Sonnet)
-landed at ΔE 8.0 from what went to MLS. The learned look alone scored 7.7
-and was the closest method on 62 of 70 photos. Untouched was 12.6 and the
-preset 11.0.
+This listing was not in the training set. By the ΔE measure, auto-edit
+(learned look + Sonnet) landed at 8.0 from what went to MLS, and the learned
+look alone at 7.7. **By eye, the operator found it much worse than that, and
+side-by-sides at full size agree.** ΔE averages colour over coarse blocks. It
+cannot see the failures, which are local:
 
-## What Fotello actually costs, and the API alternatives
+- **Bathroom:** whites blown, tile pattern lost, a glowing halo around the
+  door, wood pushed orange.
+- **Bedrooms:** grey, dim ceilings and dark corners (uncorrected lens
+  vignetting).
+- **Exteriors:** over-saturated and contrasty, where the MLS set is bright and
+  airy.
 
-The account is **Fotello Ultimate: $220 a month for 10 listings of up to 75
-photos**, renewing Oct 17. On Sep 25 it showed 5 listings rolled over and 15
-remaining. At about 53 shoots a year, that's roughly $50 per listing
-actually sent. At about 300 photos a month, a per-photo service
-breaks even at about **$0.73/photo**.
+The learned look sometimes picks incoherent slider combinations: a −0.77
+shadow cut in that bathroom, and +0.53 vibrance on the garage. The underlying
+limit is the engine. A dozen global sliders can match average colour but not a
+real editor's local tone work.
 
-| Option | ≈ $/month at your volume | Automated from FrameFound | Notes |
-|---|---|---|---|
-| FrameFound (learned look + Sonnet naming) | ≈ $2 | yes, already | Smyrna live test ΔE 8.0 |
-| Fotello, a plan sized to ~5 listings | ≈ $110? (ask) | only if their API is real | "API Access" ticked on the pricing page, but no public docs; ask support@fotello.co |
-| Stager AI | ≈ $70–75 | REST, signed webhooks | $0.23–0.25/photo; quality unproven |
-| Autoenhance.ai | ≈ $90–145 | REST, webhooks, 500/day | $0.29–0.44/photo on monthly plans; lens + vertical correction, window pull, sky and HDR included; 6K output |
-| Imagen AI | ≈ $96 | API on the Business plan only (via sales) | $0.32/photo in the web app; personal profile needs 2,000+ Lightroom edits |
-| AutoHDR, PhotoUp, BoxBrownie | $135–600 | varies | not cheaper |
+**Conclusion: FrameFound's own editor is not a Fotello replacement.** ΔE stays
+useful only for ranking methods against each other, labelled as colour-only.
 
-## Recommendation
+A second idea was tried and dropped. A generative model (OpenAI, Gemini, Grok)
+would make a small edit, and a guided-filter colour transform would carry it
+onto the full-size original. Tested with the MLS finals as the target, the
+result was foggy and washed out, with colour bleeding across edges. The finals
+are lens-corrected and cropped, so they don't line up pixel for pixel, and
+generative outputs wouldn't either.
+
+## What Fotello actually costs, and the alternatives at 750 photos/month
+
+**Fotello Ultimate: $220/month for 10 listings of up to 75 photos**, all
+used most months (2–3 shoots a week). That is about **750 photos/month,
+≈ $0.29/photo**, renewing Oct 17. Fotello's API is only on its partner plan
+(50+ listings a month), so it cannot be automated at this volume.
+
+| Option | $/month at 750 | Fully automatic from FrameFound | Quality evidence | Catch |
+|---|---|---|---|---|
+| **Fotello (today)** | **$220** | no | the baseline; top score (73) in the one scored comparison¹ | manual upload/download |
+| **Autoenhance.ai** | **≈ $232** (500-photo plan $154.99 + $0.31 each over) | **yes**: documented REST API, webhooks, full-res | reviews: strong window pulls and skies, sometimes "a little unnatural"; no head-to-head | unproven on these shoots; previews free, pay per full-size download, so a trial is nearly free |
+| Stager AI | ≈ $188, ≈ $235 with skies (separate job) + a subscription | yes | none | API aimed at 1,000+ photos/month |
+| Imagen AI | ≈ $240 | only through sales (Business plan) | 42 vs Fotello's 73¹ | weakest in the scored test |
+| AutoHDR | $440–500 | no public API | 66¹ | twice the price |
+| Claid.ai | ≈ $44 | yes | — | no sky, verticals or window pull |
+| FrameFound's own editor | ≈ $5 | yes | clearly worse by eye (above) | not a replacement |
+
+¹ WGAN-TV, Sep 2025: one reviewer's scores over 24 photo sets.
+
+**General-purpose image models.** OpenRouter passes through provider prices
+plus 5.5% on credit purchases: one account, not better processing.
+
+| Model | $/month at 750 | Largest output (the R8 is 24 MP) |
+|---|---|---|
+| Gemini 3.1 Flash Image | $57–113 | 17 MP |
+| Gemini 3 Pro Image | $90–180 | 17 MP |
+| OpenAI gpt-image-2 | ≈ $124 + input | 8.3 MP |
+| xAI Grok Imagine | $15–38 | 2K |
+| FLUX / Seedream / Qwen | $15–60 | 2–4 MP |
+
+None of them outputs 24 MP. All regenerate the whole frame, so property
+details can change, which is a Bright MLS risk. None has a published
+comparison with Fotello. They suit disclosed one-offs such as twilight and
+virtual staging, not the base edit. Adobe's Lightroom API was retired on
+July 31, 2026.
+
+## Recommendation (revised the same day)
+
+1. **Trial Autoenhance on one shoot through its web app**: free previews, side
+   by side with Fotello's result for the same shoot, judged by eye.
+2. **If it matches**, connect its API to listings: send the selects, get
+   full-size edits back named, indexed and packaged. Same cost (≈ $220–232),
+   no manual upload or download.
+3. **If not, stay on Fotello** and let FrameFound handle everything around
+   it: culling, naming, the Photo Index and contact sheets for the upload,
+   and the delivery package after.
+
+## Earlier recommendation (superseded)
 
 - **Keep the learned look installed**: done, 429 examples,
   `data/looks/learned.json`. Auto-edit now uses it for tone.
