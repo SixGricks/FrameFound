@@ -15,6 +15,29 @@
   never touches an original — the token it uses cannot do either.
 --]]
 
+-- The same three items, in two menus. LrLibraryMenuItems land under
+-- Library → Plug-in Extras, which exists only in the Library module;
+-- LrExportMenuItems land under File → Plug-in Extras, in every module. With
+-- the Library menu alone the plugin looked absent from Develop, where the
+-- editing happens.
+-- A fresh table per menu, in case Lightroom annotates what it reads.
+local function menu()
+  return {
+    {
+      title = "Import FrameFound listings…",
+      file = "FrameFoundListing.lua",
+    },
+    {
+      title = "Search FrameFound…",
+      file = "FrameFoundSearch.lua",
+    },
+    {
+      title = "Show FrameFound paths for selected photo",
+      file = "FrameFoundPaths.lua",
+    },
+  }
+end
+
 return {
   LrSdkVersion = 13.0,
   -- 6.0 is the floor for LrHttp with headers, which the token auth needs.
@@ -28,20 +51,8 @@ return {
   -- Settings live in Plug-in Manager: server address and token, entered once.
   LrPluginInfoProvider = "FrameFoundInfoProvider.lua",
 
-  LrLibraryMenuItems = {
-    {
-      title = "Import FrameFound listings…",
-      file = "FrameFoundListing.lua",
-    },
-    {
-      title = "Search FrameFound…",
-      file = "FrameFoundSearch.lua",
-    },
-    {
-      title = "Show FrameFound paths for selected photo",
-      file = "FrameFoundPaths.lua",
-    },
-  },
+  LrLibraryMenuItems = menu(),
+  LrExportMenuItems = menu(),
 
-  VERSION = { major = 0, minor = 4, revision = 0, build = 0 },
+  VERSION = { major = 0, minor = 4, revision = 1, build = 0 },
 }

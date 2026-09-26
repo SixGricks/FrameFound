@@ -92,7 +92,10 @@ panel useful on a version whose API does not cooperate.
 3. With FrameFound selected in the manager, enter the server address and token,
    then **Test connection**.
 
-Three menu items appear under **Library → Plug-in Extras**:
+Three menu items appear under **File → Plug-in Extras** (in every module) and
+under **Library → Plug-in Extras** (in the Library module only — which is why,
+with only the Library menu declared, the plugin looked absent from Develop).
+Changes to `Info.lua` need Lightroom restarted, not just Reload Plug-in:
 
 - **Import FrameFound listings…** — listings (the GELCO calendar picks, a
   month of property galleries) into Lightroom to edit. Tick as many as you
