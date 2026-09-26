@@ -39,6 +39,22 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-26 (late) — up to 20 Showcase options a place, where the photographs earn it
+
+The operator wanted more than 8 options from courses with many great
+photographs. The limit is now 20 ("Options per place"). Asked for 20 across
+GELCO, the scores tracked quality closely:
+- North Fork's eighteenth option still scored 1.25, above most courses' best.
+- Edgewood's options were good down to about 0.75. Below that they were sand
+  edging, drainage work, a crew, and dusk frames too dark to print.
+
+**The rule:** after its best photo, a place offers only options scoring at
+least 0.75 (`OPTION_FLOOR`, in standard deviations above the library's
+average). North Fork offers 18, LedgeRock about 19, Edgewood 9, and thin
+courses stay short instead of padded. Every place still shows its best.
+
+Each card now says "3 of 18". A 20-place, 20-option search takes 9.4 s.
+
 ### 2026-09-26 (night) — a batch of listings into Lightroom; the Showcase picker redrawn
 
 **Many listings at once.** The operator wants 30 listings of 8 photos (240)
