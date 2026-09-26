@@ -21,6 +21,7 @@ from framefound.api.v1.people import router as people_router
 from framefound.api.v1.places import router as places_router
 from framefound.api.v1.remote_access import router as remote_access_router
 from framefound.api.v1.search import router as search_router
+from framefound.api.v1.showcase import router as showcase_router
 from framefound.api.v1.slideshows import router as slideshows_router
 from framefound.api.v1.storage import router as storage_router
 from framefound.api.v1.system import router as system_router
@@ -46,6 +47,7 @@ api_v1.include_router(listings_router)
 api_v1.include_router(develop_router)
 api_v1.include_router(gdrive_router)
 api_v1.include_router(panel_router)
+api_v1.include_router(showcase_router)
 
 
 class SystemInfo(BaseModel):

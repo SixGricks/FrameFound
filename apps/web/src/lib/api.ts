@@ -541,6 +541,41 @@ export interface ListingDetail extends ListingSummary {
 
 export type ListingNaming = "seo" | "simple";
 
+/** Showcase: the best finished photographs, one per place. */
+export interface ShowcaseRequest {
+  library_ids: string[];
+  subject: string;
+  avoid: string;
+  count: number;
+  alternates: number;
+  orientation: "landscape" | "portrait" | "any";
+  min_megapixels: number;
+  allow_people: boolean;
+}
+
+export interface ShowcasePick {
+  asset_id: string;
+  filename: string;
+  relative_path: string;
+  width: number;
+  height: number;
+  megapixels: number;
+  captured_at: string | null;
+  score: number;
+  parts: Record<string, number>;
+}
+
+export interface ShowcasePlace {
+  key: string;
+  label: string;
+  picks: ShowcasePick[];
+}
+
+export interface ShowcaseResponse {
+  places: ShowcasePlace[];
+  considered: number;
+}
+
 export interface SkyChoice {
   name: string;
   feather: number;
@@ -1034,6 +1069,18 @@ export const api = {
   rooms: () => request<RoomOption[]>("/listings/rooms"),
   listings: () => request<ListingSummary[]>("/listings"),
   listing: (id: string) => request<ListingDetail>(`/listings/${id}`),
+  showcase: (body: ShowcaseRequest) =>
+    request<ShowcaseResponse>("/showcase", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  showcaseListing: (name: string, picks: { asset_id: string; place: string }[]) =>
+    request<{ listing_id: string }>("/showcase/listing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, picks }),
+    }),
   createListing: (name: string, assetIds: string[]) =>
     request<ListingDetail>("/listings", {
       method: "POST",

@@ -890,6 +890,7 @@ export default function ListingPage() {
               <option value={2048}>2048 px longest edge</option>
               <option value={3840}>3840 px longest edge</option>
               <option value={4096}>4096 px longest edge</option>
+              <option value={8192}>Full size (print, up to 8192 px)</option>
             </select>
             <select
               className="select"
