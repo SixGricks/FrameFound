@@ -148,8 +148,9 @@ function FrameFoundClient.profiles()
 end
 
 --- Recent listings, newest first: { listing_id, name, photos, created_at }.
+--  200 is the server's limit: a month of shoots is a few dozen.
 function FrameFoundClient.listings()
-  return FrameFoundClient.getJson("/panel/listings?limit=60")
+  return FrameFoundClient.getJson("/panel/listings?limit=200")
 end
 
 --- One listing's photographs in order, at this profile's paths, each with

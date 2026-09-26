@@ -662,6 +662,103 @@ h2 {
   border-radius: 3px;
 }
 
+/* Showcase: one card per place — the pick large and uncropped, and every
+   candidate in a carousel beneath it, never beside or over it. */
+.showcase-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr));
+}
+.showcase-place {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+.showcase-place[data-off="true"] {
+  opacity: 0.45;
+}
+.showcase-main {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 3 / 2;
+  background: var(--ink-deep);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+/* Contain, not cover: the whole frame is what gets printed. */
+.showcase-main img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.showcase-carousel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.showcase-carousel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  padding: 3px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+.showcase-alt {
+  flex: none;
+  width: 124px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-deep);
+  overflow: hidden;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  scroll-snap-align: start;
+  transition: border-color 0.16s;
+}
+.showcase-alt:hover {
+  border-color: var(--amber-line);
+}
+.showcase-alt[data-active="true"] {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
+.showcase-alt img {
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  display: block;
+}
+.showcase-alt .placeholder {
+  aspect-ratio: 3 / 2;
+  align-content: center;
+}
+.showcase-alt-label {
+  display: block;
+  padding: 3px 6px 4px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--paper-faint);
+  text-align: left;
+}
+.showcase-alt[data-active="true"] .showcase-alt-label {
+  color: var(--amber);
+}
+.showcase-step {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
 .kv {
   display: grid;
   grid-template-columns: 118px 1fr;

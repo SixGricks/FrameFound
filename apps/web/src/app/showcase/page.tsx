@@ -11,13 +11,14 @@
 // sent: full-size files named after each place, a photo index, contact
 // sheets to choose from.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
 import {
   api,
+  mediaUrl,
   type Library,
   type ShowcasePick,
   type ShowcasePlace,
@@ -39,6 +40,120 @@ function describe(pick: ShowcasePick): string {
     ? new Date(pick.captured_at).toLocaleDateString(undefined, { month: "short", year: "numeric" })
     : "undated";
   return `${pick.megapixels} MP · ${pick.width}×${pick.height} · ${when}`;
+}
+
+// One place: the pick large and whole, and every candidate in a carousel
+// beneath it. The alternates used to sit beside the pick, and a thumbnail
+// wider than its box spilled over them; below, nothing competes with the
+// photograph being judged.
+function PlaceCard({
+  place,
+  rank,
+  current,
+  on,
+  onPick,
+  onToggle,
+}: {
+  place: ShowcasePlace;
+  rank: number;
+  current: number;
+  on: boolean;
+  onPick: (index: number) => void;
+  onToggle: (on: boolean) => void;
+}) {
+  const pick = place.picks[current];
+  const strip = useRef<HTMLDivElement>(null);
+  const count = place.picks.length;
+
+  // Stepping with the arrows keeps the chosen one in view in the strip —
+  // by scrolling the strip sideways only. scrollIntoView would also scroll
+  // the page, and every card runs this on mount: the page opened at the
+  // bottom.
+  useEffect(() => {
+    const box = strip.current;
+    const cell = box?.querySelector<HTMLElement>('[data-active="true"]');
+    if (!box || !cell) return;
+    const outer = box.getBoundingClientRect();
+    const inner = cell.getBoundingClientRect();
+    if (inner.left < outer.left) {
+      box.scrollBy({ left: inner.left - outer.left - 4, behavior: "smooth" });
+    } else if (inner.right > outer.right) {
+      box.scrollBy({ left: inner.right - outer.right + 4, behavior: "smooth" });
+    }
+  }, [current]);
+
+  return (
+    <div className="card showcase-place" data-off={!on}>
+      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => onToggle(e.target.checked)}
+          aria-label={`Include ${place.label}`}
+        />
+        <strong>
+          {rank + 1}. {place.label}
+        </strong>
+        {pick && <span className="faint mono">{describe(pick)}</span>}
+      </div>
+      {pick && (
+        <a
+          className="showcase-main"
+          // The photograph's own shape: no letterbox bars, and no jump as it loads.
+          style={
+            pick.width && pick.height
+              ? { aspectRatio: `${pick.width} / ${pick.height}` }
+              : undefined
+          }
+          href={mediaUrl(pick.asset_id, "preview")}
+          target="_blank"
+          rel="noreferrer"
+          title={`Open larger — ${pick.relative_path}`}
+        >
+          <Thumb assetId={pick.asset_id} mediaType="image" status="ready" kind="preview" />
+        </a>
+      )}
+      {count > 1 && (
+        <div className="showcase-carousel-row">
+          <button
+            type="button"
+            className="btn showcase-step"
+            onClick={() => onPick((current - 1 + count) % count)}
+            aria-label={`Previous photograph of ${place.label}`}
+          >
+            ‹
+          </button>
+          <div className="showcase-carousel" ref={strip}>
+            {place.picks.map((alt, index) => (
+              <button
+                key={alt.asset_id}
+                type="button"
+                className="showcase-alt"
+                data-active={index === current}
+                aria-pressed={index === current}
+                onClick={() => onPick(index)}
+                title={index === current ? "The pick" : `Use this one — ${alt.relative_path}`}
+              >
+                <Thumb assetId={alt.asset_id} mediaType="image" status="ready" />
+                <span className="showcase-alt-label">
+                  {index === 0 ? "Best" : `#${index + 1}`}
+                  {index === current ? " · chosen" : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="btn showcase-step"
+            onClick={() => onPick((current + 1) % count)}
+            aria-label={`Next photograph of ${place.label}`}
+          >
+            ›
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function ShowcasePage() {
@@ -235,8 +350,8 @@ export default function ShowcasePage() {
               {places.length} places · {selected.length} chosen
             </h2>
             <span className="faint mono">
-              from {considered.toLocaleString()} photographs — click an alternate to make it the
-              pick
+              from {considered.toLocaleString()} photographs — choose from the strip under each
+              photograph
             </span>
           </div>
           {places.length === 0 && (
@@ -245,57 +360,18 @@ export default function ShowcasePage() {
               different subject.
             </div>
           )}
-          <div style={{ display: "grid", gap: 12 }}>
-            {places.map((place, rank) => {
-              const current = pickIndex[place.key] ?? 0;
-              const pick = place.picks[current];
-              const on = included[place.key];
-              return (
-                <div
-                  key={place.key}
-                  className="card"
-                  style={{ opacity: on ? 1 : 0.45, display: "grid", gap: 8 }}
-                >
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      onChange={(e) => setIncluded({ ...included, [place.key]: e.target.checked })}
-                      aria-label={`Include ${place.label}`}
-                    />
-                    <strong>
-                      {rank + 1}. {place.label}
-                    </strong>
-                    {pick && <span className="faint mono">{describe(pick)}</span>}
-                  </div>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    {pick && (
-                      <div style={{ width: 420, maxWidth: "100%" }} title={pick.relative_path}>
-                        <Thumb assetId={pick.asset_id} mediaType="image" status="ready" />
-                      </div>
-                    )}
-                    <div style={{ display: "grid", gap: 6, alignContent: "start" }}>
-                      {place.picks.map((alt, index) =>
-                        index === current ? null : (
-                          <button
-                            key={alt.asset_id}
-                            type="button"
-                            className="tile"
-                            style={{ width: 150, padding: 0 }}
-                            onClick={() => setPickIndex({ ...pickIndex, [place.key]: index })}
-                            title={`Use this one — ${alt.relative_path}`}
-                          >
-                            <div className="tile-frame">
-                              <Thumb assetId={alt.asset_id} mediaType="image" status="ready" />
-                            </div>
-                          </button>
-                        ),
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+          <div className="showcase-grid">
+            {places.map((place, rank) => (
+              <PlaceCard
+                key={place.key}
+                place={place}
+                rank={rank}
+                current={pickIndex[place.key] ?? 0}
+                on={Boolean(included[place.key])}
+                onPick={(index) => setPickIndex((prev) => ({ ...prev, [place.key]: index }))}
+                onToggle={(on) => setIncluded((prev) => ({ ...prev, [place.key]: on }))}
+              />
+            ))}
           </div>
 
           <div className="card" style={{ position: "sticky", bottom: 8, marginTop: 12 }}>

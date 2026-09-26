@@ -94,10 +94,15 @@ panel useful on a version whose API does not cooperate.
 
 Three menu items appear under **Library → Plug-in Extras**:
 
-- **Import FrameFound listing…** — a listing (the GELCO calendar picks, a
-  property's gallery) into Lightroom to edit. Choose the listing and this
-  machine's path profile; the photographs are added by reference into
-  **Collections › FrameFound › <listing name>**. When the camera wrote a RAW
+- **Import FrameFound listings…** — listings (the GELCO calendar picks, a
+  month of property galleries) into Lightroom to edit. Tick as many as you
+  like (**Select all** for the lot) and choose this machine's path profile;
+  each listing's photographs are added by reference into **Collections ›
+  FrameFound › <listing name>** (two listings with one name get their dates
+  added), and every collection imported is shown together, so thirty listings
+  of eight photos are 240 photos in one grid: Ctrl+A, then Sync Settings in
+  Develop. A progress bar can cancel between listings; what is done is kept.
+  Last run's ticks come back next time. When the camera wrote a RAW
   beside the JPEG (DJI's DNG, Canon's CR3) the RAW is added instead — it keeps
   the sky highlights a printed page needs; untick the option for the JPEGs.
   Photographs already in the catalogue are reused, so importing again after
@@ -317,11 +322,16 @@ Lightroom's fix is written and syntax-checked against Lua 5.1 but not yet re-run
 in Lightroom, and Premiere never got past the network permission to reach
 `importFiles`.
 
-**Import FrameFound listing** (2026-09-26) is exercised outside Lightroom:
+**Import FrameFound listings** (2026-09-26) is exercised outside Lightroom:
 every plugin file compiles under Lua 5.1, and the menu item runs against stubs
-of the SDK (catalogue, dialogs, HTTP) with real response shapes — RAW twin
-chosen, JPEG when there is none, a photo already catalogued reused, a file
-Lightroom refuses skipped without stopping the rest, and a clear warning when
-the share is not connected. The SDK calls it relies on beyond the old items —
+of the SDK (catalogue, dialogs, progress, HTTP) with real response shapes —
+RAW twin chosen, JPEG when there is none, a photo already catalogued reused, a
+file Lightroom refuses skipped without stopping the rest, a folder name
+Windows cannot open named as the cause, a clear warning when the share is not
+connected; and for a batch: last run's ticks restored, Select all, one
+collection per listing with same-named listings told apart, a photo in two
+listings in both, a listing FrameFound cannot read reported, a cancel that
+keeps what was done. The SDK calls it relies on beyond the old items —
 `findPhotoByPath`, `createCollectionSet`, `createCollection`,
-`collection:addPhotos`, `setActiveSources` — have not yet run in Lightroom.
+`collection:addPhotos`, `setActiveSources` with several collections,
+`LrProgressScope` — have not yet run in Lightroom.

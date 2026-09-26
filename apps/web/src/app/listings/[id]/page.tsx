@@ -962,9 +962,10 @@ export default function ListingPage() {
                 re-encoded and nothing is copied off the NAS. */}
             <p className="faint" style={{ fontSize: "0.78rem", margin: 0 }}>
               In Lightroom Classic: <strong>Library → Plug-in Extras → Import FrameFound
-              listing…</strong> and choose “{listing?.name ?? "this listing"}”. The originals are
-              added where they are — the RAW when the camera wrote one — into a collection of
-              the same name. Nothing is copied or moved.
+              listings…</strong> and tick “{listing?.name ?? "this listing"}” — or as many
+              listings as you like, to edit them all in one grid. The originals are added where
+              they are — the RAW when the camera wrote one — each listing into a collection of
+              its name. Nothing is copied or moved.
             </p>
           </div>
 
