@@ -39,6 +39,33 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-26 (night) — a batch of listings into Lightroom; the Showcase picker redrawn
+
+**Many listings at once.** The operator wants 30 listings of 8 photos (240)
+edited together in Lightroom. The plugin (0.4.0) menu item is now **Import
+FrameFound listings…** and does that in one run:
+- a checklist of the newest 200 listings, with Select all; last run's ticks
+  come back;
+- each listing goes into its own collection under FrameFound. Two listings
+  with the same name get their dates added;
+- every collection imported is shown at once, so the whole batch is one grid:
+  Ctrl+A, then Sync Settings in Develop;
+- a progress bar that can cancel between listings, keeping what was done;
+- one summary covering every listing.
+
+Verified against SDK stubs under Lua 5.1, including the batch cases. It has
+still not run inside Lightroom.
+
+**Showcase picker.** The chosen photo now sits large and whole, in its own
+proportions, with the place's candidates in a carousel beneath it (‹ › to
+step). The old layout had alternates beside the pick, and the pick's
+thumbnail was never constrained, so it spilled over them.
+
+A static copy with real GELCO photos was checked at desktop and phone widths.
+That check caught a bug before release: the carousel's
+`scrollIntoView` also scrolled the page, so the page opened at the last card.
+The carousel now scrolls only sideways.
+
 ### 2026-09-26 (evening) — Showcase grades sky, crews and machines; listings open in Lightroom
 
 **Grading.** The operator noted that the best calendar photos usually show
