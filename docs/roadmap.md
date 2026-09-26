@@ -50,8 +50,10 @@ GELCO, the scores tracked quality closely:
 
 **The rule:** after its best photo, a place offers only options scoring at
 least 0.75 (`OPTION_FLOOR`, in standard deviations above the library's
-average). North Fork offers 18, LedgeRock about 19, Edgewood 9, and thin
-courses stay short instead of padded. Every place still shows its best.
+average). Live, for 14 courses: North Fork and LedgeRock offer 18, Pete Dye
+and Cherry Valley 15, Edgewood 9, Pocono Farm 6, Trump National 3 and
+Tamarack 1. Thin courses stay short instead of padded, and every place still
+shows its best.
 
 Each card now says "3 of 18". A 20-place, 20-option search takes 9.4 s.
 
