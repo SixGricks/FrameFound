@@ -39,6 +39,63 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-26 (evening) — Showcase grades sky, crews and machines; listings open in Lightroom
+
+**Grading.** The operator noted that the best calendar photos usually show
+sky, though not always. Each candidate was judged by eye on contact sheets
+of the whole GELCO library:
+
+- **Sky is now a bonus, measured in pixels.** It is the share of the frame
+  that is smooth sky joined to the top edge, blue or overcast grey. Under 3%
+  scores nothing, 12% or more scores fully, and over 65% scores nothing (a
+  blank white frame measured 97%). CLIP could spot a frame with no sky at
+  all, but scored a band of sky above the trees much like none.
+- **The bonus is never a gate.** LuLu and Trump National still lead with
+  overhead shots.
+- **Crews, golfers and machines are gated**, measured against the empty
+  course rather than "an empty landscape". Above the cutoffs nearly every
+  frame had a crew, golfers or tractors in it. The clean ones caught (a
+  Madison green, a Forest Gate tee) are an accepted loss.
+- **Tried and rejected: LAION's aesthetic predictor** (MIT, a linear head on
+  the stored CLIP embeddings). Its 20 favourite GELCO photos were mostly crew
+  portraits.
+
+Result: the 14 leaders and their 28 alternates contain no people and no
+equipment. Horizon shots replace overhead ones where a course has them
+(Cherry Valley, Mount Kisco, Moselem Springs). Three weak alternates remain:
+a fresh-sod edge, a distant development and a sprinkler. Thumbnails are now
+read in parallel: a search takes 5.4 s, down from 8.0 s, while reading 50%
+more of them.
+
+**Lightroom.** The Lightroom Classic plugin (0.3.0) has a new menu item,
+**Library → Plug-in Extras → Import FrameFound listing…**:
+
+- Adds a listing's photos by reference into **Collections › FrameFound ›
+  <listing>**.
+- Uses the RAW twin when the camera wrote one (a drone DNG keeps the sky
+  highlights a print needs).
+- Reuses photos already in the catalogue.
+- Is backed by two new panel endpoints, `GET /panel/listings` and
+  `/panel/listings/{id}`.
+
+The plugin's pattern-based JSON reading is replaced by a real decoder.
+Patterns handed Windows paths back still escaped (`Y:\\GELCO`).
+
+Lightroom (cloud) has no by-reference import, so for it the route is the
+full-size export. Path profiles for GELCO (`Y:\`) and Intel (`X:\`) were
+added to "DJ's PC (Windows)" to match the PC's mapped drives. About 10% of
+GELCO JPEGs (359) have a DNG twin.
+
+Verified: pytest, plus the plugin under Lua 5.1 against SDK stubs (see
+docs/panels.md). **Not yet run inside Lightroom.**
+
+**Needs the operator:**
+- **Rename `LedgeRock ` on the GELCO share.** The name ends in a space, and
+  Windows cannot open it by any path, so its 640 photographs are unreachable
+  from the PC. The scanner follows the rename by content hash. The plugin now
+  names this cause instead of asking whether the drive is connected.
+- In Lightroom: reload the plugin (Plug-in Manager), then run the import once.
+
 ### 2026-09-26 — closing the editing gap: training pairs, and a RawTherapee engine
 
 The plan agreed after the operator judged FrameFound's editing "much worse"
