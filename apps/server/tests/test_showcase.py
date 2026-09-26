@@ -1,7 +1,11 @@
 """Showcase ranking: finished work over work in progress, one photo per place,
 print fitness, no people, no photo offered twice."""
 
+from pathlib import Path
+
 import numpy as np
+import pytest
+from PIL import Image
 
 from framefound.media import showcase
 
@@ -115,3 +119,81 @@ def test_place_names_merge_on_noise_and_gps() -> None:
     assert showcase.place_of("Town Of Colony/a.jpg")[0] == showcase.place_of("Town of Colonie/b")[0]
     assert showcase.is_generic("LuLu/ Social images/NORTHFORK/DJI.jpg")
     assert not showcase.is_generic("LuLu/2023 11 09/DJI.jpg")
+
+
+def _scene(sky_rows: int, colour: tuple[int, int, int] = (110, 160, 235)) -> Image.Image:
+    """Textured grass under `sky_rows` rows (of 80) of smooth sky."""
+    rng = np.random.default_rng(7)
+    grass = np.stack(
+        [
+            rng.integers(30, 110, (80, 120)),
+            rng.integers(40, 250, (80, 120)),
+            rng.integers(20, 80, (80, 120)),
+        ],
+        axis=-1,
+    ).astype(np.uint8)
+    for row in range(sky_rows):
+        lift = row * 40 // max(sky_rows, 1)  # a gentle gradient, as a real sky has
+        grass[row] = [min(255, c + lift) for c in colour]
+    return Image.fromarray(grass)
+
+
+def test_sky_is_measured_from_the_top_edge() -> None:
+    assert abs(showcase.sky_fraction(_scene(24)) - 0.3) < 0.05
+    assert abs(showcase.sky_fraction(_scene(24, (200, 202, 205))) - 0.3) < 0.05, "overcast counts"
+    assert showcase.sky_fraction(_scene(0)) < 0.01, "a frame of grass has none"
+    # A blank white frame is "all sky" and earns nothing for it.
+    blank = showcase.sky_fraction(Image.new("RGB", (120, 80), (245, 245, 245)))
+    assert blank > 0.9 and showcase.sky_presence(blank) == 0.0
+    assert showcase.sky_presence(0.01) == 0.0, "a sliver above the trees is not a sky"
+    assert showcase.sky_presence(0.3) == 1.0
+
+
+def test_sky_breaks_a_tie_but_is_never_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The best pages usually have a sky — not always."""
+    skies = {"horizon.webp": 0.25, "overhead.webp": 0.0, "nadir.webp": 0.0}
+    monkeypatch.setattr(showcase, "look", lambda path: (1.0, skies[Path(path).name]))
+    photos = _library()
+    photos += [
+        # The same quality and finish, different frames.
+        _photo(
+            500,
+            "Edgewood/drone/overhead.JPG",
+            _unit(1, 0, 1, 0, 0, 1, 0.5, 0),
+            thumbnail="overhead.webp",
+        ),
+        _photo(
+            501,
+            "Edgewood/drone/horizon.JPG",
+            _unit(1, 0, 1, 0, 0, 1, 0, 0.5),
+            thumbnail="horizon.webp",
+        ),
+        _photo(
+            502,
+            "North Fork/drone/nadir.JPG",
+            _unit(1, 0, 1, 0, 0, 1, -0.5, -0.5),
+            thumbnail="nadir.webp",
+        ),
+    ]
+    places, _ = showcase.rank(photos, VECTORS, alternates=2, thumbnail_root=Path("/thumbs"))
+    leaders = {place.label: place.picks[0] for place in places}
+    assert leaders["Edgewood"].photo.asset_id == "a501"
+    assert leaders["Edgewood"].parts["sky"] == 0.25
+    assert leaders["North Fork"].photo.asset_id == "a502", "no sky, still the best of its place"
+
+
+def test_machines_on_the_grass_are_left_out() -> None:
+    """Seen from a drone, a crew is tractors and a truck on the fairway."""
+    vectors = {
+        **VECTORS,
+        "equipment_pos": [_unit(0, 0, 0, 0, 0, 0, 1)],
+        "equipment_neg": [_unit(0, 0, 0, 0, 0, 1)],
+    }
+    photos = _library()
+    photos += [
+        _photo(600, "Oak Hill/a.JPG", _unit(1, 0, 1, 0, 0, 1)),
+        _photo(601, "Oak Hill/b.JPG", _unit(1, 0, 1, 0, 0, 0.2, 1)),  # tractors on the green
+    ]
+    places, _ = showcase.rank(photos, vectors, alternates=3)
+    offered = {pick.photo.asset_id for place in places for pick in place.picks}
+    assert "a600" in offered and "a601" not in offered

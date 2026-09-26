@@ -23,11 +23,11 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from framefound.auth.deps import DbDep, PanelPrincipal, require_panel_scope
 from framefound.config import get_settings
-from framefound.db.models import Asset, Library, PathMapping
+from framefound.db.models import Asset, Library, Listing, ListingItem, PathMapping
 from framefound.media.signing import SigningError, sign_media_url
 
 # A panel authenticates with a bearer token, which an <img> or <video> element
@@ -303,6 +303,152 @@ async def asset_paths(asset_id: uuid.UUID, _user: PanelPrincipal, db: DbDep) -> 
         ],
         "proxy_url": _media_url(asset_id, "proxy"),
     }
+
+
+# RAW formats a photograph may have a twin in. DJI drones and Canon bodies
+# write the RAW beside the JPEG under the same name, and the RAW is what an
+# editor wants: a calendar page needs the sky highlights the JPEG threw away.
+RAW_EXTENSIONS = ("dng", "cr3", "cr2", "nef", "arw", "raf", "orf", "rw2")
+
+
+class PanelListing(BaseModel):
+    listing_id: uuid.UUID
+    name: str
+    photos: int
+    created_at: str
+
+
+class PanelListingItem(BaseModel):
+    asset_id: uuid.UUID
+    position: int
+    filename: str
+    caption: str
+    path: str | None
+    # The RAW original beside it, when the catalogue has one.
+    raw_filename: str | None
+    raw_path: str | None
+
+
+class PanelListingDetail(BaseModel):
+    listing_id: uuid.UUID
+    name: str
+    profile: str | None
+    items: list[PanelListingItem]
+    note: str
+
+
+@router.get("/listings", response_model=list[PanelListing])
+async def panel_listings(
+    _user: PanelPrincipal, db: DbDep, limit: int = Query(default=40, ge=1, le=200)
+) -> list[PanelListing]:
+    """Recent listings with photographs in them, newest first — what a
+    panel offers when asked to open one."""
+    photos = func.count(ListingItem.id)
+    rows = (
+        await db.execute(
+            select(Listing, photos)
+            .join(ListingItem, ListingItem.listing_id == Listing.id)
+            .join(Asset, Asset.id == ListingItem.asset_id)
+            .where(Asset.media_type == "image")
+            .group_by(Listing.id)
+            .order_by(Listing.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        PanelListing(
+            listing_id=listing.id,
+            name=listing.name,
+            photos=int(count),
+            created_at=listing.created_at.isoformat() if listing.created_at else "",
+        )
+        for listing, count in rows
+    ]
+
+
+def _stem(relative_path: str) -> str:
+    return relative_path.rsplit(".", 1)[0].lower()
+
+
+async def _raw_twins(db: DbDep, assets: list[Asset]) -> dict[uuid.UUID, Asset]:
+    """asset id -> the catalogued RAW file in the same folder under the same
+    name, for every photograph that has one."""
+    wanted = {
+        (asset.library_id, _stem(asset.relative_path)): asset.id
+        for asset in assets
+        if asset.extension.lower() not in RAW_EXTENSIONS
+    }
+    if not wanted:
+        return {}
+    candidates = [f"{stem}.{ext}" for _library, stem in wanted for ext in RAW_EXTENSIONS]
+    rows = (
+        await db.execute(
+            select(Asset).where(
+                Asset.library_id.in_({library for library, _stem in wanted}),
+                func.lower(Asset.relative_path).in_(candidates),
+            )
+        )
+    ).scalars()
+    twins: dict[uuid.UUID, Asset] = {}
+    for raw in rows:
+        owner = wanted.get((raw.library_id, _stem(raw.relative_path)))
+        if owner is not None:
+            twins[owner] = raw
+    return twins
+
+
+@router.get("/listings/{listing_id}", response_model=PanelListingDetail)
+async def panel_listing(
+    listing_id: uuid.UUID,
+    _user: PanelPrincipal,
+    db: DbDep,
+    profile: str = Query(default="", max_length=100),
+) -> PanelListingDetail:
+    """A listing's photographs in order, each at a path this workstation can
+    open, with its RAW original when there is one — so Lightroom can add
+    them where they are, the way the showcase picks were chosen."""
+    listing = await db.get(Listing, listing_id)
+    if listing is None:
+        raise HTTPException(status_code=404, detail="No such listing")
+    rows = (
+        await db.execute(
+            select(ListingItem, Asset)
+            .join(Asset, Asset.id == ListingItem.asset_id)
+            .where(ListingItem.listing_id == listing.id, Asset.media_type == "image")
+            .order_by(ListingItem.position, ListingItem.created_at)
+        )
+    ).all()
+    twins = await _raw_twins(db, [asset for _item, asset in rows])
+    profiles = await _profiles(db, profile)
+    items = []
+    for position, (item, asset) in enumerate(rows, start=1):
+        twin = twins.get(asset.id)
+        items.append(
+            PanelListingItem(
+                asset_id=asset.id,
+                position=position,
+                filename=asset.filename,
+                caption=item.caption or "",
+                path=_translate_for(asset, profiles),
+                raw_filename=twin.filename if twin else None,
+                raw_path=_translate_for(twin, profiles) if twin else None,
+            )
+        )
+    raws = sum(1 for i in items if i.raw_filename)
+    if not profiles:
+        note = "No path profile chosen, so there is nothing this machine can open."
+    else:
+        note = f"Paths for {profile.strip()}. {raws} of {len(items)} have a RAW original."
+        unmapped = sum(1 for i in items if i.path is None)
+        if unmapped:
+            note += f" {unmapped} are in a library this workstation has no profile for."
+    return PanelListingDetail(
+        listing_id=listing.id,
+        name=listing.name,
+        profile=profile.strip() or None,
+        items=items,
+        note=note,
+    )
 
 
 class ExportRequest(BaseModel):

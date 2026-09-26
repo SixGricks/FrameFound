@@ -82,9 +82,9 @@ def _prompt_vectors(subject: str, avoid: str) -> dict[str, list[list[float]]]:
         "quality_neg": encode(showcase_lib.QUALITY_NEGATIVE),
         "finish_pos": encode(finish_pos),
         "finish_neg": encode(finish_neg),
-        "people_pos": encode(showcase_lib.PEOPLE_POSITIVE),
-        "people_neg": encode(showcase_lib.PEOPLE_NEGATIVE),
     }
+    for key, texts in showcase_lib.clutter_prompts(subject).items():
+        vectors[key] = encode(texts)
     avoid_terms = [a.strip() for a in avoid.split(",") if a.strip()]
     if avoid_terms:
         vectors["avoid"] = encode(avoid_terms)

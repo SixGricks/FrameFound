@@ -62,15 +62,14 @@ LrTasks.startAsyncTask(function()
 
   local hit = results[1]
   local ok2, detail = LrTasks.pcall(function()
-    return Client.get("/panel/assets/" .. hit.asset_id .. "/paths")
+    return Client.getJson("/panel/assets/" .. hit.asset_id .. "/paths")
   end)
   if ok2 then
-    local serverPath = detail:match('"server_path"%s*:%s*"(.-)"')
     table.insert(lines, "FrameFound stores it at:")
-    table.insert(lines, "  " .. (serverPath or "(unknown)"))
+    table.insert(lines, "  " .. (detail.server_path or "(unknown)"))
     table.insert(lines, "")
     table.insert(lines, "Workstation profiles:")
-    for _, entry in ipairs(Client.objects(detail, "paths")) do
+    for _, entry in ipairs(detail.paths or {}) do
       table.insert(
         lines,
         "  " .. (entry.profile_name or "?") .. " (" .. (entry.platform or "?") .. "): "

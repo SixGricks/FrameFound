@@ -7,16 +7,16 @@
   mistake that manifests as Lightroom freezing rather than as an error, which
   is why it is said here as well as at each call site.
 
-  There is no JSON library in the Lightroom SDK. Rather than vendor one, the
-  handful of fields this plugin needs are pulled out with patterns. That is a
-  deliberate trade: a real parser would be more correct in general, but this
-  code only ever reads responses produced by an API in the same repository,
-  and the failure mode of a missing field is a nil the caller checks.
+  There is no JSON library in the Lightroom SDK, so FrameFoundJson.lua is a
+  small decoder. (Patterns were used until Windows paths arrived escaped —
+  "Y:\\GELCO" — and a caption could contain a bracket.)
 --]]
 
 local LrHttp = import "LrHttp"
 local LrPrefs = import "LrPrefs"
 local LrErrors = import "LrErrors"
+
+local Json = require "FrameFoundJson"
 
 local FrameFoundClient = {}
 
@@ -125,34 +125,9 @@ function FrameFoundClient.get(path)
   return body
 end
 
---- Every `"key": "value"` and `"key": number` in one JSON object fragment.
-local function fields(fragment)
-  local out = {}
-  for key, value in fragment:gmatch('"([%w_]+)"%s*:%s*"(.-)"') do
-    out[key] = value
-  end
-  for key, value in fragment:gmatch('"([%w_]+)"%s*:%s*(-?[%d%.]+)') do
-    out[key] = tonumber(value)
-  end
-  return out
-end
-
---- Split a JSON array of flat objects into a list of tables.
---  Only handles objects without nested braces, which is all the panel API
---  returns for these two endpoints.
-function FrameFoundClient.objects(json, arrayKey)
-  local results = {}
-  local body = json
-  if arrayKey then
-    body = json:match('"' .. arrayKey .. '"%s*:%s*%[(.-)%]')
-    if body == nil then
-      return results
-    end
-  end
-  for fragment in body:gmatch("{(.-)}") do
-    table.insert(results, fields(fragment))
-  end
-  return results
+--- GET a panel endpoint and decode it. Inside LrTasks.startAsyncTask only.
+function FrameFoundClient.getJson(path)
+  return Json.decode(FrameFoundClient.get(path))
 end
 
 function FrameFoundClient.search(query, profile, mediaType, limit)
@@ -164,12 +139,28 @@ function FrameFoundClient.search(query, profile, mediaType, limit)
     .. FrameFoundClient.encode(mediaType or "image")
     .. "&limit="
     .. tostring(limit or 24)
-  local body = FrameFoundClient.get(path)
-  return FrameFoundClient.objects(body, "results"), body
+  local data = FrameFoundClient.getJson(path)
+  return data.results or {}, data
 end
 
 function FrameFoundClient.profiles()
-  return FrameFoundClient.objects(FrameFoundClient.get("/panel/profiles"))
+  return FrameFoundClient.getJson("/panel/profiles")
+end
+
+--- Recent listings, newest first: { listing_id, name, photos, created_at }.
+function FrameFoundClient.listings()
+  return FrameFoundClient.getJson("/panel/listings?limit=60")
+end
+
+--- One listing's photographs in order, at this profile's paths, each with
+--  its RAW original (raw_path) when the catalogue has one.
+function FrameFoundClient.listing(listingId, profile)
+  return FrameFoundClient.getJson(
+    "/panel/listings/"
+      .. FrameFoundClient.encode(listingId)
+      .. "?profile="
+      .. FrameFoundClient.encode(profile)
+  )
 end
 
 return FrameFoundClient

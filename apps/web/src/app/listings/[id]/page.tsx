@@ -955,6 +955,19 @@ export default function ListingPage() {
             )}
           </div>
 
+          <div className="card">
+            <div className="mono" style={{ marginBottom: 6 }}>Edit in Lightroom</div>
+            {/* The plugin is the reliable route: it adds the originals where
+                they are (the RAW when the camera wrote one), so nothing is
+                re-encoded and nothing is copied off the NAS. */}
+            <p className="faint" style={{ fontSize: "0.78rem", margin: 0 }}>
+              In Lightroom Classic: <strong>Library → Plug-in Extras → Import FrameFound
+              listing…</strong> and choose “{listing?.name ?? "this listing"}”. The originals are
+              added where they are — the RAW when the camera wrote one — into a collection of
+              the same name. Nothing is copied or moved.
+            </p>
+          </div>
+
           <button
             className="btn"
             style={{ borderColor: "var(--ember)", color: "var(--ember)" }}

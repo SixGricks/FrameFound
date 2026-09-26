@@ -18,6 +18,10 @@ How a photograph is judged, all from what the catalogue already stores:
 - **Fitness for print** — megapixels, orientation and aspect (a 360°
   "tiny planet" is not a calendar page), and brightness from the thumbnail
   (a dark or fogged frame reads as muddy in print).
+- **Sky** — a bonus for a frame that shows one, measured in the thumbnail's
+  pixels. The best pages usually have a sky, not always, so it is never a
+  gate. (A learned aesthetic model — LAION's, on the same CLIP embeddings —
+  was tried and rejected: its twenty favourites were mostly the crew.)
 - **The work, not the finish** — faces (people in frame are usually a crew)
   and folder names that say so ("irrigation", "drainage", "sod").
 
@@ -44,16 +48,35 @@ QUALITY_NEGATIVE = [
 ]
 
 
-# People in frame. On a showcase page they are the crew or a client, not
-# the work — and the face detector misses a back or a figure at distance
-# (a first run offered a man on his phone walking through a bunker).
-PEOPLE_POSITIVE = [
-    "a person standing in the photo",
-    "a man posing for a photo",
-    "people walking",
-    "a worker on a job site",
-]
-PEOPLE_NEGATIVE = ["an empty landscape with nobody in it", "an empty scene with no people"]
+# People and machines in frame. On a showcase page they are the crew, a
+# client or a golfer, not the work — and the face detector misses a back or
+# a figure at distance (a first run offered a man on his phone walking
+# through a bunker). Measured against the finished subject itself, not "an
+# empty landscape", which a course seen from a drone never looks like.
+def clutter_prompts(subject: str) -> dict[str, list[str]]:
+    subject = " ".join(subject.split()) or "project"
+    empty = [
+        f"an empty {subject} with nobody on it",
+        f"a pristine {subject} landscape with no vehicles",
+        f"a quiet {subject} with no people or machines",
+    ]
+    return {
+        "people_pos": [
+            f"people playing or walking on a {subject}",
+            "a group of people standing on the grass",
+            "a man posing for a photo",
+            "a worker on a job site",
+        ],
+        "people_neg": empty,
+        "equipment_pos": [
+            f"a tractor on a {subject}",
+            "a red utility vehicle and a trailer",
+            "construction equipment on the grass",
+            "a pickup truck parked on the grass",
+            "workers with shovels and a wheelbarrow",
+        ],
+        "equipment_neg": empty,
+    }
 
 
 def finish_prompts(subject: str) -> tuple[list[str], list[str]]:
@@ -90,9 +113,12 @@ SAME_PLACE_KM = 2.0
 NEAR_DUPLICATE = 0.94
 MAX_ASPECT = 1.85
 FINISH_FLOOR_PERCENTILE = 75.0
-# A photograph closer to "a person in frame" than to "an empty scene" by
-# more than this is left out (unless people are allowed).
-PEOPLE_MARGIN = 0.0
+# A photograph closer to "people on the course" / "a tractor on the course"
+# than to the empty course by more than these is left out (people only when
+# they are not allowed). Set against GELCO's shortlist by eye: above them
+# nearly every frame had a crew, golfers or machines in it.
+PEOPLE_MARGIN = -0.0115
+EQUIPMENT_MARGIN = -0.004
 
 
 @dataclass
@@ -218,17 +244,72 @@ def technical(photo: Photo, orientation: str, min_megapixels: float) -> tuple[fl
     return 1.0, ""
 
 
-def brightness_factor(thumbnail_path: Any) -> float:
-    """1.0 for a well-exposed frame, less for a dark or washed-out one —
-    judged from the thumbnail's luminance spread."""
+# Sky. GELCO's best photographs usually show some — a horizon, clouds, a
+# sunset over the course — but not always: a straight-down drone shot of a
+# green can be the best of a course. So sky earns a bonus and is never
+# required. It is measured in pixels, not words: CLIP knows a frame with no
+# sky at all, but scores a band of sky above the trees much like none.
+SKY_WEIGHT = 0.25
+SKY_NONE = 0.03  # under this share of the frame: none, or a blurred backdrop
+SKY_FULL = 0.12  # a proper sky; more earns no more
+SKY_TOO_MUCH = 0.65  # a picture of the sky, or a blank white frame
+# Brightness and sky need pixels, so thumbnails are read for each place's
+# leaders only — enough of them that the sky bonus can reorder the top.
+SHORTLIST_PER_ALTERNATE = 6
+
+
+def sky_fraction(image: Any) -> float:
+    """The share of the frame that is sky: cells joined to the top edge that
+    are blue or pale grey (cloud, overcast) and smooth."""
+    import numpy as np
+    from PIL import Image
+
+    small = image.convert("RGB").resize((96, 64), Image.Resampling.BOX)
+    rgb = np.asarray(small, dtype=np.float32) / 255.0
+    red, green, blue = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    value = rgb.max(axis=2)
+    saturation = (value - rgb.min(axis=2)) / np.maximum(value, 1e-6)
+    colour = ((blue >= red + 0.03) & (blue >= green - 0.03) & (value > 0.35)) | (
+        (saturation < 0.16) & (value > 0.55)
+    )
+    texture = np.abs(np.diff(value, axis=0, prepend=value[:1])) + np.abs(
+        np.diff(value, axis=1, prepend=value[:, :1])
+    )
+    sky = colour & (texture < 0.07)
+    # A cloud's edge is texture for one cell; let the run down from the top
+    # cross it rather than stop there.
+    below = np.vstack([sky[1:], np.zeros((1, sky.shape[1]), dtype=bool)])
+    sky = colour & (sky | below)
+    return float(np.cumprod(sky, axis=0).mean())
+
+
+def sky_presence(fraction: float) -> float:
+    """0..1: how fully a frame shows a sky, for the bonus."""
+    if fraction >= SKY_TOO_MUCH:
+        return 0.0
+    return min(1.0, max(0.0, (fraction - SKY_NONE) / (SKY_FULL - SKY_NONE)))
+
+
+def look(thumbnail_path: Any) -> tuple[float, float]:
+    """(exposure factor, sky fraction) from one read of a thumbnail;
+    (1.0, 0.0) when it cannot be read."""
     import numpy as np
     from PIL import Image
 
     try:
         with Image.open(thumbnail_path) as img:
-            luma = np.asarray(img.convert("L"), dtype=np.float32) / 255.0
+            rgb = img.convert("RGB")
     except OSError:
-        return 1.0
+        return 1.0, 0.0
+    luma = np.asarray(rgb.convert("L"), dtype=np.float32) / 255.0
+    return exposure_factor(luma), sky_fraction(rgb)
+
+
+def exposure_factor(luma: Any) -> float:
+    """1.0 for a well-exposed frame, less for a dark or washed-out one —
+    judged from the luminance spread (0..1 values)."""
+    import numpy as np
+
     mean = float(luma.mean())
     spread = float(np.percentile(luma, 95) - np.percentile(luma, 5))
     factor = 1.0
@@ -272,11 +353,14 @@ def rank(
 
     quality = margin("quality_pos", "quality_neg")
     finish = margin("finish_pos", "finish_neg")
-    people = (
-        margin("people_pos", "people_neg")
-        if len(text_vectors.get("people_pos", [])) > 0
-        else np.full(len(usable), -1.0)
-    )
+
+    def optional(pos_key: str, neg_key: str) -> Any:
+        if len(text_vectors.get(pos_key, [])) == 0:
+            return np.full(len(usable), -1.0)
+        return margin(pos_key, neg_key)
+
+    people = optional("people_pos", "people_neg")
+    equipment = optional("equipment_pos", "equipment_neg")
 
     # Standardise each signal so neither dominates by scale, then combine.
     def z(values: Any) -> Any:
@@ -310,6 +394,8 @@ def rank(
             continue  # looks more like the work than the finished product
         if not allow_people and (photo.faces or people[index] > PEOPLE_MARGIN):
             continue  # someone in frame
+        if equipment[index] > EQUIPMENT_MARGIN:
+            continue  # machines on the grass: the work, not the finish
         factor, _why = technical(photo, orientation, min_megapixels)
         if factor == 0.0:
             continue
@@ -326,6 +412,8 @@ def rank(
                 {
                     "quality": round(float(quality[index]), 4),
                     "finished": round(float(finish[index]), 4),
+                    "people": round(float(people[index]), 4),
+                    "equipment": round(float(equipment[index]), 4),
                     "penalty": round(penalty, 2),
                 },
             )
@@ -335,18 +423,24 @@ def rank(
     for pick in sorted(scored, key=lambda p: -p.score):
         by_place.setdefault(places[pick.photo.asset_id] or "", []).append(pick)
 
-    # Brightness needs pixels: read thumbnails only for each place's leaders.
-    shortlists: dict[str, list[Pick]] = {}
-    for key, picks in by_place.items():
-        shortlist = picks[: alternates * 4]
-        if thumbnail_root is not None:
-            for pick in shortlist:
-                if pick.photo.thumbnail:
-                    factor = brightness_factor(thumbnail_root / pick.photo.thumbnail)
-                    pick.parts["exposure"] = round(factor, 2)
-                    pick.score = pick.score * factor if pick.score > 0 else pick.score / factor
+    shortlists = {
+        key: picks[: alternates * SHORTLIST_PER_ALTERNATE] for key, picks in by_place.items()
+    }
+    if thumbnail_root is not None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        readable = [p for s in shortlists.values() for p in s if p.photo.thumbnail]
+        # Decoding releases the GIL: a few threads read hundreds of
+        # thumbnails in a few seconds rather than twenty.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            looks = list(pool.map(lambda p: look(thumbnail_root / p.photo.thumbnail), readable))
+        for pick, (exposure, sky) in zip(readable, looks, strict=True):
+            pick.parts["exposure"] = round(exposure, 2)
+            pick.parts["sky"] = round(sky, 3)
+            pick.score += SKY_WEIGHT * sky_presence(sky)
+            pick.score = pick.score * exposure if pick.score > 0 else pick.score / exposure
+        for shortlist in shortlists.values():
             shortlist.sort(key=lambda p: -p.score)
-        shortlists[key] = shortlist
 
     # Best place first. A frame already offered — near-identical to one in
     # this place or in a better-ranked one (the same drone shot filed under

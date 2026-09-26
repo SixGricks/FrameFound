@@ -92,8 +92,17 @@ panel useful on a version whose API does not cooperate.
 3. With FrameFound selected in the manager, enter the server address and token,
    then **Test connection**.
 
-Two menu items appear under **Library**:
+Three menu items appear under **Library → Plug-in Extras**:
 
+- **Import FrameFound listing…** — a listing (the GELCO calendar picks, a
+  property's gallery) into Lightroom to edit. Choose the listing and this
+  machine's path profile; the photographs are added by reference into
+  **Collections › FrameFound › <listing name>**. When the camera wrote a RAW
+  beside the JPEG (DJI's DNG, Canon's CR3) the RAW is added instead — it keeps
+  the sky highlights a printed page needs; untick the option for the JPEGs.
+  Photographs already in the catalogue are reused, so importing again after
+  the listing changes brings in only what is new. Needs a path profile for
+  every library the listing draws from (GELCO on `Y:\`, Intel on `X:\`, …).
 - **Search FrameFound…** — search, then add the results to the Lightroom
   catalogue. Photographs are added *where they are*: Lightroom references them
   in place. Nothing is copied or moved, which is the only behaviour consistent
@@ -109,11 +118,15 @@ Two menu items appear under **Library**:
 is wrapped in `LrTasks.startAsyncTask`; getting that wrong freezes Lightroom
 with no error at all, which is a hard symptom to trace back to its cause.
 
-There is **no JSON parser** in the SDK. Rather than vendor one, the handful of
-fields the plugin needs are extracted with patterns. That is a deliberate
-trade: a real parser is more correct in general, but this code only ever reads
-responses from an API in the same repository, and a missing field surfaces as a
-nil the caller already checks.
+There is **no JSON parser** in the SDK. The first version pulled fields out
+with patterns, which broke on Windows paths: JSON writes `Y:\GELCO` as
+`"Y:\\GELCO"`, and a pattern hands back the escaped form. `FrameFoundJson.lua`
+is a small, complete decoder (every escape, `\u` and surrogate pairs); `null`
+becomes nil, an absent field the callers check.
+
+Lightroom Classic has no equivalent for **Lightroom (cloud)**: its SDK cannot
+add photographs by reference, and a cloud import is an upload. For it, export
+the listing as a full-size zip and import that.
 
 ---
 
@@ -303,3 +316,12 @@ their host applications (see above), but **neither has completed a round trip**:
 Lightroom's fix is written and syntax-checked against Lua 5.1 but not yet re-run
 in Lightroom, and Premiere never got past the network permission to reach
 `importFiles`.
+
+**Import FrameFound listing** (2026-09-26) is exercised outside Lightroom:
+every plugin file compiles under Lua 5.1, and the menu item runs against stubs
+of the SDK (catalogue, dialogs, HTTP) with real response shapes — RAW twin
+chosen, JPEG when there is none, a photo already catalogued reused, a file
+Lightroom refuses skipped without stopping the rest, and a clear warning when
+the share is not connected. The SDK calls it relies on beyond the old items —
+`findPhotoByPath`, `createCollectionSet`, `createCollection`,
+`collection:addPhotos`, `setActiveSources` — have not yet run in Lightroom.

@@ -25,7 +25,7 @@ from framefound.ai import rooms as rooms_lib
 from framefound.config import get_settings
 from framefound.db.base import Base
 from framefound.db.engine import get_session
-from framefound.db.models import Asset, AuditLog, Frame, Library, Listing
+from framefound.db.models import Asset, AuditLog, Frame, Library, Listing, PathMapping
 
 ADMIN = {"email": "admin@example.com", "password": "a-strong-password"}
 BASE = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
@@ -468,3 +468,49 @@ async def test_the_cover_is_the_first_photo_even_after_the_first_was_removed(env
     listed = (await env["client"].get("/api/v1/listings")).json()
     mine = next(entry for entry in listed if entry["id"] == body["id"])
     assert mine["cover_asset_id"] == second
+
+
+async def test_a_panel_opens_a_listing_at_workstation_paths_with_its_raw_originals(
+    env: dict,
+) -> None:
+    """Lightroom's "Import FrameFound listing…": the photos in order, at the
+    paths this machine sees, each with the DNG the drone wrote beside it."""
+    listing = await _create(env, ["front", "kitchen"], name="GELCO calendar")
+    async with env["factory"]() as db:
+        library = (await db.execute(select(Library))).scalar_one()
+        db.add(
+            PathMapping(
+                library_id=library.id,
+                profile_name="Studio",
+                platform="windows",
+                mapped_prefix="Y:\\",
+            )
+        )
+        db.add(
+            Asset(
+                library_id=library.id,
+                relative_path="front.DNG",
+                filename="front.DNG",
+                extension="DNG",
+                media_type="image",
+                size_bytes=1000,
+                mtime=BASE,
+                availability="online",
+            )
+        )
+        await db.commit()
+    client = env["client"]
+    listings = (await client.get("/api/v1/panel/listings")).json()
+    assert [(x["name"], x["photos"]) for x in listings] == [("GELCO calendar", 2)]
+
+    url = f"/api/v1/panel/listings/{listing['id']}"
+    detail = (await client.get(url, params={"profile": "Studio"})).json()
+    assert [i["position"] for i in detail["items"]] == [1, 2]
+    by_name = {i["filename"]: i for i in detail["items"]}
+    assert by_name["front.jpg"]["path"] == "Y:\\front.jpg"
+    assert by_name["front.jpg"]["raw_path"] == "Y:\\front.DNG"
+    assert by_name["kit.jpg"]["raw_path"] is None
+    assert "1 of 2 have a RAW original" in detail["note"]
+    unmapped = (await client.get(url)).json()
+    assert all(i["path"] is None for i in unmapped["items"]), "no profile, no guessed paths"
+    assert (await client.get(f"/api/v1/panel/listings/{uuidlib.uuid4()}")).status_code == 404

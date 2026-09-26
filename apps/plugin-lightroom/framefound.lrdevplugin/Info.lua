@@ -30,6 +30,10 @@ return {
 
   LrLibraryMenuItems = {
     {
+      title = "Import FrameFound listing…",
+      file = "FrameFoundListing.lua",
+    },
+    {
       title = "Search FrameFound…",
       file = "FrameFoundSearch.lua",
     },
@@ -39,5 +43,5 @@ return {
     },
   },
 
-  VERSION = { major = 0, minor = 2, revision = 1, build = 0 },
+  VERSION = { major = 0, minor = 3, revision = 0, build = 0 },
 }
