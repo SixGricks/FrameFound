@@ -56,6 +56,12 @@ FrameFound listings…** and does that in one run:
 Verified against SDK stubs under Lua 5.1, including the batch cases. It has
 still not run inside Lightroom.
 
+The operator reported the plugin listed in Plug-in Manager but with no trace
+of it anywhere else in Lightroom. Its items were declared only as Library-module
+menu items, which appear under Library → Plug-in Extras and only in the
+Library module. Plugin 0.4.1 also declares them under File → Plug-in Extras,
+which is there in every module.
+
 **Showcase picker.** The chosen photo now sits large and whole, in its own
 proportions, with the place's candidates in a carousel beneath it (‹ › to
 step). The old layout had alternates beside the pick, and the pick's
