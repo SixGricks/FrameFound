@@ -66,22 +66,31 @@ class GdriveSettingsOut(BaseModel):
     enabled: bool
     # The address the operator shares folders with. An identifier, not a secret.
     client_email: str
+    # Drive folders whose shoots' "MLS"/"Edited" photos are collected nightly
+    # as training pairs (training/pairs.py).
+    training_folder_ids: list[str] = Field(default_factory=list)
 
 
 class GdriveSettingsIn(BaseModel):
     # None = leave stored key alone; "" = clear it; text = replace it.
     service_account_json: str | None = Field(default=None, max_length=10_000)
     enabled: bool | None = None
+    # Folder URLs or ids; None = leave as is.
+    training_folders: list[str] | None = Field(default=None, max_length=20)
 
 
-@router.get("/settings", response_model=GdriveSettingsOut)
-async def gdrive_settings(_user: CurrentUser, db: DbDep) -> GdriveSettingsOut:
-    config = await load_gdrive_config(db)
+def _settings_out(config: GdriveConfig) -> GdriveSettingsOut:
     return GdriveSettingsOut(
         configured=bool(config.service_account_sealed),
         enabled=config.enabled,
         client_email=config.client_email,
+        training_folder_ids=config.training_folder_ids,
     )
+
+
+@router.get("/settings", response_model=GdriveSettingsOut)
+async def gdrive_settings(_user: CurrentUser, db: DbDep) -> GdriveSettingsOut:
+    return _settings_out(await load_gdrive_config(db))
 
 
 @router.put("/settings", response_model=GdriveSettingsOut, dependencies=[require_admin])
@@ -96,13 +105,20 @@ async def update_gdrive_settings(
             raise HTTPException(400, str(err)) from err
     if body.enabled is not None:
         config.enabled = body.enabled
+    if body.training_folders is not None:
+        try:
+            config.training_folder_ids = [
+                gdrive_lib.parse_folder_id(f) for f in body.training_folders if f.strip()
+            ]
+        except gdrive_lib.GdriveError as err:
+            raise HTTPException(400, str(err)) from err
     await save_gdrive_config(db, config)
-    log.info("gdrive.settings_updated", configured=bool(config.service_account_sealed))
-    return GdriveSettingsOut(
+    log.info(
+        "gdrive.settings_updated",
         configured=bool(config.service_account_sealed),
-        enabled=config.enabled,
-        client_email=config.client_email,
+        training_folders=len(config.training_folder_ids),
     )
+    return _settings_out(config)
 
 
 class FolderIn(BaseModel):

@@ -303,7 +303,12 @@ def test_sign_jwt_produces_a_three_part_rs256_token() -> None:
 
 async def test_settings_seal_the_key_and_expose_only_the_email(env: dict) -> None:
     before = (await env["client"].get("/api/v1/gdrive/settings")).json()
-    assert before == {"configured": False, "enabled": True, "client_email": ""}
+    assert before == {
+        "configured": False,
+        "enabled": True,
+        "client_email": "",
+        "training_folder_ids": [],
+    }
 
     await _configure(env)
     after = (await env["client"].get("/api/v1/gdrive/settings")).json()
@@ -317,7 +322,12 @@ async def test_settings_seal_the_key_and_expose_only_the_email(env: dict) -> Non
         assert row.value["client_email"].endswith("gserviceaccount.com")
 
     cleared = await env["client"].put("/api/v1/gdrive/settings", json={"service_account_json": ""})
-    assert cleared.json() == {"configured": False, "enabled": True, "client_email": ""}
+    assert cleared.json() == {
+        "configured": False,
+        "enabled": True,
+        "client_email": "",
+        "training_folder_ids": [],
+    }
 
 
 async def test_settings_reject_a_non_key_paste(env: dict) -> None:

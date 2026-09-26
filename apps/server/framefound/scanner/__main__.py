@@ -344,6 +344,30 @@ async def _cluster_new_faces(db: AsyncSession) -> None:
     log.info("scanner.face_clustering_queued", unassigned=loose)
 
 
+# Once a day is plenty: finals arrive a shoot at a time, and a pass reads
+# every catalogued path to find them.
+TRAINING_PAIRS_EVERY_S = 24 * 3600
+_last_training_pairs = 0.0
+
+
+async def _collect_training_pairs(db: AsyncSession) -> None:
+    """Queue the nightly collection of before/after pairs — every finished
+    photo that shipped, paired with its original (training/pairs.py). The
+    first pass after a restart runs at once; it only ever appends."""
+    global _last_training_pairs
+    if time.time() - _last_training_pairs < TRAINING_PAIRS_EVERY_S:
+        return
+    try:
+        from framefound.processing.tasks import collect_training_pairs
+
+        collect_training_pairs.delay()
+    except Exception:
+        log.warning("scanner.training_pairs_unavailable")
+        return
+    _last_training_pairs = time.time()
+    log.info("scanner.training_pairs_queued")
+
+
 async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     """Re-queue audio that should have been transcribed and was not.
 
@@ -630,6 +654,7 @@ async def main() -> None:
                     await _cluster_new_faces(db)
                     await _reap_orphaned_jobs(db)
                     await _refresh_statistics(db)
+                    await _collect_training_pairs(db)
                     last_requeue = time.time()
         except Exception:
             log.error("scanner.loop_error", exc_info=True)

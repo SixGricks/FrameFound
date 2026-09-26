@@ -663,6 +663,8 @@ export interface GdriveSettings {
   configured: boolean;
   enabled: boolean;
   client_email: string;
+  /** Drive folders collected nightly as training pairs. */
+  training_folder_ids: string[];
 }
 
 export interface GdriveRename {
@@ -1167,7 +1169,11 @@ export const api = {
     }),
 
   gdriveSettings: () => request<GdriveSettings>("/gdrive/settings"),
-  updateGdriveSettings: (patch: { service_account_json?: string; enabled?: boolean }) =>
+  updateGdriveSettings: (patch: {
+    service_account_json?: string;
+    enabled?: boolean;
+    training_folders?: string[];
+  }) =>
     request<GdriveSettings>("/gdrive/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

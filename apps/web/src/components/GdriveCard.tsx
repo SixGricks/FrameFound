@@ -16,12 +16,17 @@ export default function GdriveCard() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [folders, setFolders] = useState<string | null>(null);
 
   useEffect(() => {
     api.gdriveSettings().then(setSettings).catch(() => setSettings(null));
   }, []);
 
-  async function save(patch: { service_account_json?: string; enabled?: boolean }) {
+  async function save(patch: {
+    service_account_json?: string;
+    enabled?: boolean;
+    training_folders?: string[];
+  }) {
     setBusy(true);
     setMessage(null);
     try {
@@ -105,6 +110,37 @@ export default function GdriveCard() {
             </button>
           )}
         </div>
+        {settings.configured && (
+          <>
+            <p className="faint" style={{ marginBottom: 4 }}>
+              <strong>Training pairs.</strong> Drive folders whose shoot subfolders hold
+              finished photos (MLS, Edited, Fotello Edited) — e.g. the Intel Auctions / 2026
+              folder. Each night FrameFound pairs those finals with their originals on the NAS,
+              read-only, to learn your editing look. One link or id per line.
+            </p>
+            <textarea
+              className="input"
+              style={{ width: "100%", minHeight: 60, fontFamily: "var(--mono, monospace)" }}
+              value={folders ?? settings.training_folder_ids.join("\n")}
+              disabled={busy}
+              onChange={(e) => setFolders(e.target.value)}
+              aria-label="Drive folders to collect training pairs from"
+            />
+            <button
+              className="btn"
+              style={{ marginTop: 6 }}
+              disabled={busy || folders === null}
+              onClick={async () => {
+                await save({
+                  training_folders: (folders ?? "").split("\n").map((f) => f.trim()).filter(Boolean),
+                });
+                setFolders(null);
+              }}
+            >
+              Save training folders
+            </button>
+          </>
+        )}
         {message && (
           <p className="faint mono" style={{ marginBottom: 0 }}>
             {message}

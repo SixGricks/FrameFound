@@ -1937,3 +1937,53 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
             await engine.dispose()
 
     asyncio.run(run())
+
+
+@celery_app.task(
+    name="framefound.collect_training_pairs",
+    queue="media",
+    # Idempotent and nightly: a failed pass is simply the next night's work.
+    max_retries=0,
+)
+def collect_training_pairs() -> None:
+    """Pair every finished photo that shipped with its original, for
+    training FrameFound's own editing (training/pairs.py). Finals on the
+    NAS are read from the catalogue; finals on Google Drive are downloaded
+    when the Drive integration is configured with folders to watch."""
+    from sqlalchemy import select
+
+    from framefound.db.models import Derivative
+    from framefound.integrations.gdrive import GdriveClient
+    from framefound.media.maps_store import load_gdrive_config
+    from framefound.training import pairs as pairs_lib
+
+    async def run() -> None:
+        settings = get_settings()
+        engine = create_async_engine(settings.db_url)
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+                rows = [
+                    (str(asset_id), relative_path, thumbnail)
+                    for asset_id, relative_path, thumbnail in (
+                        await db.execute(
+                            select(Asset.id, Asset.relative_path, Derivative.relative_path)
+                            .join(Derivative, Derivative.asset_id == Asset.id)
+                            .where(Asset.media_type == "image", Derivative.kind == "thumbnail")
+                        )
+                    ).all()
+                ]
+                config = await load_gdrive_config(db)
+        finally:
+            await engine.dispose()
+        client = None
+        if config.ready and config.training_folder_ids:
+            client = GdriveClient(config.service_account())
+        try:
+            await asyncio.to_thread(
+                pairs_lib.collect, rows, settings.data_dir, client, config.training_folder_ids
+            )
+        finally:
+            if client is not None:
+                client.close()
+
+    asyncio.run(run())

@@ -18,6 +18,7 @@ transport, which is what keeps the tests honest without talking to Google.
 import base64
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -131,6 +132,63 @@ class GdriveClient:
         if data.get("mimeType") != "application/vnd.google-apps.folder":
             raise GdriveError("That link is a file, not a folder")
         return str(data["name"])
+
+    def _list(self, query: str, fields: str) -> list[dict[str, Any]]:
+        """Every file matching `query`, all pages, shared drives included —
+        the operator's shoots live in a shared drive ("Intel Auctions"),
+        which Drive hides from a query unless asked twice."""
+        files: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "q": query,
+                "fields": f"nextPageToken,files({fields})",
+                "pageSize": 1000,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+            }
+            if token:
+                params["pageToken"] = token
+            data = self._request("GET", f"{API}/files", params=params).json()
+            files.extend(data.get("files", []))
+            token = data.get("nextPageToken")
+            if not token:
+                return files
+
+    def list_folders(self, folder_id: str) -> list[dict[str, Any]]:
+        """The folders directly inside a folder: id, name."""
+        return self._list(
+            f"'{folder_id}' in parents and trashed=false "
+            "and mimeType = 'application/vnd.google-apps.folder'",
+            "id,name",
+        )
+
+    def list_image_files(self, folder_id: str) -> list[dict[str, Any]]:
+        """Every image directly in a folder, with size and checksum so a
+        download can be skipped when the file is already here."""
+        return self._list(
+            f"'{folder_id}' in parents and trashed=false and mimeType contains 'image/'",
+            "id,name,size,md5Checksum,modifiedTime",
+        )
+
+    def download(self, file_id: str, destination: Path) -> None:
+        """The file's bytes, streamed to `destination` (written beside it
+        first and moved in, so a half-finished download never looks done)."""
+        partial = destination.with_suffix(destination.suffix + ".part")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        headers = {"Authorization": f"Bearer {self._access_token()}"}
+        with self._client.stream(
+            "GET",
+            f"{API}/files/{file_id}",
+            params={"alt": "media", "supportsAllDrives": "true"},
+            headers=headers,
+        ) as response:
+            if response.status_code >= 400:
+                raise GdriveError(f"Drive returned {response.status_code} for a download")
+            with partial.open("wb") as out:
+                for chunk in response.iter_bytes():
+                    out.write(chunk)
+        partial.replace(destination)
 
     def list_images(self, folder_id: str) -> list[dict[str, Any]]:
         """Every image directly in the folder: id, name, thumbnailLink."""

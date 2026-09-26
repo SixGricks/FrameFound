@@ -17,7 +17,7 @@ the operator is looking, and a geocode reveals an exact coordinate. That is
 a deliberate trade the operator opts into, and both stay empty by default.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -227,6 +227,10 @@ class GdriveConfig:
     service_account_sealed: str = ""
     client_email: str = ""
     enabled: bool = True
+    # Drive folders whose shoot subfolders hold finished photos ("MLS",
+    # "Edited", "Fotello Edited") — the collector pairs them with their NAS
+    # originals as training data (framefound/training/pairs.py).
+    training_folder_ids: list[str] = field(default_factory=list)
 
     @property
     def ready(self) -> bool:

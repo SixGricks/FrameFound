@@ -32,6 +32,7 @@ REQUIRED_SWEEPS = (
     "_cluster_new_faces",
     "_reap_orphaned_jobs",
     "_refresh_statistics",
+    "_collect_training_pairs",
 )
 
 
