@@ -247,7 +247,7 @@ LrTasks.startAsyncTask(function()
         }),
       }),
       factory:separator({ fill_horizontal = 1 }),
-      factory:scroll_view({
+      factory:scrolled_view({
         width  = 600,
         height = scrollHeight,
         factory:column(previewRows),

@@ -118,6 +118,22 @@ local function collectionNames(chosen)
   return names
 end
 
+--- The catalogue's photo at this path, or nil. The SDK reference lists a
+--  second argument, caseSensitivity, without saying what it takes; a wrong
+--  guess must cost the reuse, not the import.
+local function findPhoto(catalog, path)
+  local ok, photo = LrTasks.pcall(function()
+    return catalog:findPhotoByPath(path, false)
+  end)
+  if ok then
+    return photo
+  end
+  ok, photo = LrTasks.pcall(function()
+    return catalog:findPhotoByPath(path)
+  end)
+  return ok and photo or nil
+end
+
 --- Adds one listing's photographs and files them in its collection. The
 --  catalogue is written once per listing, so the progress bar moves and a
 --  cancel stops between listings rather than losing a finished one.
@@ -125,7 +141,7 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
   local photos = {}
   catalog:withWriteAccessDo("Import from FrameFound", function()
     for n, entry in ipairs(entries) do
-      local photo = catalog:findPhotoByPath(entry.path, false)
+      local photo = findPhoto(catalog, entry.path)
       if photo then
         report.reused = report.reused + 1
       else
@@ -303,7 +319,7 @@ LrTasks.startAsyncTask(function()
       factory:static_text({ title = "Listings to import, newest first:" }),
       factory:checkbox({ title = "Select all", value = LrView.bind("selectAll") }),
       factory:separator({ fill_horizontal = 1 }),
-      factory:scroll_view({
+      factory:scrolled_view({
         width = 560,
         height = math.min(#listings * 24 + 12, 340),
         factory:column(rows),
