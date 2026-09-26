@@ -39,6 +39,37 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-26 — Showcase: GELCO's calendar picks
+
+GELCO (golf course construction) asked for about 14 masterpiece landscape
+photographs from different courses, showing finished work rather than
+construction. **Showcase** (new page in the nav) ranks a library from what
+the catalogue already stores:
+
+- **Quality and finish**: CLIP zero-shot margins, "award-winning
+  photograph" vs "documentation photo", and "pristine finished golf course"
+  vs "excavators, bare soil, tractors on the grass".
+- **A finish floor at the library's 75th percentile**: in a construction
+  company's library, the average photo is the work itself.
+- **Print fitness**: 12 MP or more, landscape, no wider than 1.85:1 (which
+  rules out 360° "tiny planets"), and brightness checked on the thumbnail.
+- **No people**: detected faces, or CLIP's "person in frame".
+- **One per course**: courses come from the top-level folders, merged by
+  name and GPS. Copies filed under "Social images" or "Photo Exports" are
+  placed by GPS (North Fork's best shot was filed under LuLu) or left out,
+  and the same frame is never offered for two courses.
+- **Alternates**: several per course, so swapping a weak pick is one click.
+
+Across 4,281 GELCO photos it returns courses led by North Fork, Edgewood,
+Pete Dye, LedgeRock, Cherry Valley, Mount Kisco and Trump National, most of
+them drone shots. "Make a listing" turns the chosen set into a listing. Its
+export is what gets sent: files named after each course, a Photo Index,
+contact sheets to choose from, and a new **Full size** option for print.
+
+Known limit: small machines seen from a drone (tractors, a crew's truck)
+still get past CLIP now and then, so one course's pick needed swapping.
+Judging by eye with the alternates is part of the design.
+
 ### 2026-09-25 (afternoon) — the live test, and runs that say what happened
 
 **901 Smyrna Rd was the first real listing through the learned look.** It was
