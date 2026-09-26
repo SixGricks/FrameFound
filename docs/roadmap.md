@@ -39,6 +39,48 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-26 — closing the editing gap: training pairs, and a RawTherapee engine
+
+The plan agreed after the operator judged FrameFound's editing "much worse"
+than Fotello's has three parts:
+1. Better input from the camera (the operator's to change).
+2. A proven open-source engine.
+3. A model trained on the operator's own before/after pairs.
+
+**Camera settings found in EXIF.** The R8 + RF14-35 at 14 mm had these
+settings, which explain the dim corners and the muddy brightening:
+- peripheral illumination correction **off**
+- Auto Lighting Optimizer **Strong**
+- Highlight Tone Priority **off**
+- rooms shot at up to −2⅔ EV and ISO 800
+- JPEG only (no CR3 all year)
+
+**Pair collection is live** (`training/pairs.py`, nightly). Finals are each
+shoot's MLS / Edited / Fotello Edited photos: from the NAS catalogue, and
+from Google Drive once its service account is shared into the Intel
+Auctions drive and the folder is set under Security → Drive → Training
+folders. Drive shoots are matched to NAS shoots by name, with dates and
+house numbers required to agree. Pairs are matched by name or content, and
+each records its framing. The manifest is append-only.
+
+First pass, NAS only: **147 pairs** from Davis Rd (70) and Dupont Blvd (77),
+all matched by name. Mean alignment confidence was 0.9, and 33 finals had
+been cropped or lens-corrected. Everything on the Drive (about 750 a month)
+starts flowing once the service account is set up.
+
+**RawTherapee prototype** (headless, 9 s a photo on this CPU, its own
+container). FrameFound writes a per-photo profile:
+- exposure from the photo's own brightness
+- white balance measured on near-white surfaces only (wood panelling
+  counted as "neutral" turned rooms cyan)
+- shadows and highlights, halo-free local contrast and Fattal range
+  compression, used hard only when something is blown
+- corner brightening for 14 mm, and calmer saturation indoors
+
+It is clearly better than FrameFound's slider engine: no halos, and tile
+texture recovered in the Smyrna bathroom. Ceilings and wood still differ
+from MLS. A blind A/B set is in the Drive folder for judging.
+
 ### 2026-09-26 — Showcase: GELCO's calendar picks
 
 GELCO (golf course construction) asked for about 14 masterpiece landscape
