@@ -256,6 +256,14 @@ SKY_TOO_MUCH = 0.65  # a picture of the sky, or a blank white frame
 # Brightness and sky need pixels, so thumbnails are read for each place's
 # leaders only — enough of them that the sky bonus can reorder the top.
 SHORTLIST_PER_ALTERNATE = 6
+# Up to 20 options a place — but after its best, an option has to be good.
+# In score units (standard deviations above the library's average photo,
+# after the sky bonus and exposure): asked for twenty, GELCO's Edgewood ran
+# out of good photographs at about 0.75 and filled the rest with sand
+# edging, drainage work, a crew and dusk frames too dark to print, while
+# North Fork's eighteenth still scored 1.25. So a place with many great
+# photographs offers many, and a thin one stays short instead of padded.
+OPTION_FLOOR = 0.75
 
 
 def sky_fraction(image: Any) -> float:
@@ -450,6 +458,8 @@ def rank(
     for key in sorted(shortlists, key=lambda k: -shortlists[k][0].score):
         distinct: list[Pick] = []
         for pick in shortlists[key]:
+            if distinct and pick.score < OPTION_FLOOR:
+                break  # best first, so everything after is weaker still
             vector = np.asarray(pick.photo.embedding)
             if any(float(vector @ other) >= NEAR_DUPLICATE for other in offered):
                 continue

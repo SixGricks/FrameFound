@@ -35,7 +35,9 @@ class ShowcaseRequest(BaseModel):
     # Anything else to push down, in words: "winter", "cart paths".
     avoid: str = Field(default="", max_length=200)
     count: int = Field(default=14, ge=1, le=60)
-    alternates: int = Field(default=3, ge=1, le=8)
+    # Options per place, the best included. A place offers fewer when it has
+    # fewer good photographs (showcase.OPTION_FLOOR).
+    alternates: int = Field(default=3, ge=1, le=20)
     orientation: Literal["landscape", "portrait", "any"] = "landscape"
     min_megapixels: float = Field(default=12.0, ge=0.0, le=100.0)
     allow_people: bool = False

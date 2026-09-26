@@ -197,3 +197,32 @@ def test_machines_on_the_grass_are_left_out() -> None:
     places, _ = showcase.rank(photos, vectors, alternates=3)
     offered = {pick.photo.asset_id for place in places for pick in place.picks}
     assert "a600" in offered and "a601" not in offered
+
+
+def test_options_stop_at_the_floor_but_a_place_always_keeps_its_best(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twenty options for a course with four good photographs would be
+    sixteen of the work; a thin place stays short instead."""
+    photos = _library()
+    # Four distinct finished frames of one course (cosines well under the
+    # near-duplicate line), of differing quality.
+    for n, (q, a, b) in enumerate([(1.0, 0.8, 0), (0.9, 0, 0.8), (0.8, -0.8, 0), (0.7, 0, -0.8)]):
+        photos.append(_photo(700 + n, f"Edgewood/drone/{n}.JPG", _unit(q, 0, 1, 0, 0, 1, a, b)))
+
+    def options() -> list[showcase.Pick]:
+        places, _ = showcase.rank(photos, VECTORS, alternates=20)
+        return next(p.picks for p in places if p.label == "Edgewood")
+
+    monkeypatch.setattr(showcase, "OPTION_FLOOR", -99.0)
+    everything = options()
+    assert len(everything) == 4
+    assert [p.score for p in everything] == sorted((p.score for p in everything), reverse=True)
+
+    monkeypatch.setattr(showcase, "OPTION_FLOOR", everything[1].score)
+    assert [p.photo.asset_id for p in options()] == [p.photo.asset_id for p in everything[:2]]
+
+    monkeypatch.setattr(showcase, "OPTION_FLOOR", everything[0].score + 1)
+    assert [p.photo.asset_id for p in options()] == [everything[0].photo.asset_id], (
+        "below the floor, a place still shows its best"
+    )

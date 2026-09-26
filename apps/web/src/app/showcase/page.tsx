@@ -95,6 +95,9 @@ function PlaceCard({
           {rank + 1}. {place.label}
         </strong>
         {pick && <span className="faint mono">{describe(pick)}</span>}
+        <span className="faint mono" style={{ marginLeft: "auto" }}>
+          {count === 1 ? "1 option" : `${current + 1} of ${count}`}
+        </span>
       </div>
       {pick && (
         <a
@@ -291,16 +294,25 @@ export default function ShowcasePage() {
               onChange={(e) => setForm({ ...form, count: Number(e.target.value) || 14 })}
             />
           </label>
-          <label className="faint" style={{ fontSize: "0.8rem" }}>
-            Alternates each
+          <label
+            className="faint"
+            style={{ fontSize: "0.8rem" }}
+            title="Up to 20. A place with fewer good photographs offers fewer — its best is always shown"
+          >
+            Options per place
             <input
               className="input"
               type="number"
               min={1}
-              max={8}
+              max={20}
               style={{ marginLeft: 6, width: 60 }}
               value={form.alternates}
-              onChange={(e) => setForm({ ...form, alternates: Number(e.target.value) || 3 })}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  alternates: Math.min(20, Math.max(1, Number(e.target.value) || 3)),
+                })
+              }
             />
           </label>
           <select
