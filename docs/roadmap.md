@@ -62,6 +62,14 @@ menu items, which appear under Library → Plug-in Extras and only in the
 Library module. Plugin 0.4.1 also declares them under File → Plug-in Extras,
 which is there in every module.
 
+The first run inside Lightroom then failed with "attempt to call method
+'scroll_view' (a nil value)". The SDK's control is `scrolled_view`, and
+the Search dialog had the same typo. The test stubs accepted any control
+name. They now accept only the SDK's real ones and reproduce that exact
+error. The other catalogue calls were checked against Adobe's API reference.
+`findPhotoByPath`'s second argument is undocumented, so a failed lookup now
+falls back rather than stopping the import.
+
 **Showcase picker.** The chosen photo now sits large and whole, in its own
 proportions, with the place's candidates in a carousel beneath it (‹ › to
 step). The old layout had alternates beside the pick, and the pick's
