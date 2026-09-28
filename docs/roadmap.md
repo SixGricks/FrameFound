@@ -115,6 +115,22 @@ file names that say the course. It is all built into Showcase:
 - **To do:** frames from the drone video of the five courses with no
   finished stills.
 
+**Batch 2** (the operator wanted another batch, none repeated):
+- **New in Showcase:** "Leave out photos already in a listing". A next
+  batch never offers an earlier batch's photo, nor a near-copy of one: a
+  drone shoots the same view seconds apart. Its file numbers carry on from
+  the earlier batches (`north-fork-country-club-09` after `-08`).
+- **The listing:** "GELCO Masterpiece Calendar — batch 2", 34 photographs,
+  chosen by eye from 55 offered. None is shared with batch 1, and no file
+  name clashes.
+- **Finished work (23):** North Fork 8, Pete Dye 5, LedgeRock 3,
+  Chambersburg 3, Cherry Valley 2, Edgewood 2.
+- **Also:** crew 2, construction 8, company photo 1.
+- **Left out on review:** a parking lot, a mower, trucks, brown turf, bare
+  dirt, the crane again, and variants of batch 1's crew and tent shots.
+- **Running thin:** Mount Kisco has nothing left above the floor, and
+  Hudson National only crew shots. A third batch will be thinner still.
+
 ### 2026-09-26 (late) — up to 20 Showcase options a place, where the photographs earn it
 
 The operator wanted more than 8 options from courses with many great
