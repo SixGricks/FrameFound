@@ -97,6 +97,24 @@ file names that say the course. It is all built into Showcase:
 - **Wilmington:** no folder, and no GELCO photo within 20 km of it.
 - The LedgeRock folder had been renamed: it reads `LedgeRock` now.
 
+**The shortlist is made:** listing "GELCO Masterpiece Calendar — shortlist",
+75 photographs.
+- **Finished work (61):** 8 each from North Fork, LedgeRock, Pete Dye,
+  Edgewood, Cherry Valley, Chambersburg and Mount Kisco, and 5 from Hudson
+  National.
+- **Left out:** Honey Brook's and Commonwealth's only finished-looking
+  stills. One shows bare dirt, the other a crane truck.
+- **Crew (4):** Hudson National's crew on the green above the river (two
+  framings), Honey Brook raking in golden light, Edgewood's crew in a
+  bunker.
+- **Construction (7):** Hudson National's earthwork with the river behind,
+  Cherry Valley's excavator, North Fork's fairway rebuild, bunker liners at
+  Edgewood and LedgeRock, Stonewall's bunkers.
+- **Company photo (3):** all candid.
+- **Checks:** all 75 source files open from the PC, and 8 have a DNG twin.
+- **To do:** frames from the drone video of the five courses with no
+  finished stills.
+
 ### 2026-09-26 (late) — up to 20 Showcase options a place, where the photographs earn it
 
 The operator wanted more than 8 options from courses with many great
