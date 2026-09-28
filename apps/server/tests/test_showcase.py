@@ -280,6 +280,20 @@ def test_a_ground_level_view_takes_the_last_place_when_none_made_it() -> None:
     assert [p.tags["source"] for p in options].count("ground") == 1, "no second ground view forced"
 
 
+def test_a_second_batch_shows_nothing_from_the_first_nor_a_near_copy() -> None:
+    photos = _library()
+    photos += [
+        _photo(980, "North Fork/a.JPG", _unit(1, 0, 1, 0, 0, 1)),  # in the first batch
+        _photo(981, "North Fork/b.JPG", _unit(1, 0, 1, 0, 0, 1, 0.05)),  # the same view, later
+        _photo(982, "North Fork/c.JPG", _unit(1, 0, 1, 0, 0, 1, 0, 0.8)),  # a different view
+    ]
+    first = _offered(showcase.rank(photos, VECTORS, alternates=5)[0])
+    assert "a980" in first
+    second = _offered(showcase.rank(photos, VECTORS, alternates=5, exclude={"a980"})[0])
+    assert "a980" not in second and "a981" not in second, "nor its near-duplicate"
+    assert "a982" in second
+
+
 def test_only_the_chosen_places_even_when_merged_by_gps() -> None:
     here = (40.9, -73.8)
     photos = _library()

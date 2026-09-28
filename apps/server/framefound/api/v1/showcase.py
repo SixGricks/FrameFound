@@ -52,6 +52,9 @@ class ShowcaseRequest(BaseModel):
     # Only these places (folder names, as /showcase/places lists them);
     # empty for every place.
     places: list[str] = Field(default_factory=list, max_length=200)
+    # Leave out what these listings already hold (and near-duplicates of
+    # it): a second batch to review, not the first one again.
+    exclude_listing_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
 
 
 class PickOut(BaseModel):
@@ -99,6 +102,9 @@ class ShowcaseListingRequest(BaseModel):
     # make one shortlist.
     name: str = Field(default="", max_length=200)
     listing_id: uuid.UUID | None = None
+    # A later batch numbers on from earlier ones — ledgerock-09 after a
+    # first batch's ledgerock-08 — so two batches' files never share a name.
+    continue_numbering_from: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     # In the order they should appear.
     picks: list[ShowcasePickIn] = Field(min_length=1, max_length=600)
 
@@ -229,6 +235,18 @@ async def search_showcase(
     except EmbeddingUnavailable as err:
         raise HTTPException(status_code=503, detail=str(err)) from err
     only = {_place_key(label) for label in body.places if label.strip()} or None
+    shown: set[str] | None = None
+    if body.exclude_listing_ids:
+        shown = {
+            str(asset_id)
+            for (asset_id,) in (
+                await db.execute(
+                    select(ListingItem.asset_id).where(
+                        ListingItem.listing_id.in_(body.exclude_listing_ids)
+                    )
+                )
+            ).all()
+        }
     # Off the event loop: thousands of vectors and a few hundred thumbnails.
     places, considered = await asyncio.to_thread(
         showcase_lib.rank,
@@ -242,6 +260,7 @@ async def search_showcase(
         allow_people=body.allow_people,
         kind=body.kind,
         only_places=only,
+        exclude=shown,
     )
     log.info("showcase.searched", considered=considered, places=len(places), kind=body.kind)
     return ShowcaseResponse(
@@ -320,11 +339,26 @@ async def create_showcase_listing(
     ).all()
     already = {row.asset_id for row in existing}
     position = max((row.position for row in existing), default=-1) + 1
-    # Numbering continues within each place and kind across searches:
-    # a second search adds ledgerock-09, not a second ledgerock-01.
+    # Numbering continues within each place and kind across searches — and
+    # across batches: a second search or batch adds ledgerock-09, not a
+    # second ledgerock-01.
+    earlier = (
+        [
+            slug
+            for (slug,) in (
+                await db.execute(
+                    select(ListingItem.slug).where(
+                        ListingItem.listing_id.in_(body.continue_numbering_from)
+                    )
+                )
+            ).all()
+        ]
+        if body.continue_numbering_from
+        else []
+    )
     numbers: dict[str, int] = {}
-    for row in existing:
-        found = re.match(r"^(.*?)-(\d{2,3})(?:-|$)", row.slug or "")
+    for slug in [row.slug for row in existing] + earlier:
+        found = re.match(r"^(.*?)-(\d{2,3})(?:-|$)", slug or "")
         if found:
             head = found.group(1)
             numbers[head] = max(numbers.get(head, 0), int(found.group(2)))

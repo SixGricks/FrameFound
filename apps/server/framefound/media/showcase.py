@@ -483,6 +483,7 @@ def rank(
     allow_people: bool = False,
     kind: str = "finished",
     only_places: set[str] | None = None,
+    exclude: set[str] | None = None,
 ) -> tuple[list[Place], int]:
     """The showcase: up to `count` places, best first, each with up to
     `alternates` distinct picks. Returns (places, photos considered).
@@ -494,7 +495,10 @@ def rank(
     `kind` is what to look for (KINDS): the finished work, a crew in a
     scenic setting, dramatic construction, or a company group photo — the
     last not by place. `only_places` limits the search to these place keys
-    (place_of), however their folders were merged.
+    (place_of), however their folders were merged. `exclude` holds asset ids
+    already shown (a first batch): neither they nor a near-duplicate of one
+    is offered again — the same view shot two seconds later is not a new
+    photograph to review.
     """
     import numpy as np
 
@@ -591,6 +595,8 @@ def rank(
     for index, photo in enumerate(usable):
         if places[photo.asset_id] is None:
             continue  # a copy in a collection folder, with nothing to say where
+        if exclude and photo.asset_id in exclude:
+            continue  # shown before
         if not admitted(index, photo):
             continue
         factor, _why = technical(photo, orientation, min_megapixels)
@@ -647,7 +653,10 @@ def rank(
     # this place or in a better-ranked one (the same drone shot filed under
     # two courses) — is never offered again.
     results: list[Place] = []
-    offered: list[Any] = []
+    # What was shown before counts as offered: its near-duplicates stay out.
+    offered: list[Any] = [
+        np.asarray(p.embedding) for p in usable if exclude and p.asset_id in exclude
+    ]
     for key in sorted(shortlists, key=lambda k: -shortlists[k][0].score):
         distinct: list[Pick] = []
         for pick in shortlists[key]:

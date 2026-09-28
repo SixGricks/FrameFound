@@ -558,6 +558,8 @@ export interface ShowcaseRequest {
   kind: ShowcaseKind;
   /** Only these places (labels from showcasePlaces); empty for all. */
   places: string[];
+  /** Leave out what these listings hold, and near-duplicates of it. */
+  exclude_listing_ids: string[];
 }
 
 export interface ShowcasePick {
@@ -1106,15 +1108,17 @@ export const api = {
     request<ShowcasePlaceCount[]>(
       `/showcase/places?${libraryIds.map((id) => `library_ids=${encodeURIComponent(id)}`).join("&")}`,
     ),
-  /** A new listing by `target.name`, or add to `target.listing_id`. */
+  /** A new listing by `target.name`, or add to `target.listing_id`; file
+   *  numbers carry on from `continueFrom` (earlier batches). */
   showcaseListing: (
     target: { name: string } | { listing_id: string },
     picks: ShowcaseListingPick[],
+    continueFrom: string[] = [],
   ) =>
     request<{ listing_id: string; added: number }>("/showcase/listing", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...target, picks }),
+      body: JSON.stringify({ ...target, picks, continue_numbering_from: continueFrom }),
     }),
   createListing: (name: string, assetIds: string[]) =>
     request<ListingDetail>("/listings", {

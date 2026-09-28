@@ -570,6 +570,29 @@ async def test_a_showcase_listing_names_files_by_place_across_searches(env: dict
     ).status_code == 404
 
 
+async def test_a_second_batch_numbers_on_from_the_first(env: dict) -> None:
+    """Two batches' files never share a name: batch 2 starts at ledgerock-02."""
+    client, ids = env["client"], env["ids"]
+    first = await client.post(
+        "/api/v1/showcase/listing",
+        json={
+            "name": "Batch 1",
+            "picks": [{"asset_id": ids["front"], "place": "LedgeRock", "season": "fall"}],
+        },
+    )
+    second = await client.post(
+        "/api/v1/showcase/listing",
+        json={
+            "name": "Batch 2",
+            "continue_numbering_from": [first.json()["listing_id"]],
+            "picks": [{"asset_id": ids["kitchen"], "place": "LedgeRock", "season": "fall"}],
+        },
+    )
+    assert second.status_code == 201, second.text
+    detail = (await client.get(f"/api/v1/listings/{second.json()['listing_id']}")).json()
+    assert [i["export_name"] for i in detail["items"]] == ["ledgerock-02-fall.jpg"]
+
+
 async def test_a_property_listing_keeps_gallery_order_names_in_lightroom(env: dict) -> None:
     listing = await _create(env, ["front", "kitchen"])
     panel = (await env["client"].get(f"/api/v1/panel/listings/{listing['id']}")).json()

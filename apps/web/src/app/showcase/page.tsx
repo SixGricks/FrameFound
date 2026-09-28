@@ -32,7 +32,7 @@ import {
   type ShowcaseRequest,
 } from "@/lib/api";
 
-const DEFAULTS: Omit<ShowcaseRequest, "library_ids" | "places"> = {
+const DEFAULTS: Omit<ShowcaseRequest, "library_ids" | "places" | "exclude_listing_ids"> = {
   subject: "golf course",
   avoid: "",
   count: 20,
@@ -191,6 +191,8 @@ export default function ShowcasePage() {
   const [pickIndex, setPickIndex] = useState<Record<string, number>>({});
   const [included, setIncluded] = useState<Record<string, boolean>>({});
   const [listings, setListings] = useState<ListingSummary[]>([]);
+  // Listings whose photos a search leaves out: the batches already made.
+  const [leaveOut, setLeaveOut] = useState<Set<string>>(new Set());
   // "new", or the id of a listing to add to.
   const [target, setTarget] = useState("new");
   const [name, setName] = useState("GELCO calendar candidates");
@@ -238,6 +240,7 @@ export default function ShowcasePage() {
         ...form,
         library_ids: [...chosenLibraries],
         places: [...onlyPlaces],
+        exclude_listing_ids: [...leaveOut],
       });
       setPlaces(res.places);
       setResultKind(form.kind);
@@ -284,6 +287,8 @@ export default function ShowcasePage() {
       const res = await api.showcaseListing(
         target === "new" ? { name: listingName ?? "Showcase" } : { listing_id: target },
         picks,
+        // A later batch numbers on from the batches it leaves out.
+        [...leaveOut].filter((id) => id !== target),
       );
       setSaved({ id: res.listing_id, name: listingName ?? "the listing", added: res.added });
       // The next search adds to the same listing.
@@ -401,6 +406,42 @@ export default function ShowcasePage() {
             <p className="faint" style={{ fontSize: "0.75rem", margin: "6px 0 0" }}>
               Photographs in collection folders (Photo Exports, social posts) are placed by GPS
               and count toward their place.
+            </p>
+          </details>
+        )}
+        {listings.length > 0 && (
+          <details className="showcase-places">
+            <summary className="faint" style={{ fontSize: "0.8rem", cursor: "pointer" }}>
+              {leaveOut.size
+                ? `Leaving out ${leaveOut.size} listing${leaveOut.size === 1 ? "" : "s"} already made — a new batch`
+                : "Leave out photos already in a listing (for a next batch)"}
+            </summary>
+            <div className="toolbar" style={{ flexWrap: "wrap", gap: "4px 14px" }}>
+              {listings.map((l) => (
+                <label
+                  key={l.id}
+                  className="faint"
+                  style={{ display: "flex", gap: 6, fontSize: "0.8rem" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={leaveOut.has(l.id)}
+                    onChange={() =>
+                      setLeaveOut((current) => {
+                        const next = new Set(current);
+                        if (next.has(l.id)) next.delete(l.id);
+                        else next.add(l.id);
+                        return next;
+                      })
+                    }
+                  />
+                  {l.name} <span className="mono">({l.item_count})</span>
+                </label>
+              ))}
+            </div>
+            <p className="faint" style={{ fontSize: "0.75rem", margin: "6px 0 0" }}>
+              Neither their photographs nor near-copies of them come up again, and a new
+              listing&apos;s file numbers carry on from theirs (ledgerock-09 after ledgerock-08).
             </p>
           </details>
         )}
