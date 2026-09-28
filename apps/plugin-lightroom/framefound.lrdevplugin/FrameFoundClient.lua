@@ -147,6 +147,30 @@ function FrameFoundClient.profiles()
   return FrameFoundClient.getJson("/panel/profiles")
 end
 
+--- Download a panel endpoint's file (a full-size frame grab) to a path.
+--  Grabbing a 4K frame from a video on the NAS takes the server a few
+--  seconds the first time, hence the long timeout. Returns true, or throws
+--  a user error. Inside LrTasks.startAsyncTask only.
+function FrameFoundClient.download(path, destination)
+  local headers = {
+    { field = "Authorization", value = "Bearer " .. FrameFoundClient.token() },
+  }
+  local body, response = LrHttp.get(FrameFoundClient.server() .. "/api/v1" .. path, headers, 180)
+  local status = response and response.status
+  if body == nil or status == nil or status >= 400 then
+    LrErrors.throwUserError(
+      "FrameFound could not provide " .. path .. " (" .. tostring(status or "no response") .. ")"
+    )
+  end
+  local file = io.open(destination, "wb")
+  if file == nil then
+    LrErrors.throwUserError("Could not write " .. destination)
+  end
+  file:write(body)
+  file:close()
+  return true
+end
+
 --- Recent listings, newest first: { listing_id, name, photos, created_at }.
 --  200 is the server's limit: a month of shoots is a few dozen.
 function FrameFoundClient.listings()

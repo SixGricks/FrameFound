@@ -681,6 +681,10 @@ class ListingItem(Base):
     # overwritten by a later run. "" = nobody has named it yet.
     caption: Mapped[str] = mapped_column(String(300), default="", server_default="")
     slug: Mapped[str] = mapped_column(String(80), default="", server_default="")
+    # A frame of a video, in ms from its start: the item is then that frame,
+    # grabbed at full size from the original on import (a showcase of a
+    # course that was filmed but not photographed).
+    frame_ms: Mapped[int | None] = mapped_column(default=None)
     naming_source: Mapped[str] = mapped_column(String(16), default="", server_default="")
     named_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -17,13 +17,16 @@ nothing consumed them; this is what they were for.
 rather than the operator's session — see `auth/panel_tokens.py`.
 """
 
+import asyncio
 import uuid
+from pathlib import Path
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from framefound.auth.deps import DbDep, PanelPrincipal, require_panel_scope
 from framefound.config import get_settings
@@ -332,6 +335,10 @@ class PanelListingItem(BaseModel):
     # showcase ("ledgerock-03-fall-drone"), gallery order for a property
     # ("01-kitchen-island-130-davis-rd-auction").
     copy_name: str
+    # A frame of a video: no file to add where it is, so the panel downloads
+    # a full-size grab from here (under /api/v1) and adds that.
+    frame_ms: int | None = None
+    grab_url: str | None = None
 
 
 class PanelListingDetail(BaseModel):
@@ -340,6 +347,51 @@ class PanelListingDetail(BaseModel):
     profile: str | None
     items: list[PanelListingItem]
     note: str
+
+
+# What a listing holds for an editor: photographs, and frames of videos.
+_A_PHOTOGRAPH = or_(Asset.media_type == "image", ListingItem.frame_ms.is_not(None))
+
+
+@router.get("/grabs/{asset_id}/{frame_ms}", dependencies=[require_panel_scope("export")])
+async def frame_grab(
+    asset_id: uuid.UUID, frame_ms: int, _user: PanelPrincipal, db: DbDep
+) -> FileResponse:
+    """A full-size still of one frame of a video, for an editor to work on.
+
+    Grabbed from the original by ffmpeg — which only reads it — at the
+    video's own resolution, and kept in the data directory so a second
+    import does not grab it again. Needs the `export` scope: it is a new
+    full-size file, as an FCP7 bin is.
+    """
+    from framefound.api.v1.showcase import GRAB_EXTENSIONS
+    from framefound.processing.ffmpeg import FfmpegError, extract_poster
+
+    asset = await db.get(Asset, asset_id)
+    if asset is None or asset.media_type != "video":
+        raise HTTPException(status_code=404, detail="No such video")
+    if asset.extension.lower() not in GRAB_EXTENSIONS or frame_ms < 0:
+        raise HTTPException(status_code=422, detail="No still can be grabbed from this video")
+    library = await db.get(Library, asset.library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="That library no longer exists")
+    grab = get_settings().data_dir / "grabs" / str(asset_id) / f"{frame_ms}.jpg"
+    if not grab.is_file():
+        source = Path(library.root_path) / asset.relative_path
+        partial = grab.with_suffix(".part.jpg")
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Full size: the cap is only there so an 8K source stays sane.
+            await asyncio.to_thread(extract_poster, source, partial, frame_ms / 1000, 8192)
+        except FfmpegError as err:
+            partial.unlink(missing_ok=True)
+            log.warning("panel.grab_failed", asset_id=str(asset_id), frame_ms=frame_ms)
+            raise HTTPException(
+                status_code=502, detail=f"Could not grab that frame: {err}"
+            ) from err
+        partial.replace(grab)
+        log.info("panel.grabbed", asset_id=str(asset_id), frame_ms=frame_ms)
+    return FileResponse(grab, media_type="image/jpeg")
 
 
 @router.get("/listings", response_model=list[PanelListing])
@@ -354,7 +406,7 @@ async def panel_listings(
             select(Listing, photos)
             .join(ListingItem, ListingItem.listing_id == Listing.id)
             .join(Asset, Asset.id == ListingItem.asset_id)
-            .where(Asset.media_type == "image")
+            .where(_A_PHOTOGRAPH)
             .group_by(Listing.id)
             .order_by(Listing.created_at.desc())
             .limit(limit)
@@ -419,11 +471,11 @@ async def panel_listing(
         await db.execute(
             select(ListingItem, Asset)
             .join(Asset, Asset.id == ListingItem.asset_id)
-            .where(ListingItem.listing_id == listing.id, Asset.media_type == "image")
+            .where(ListingItem.listing_id == listing.id, _A_PHOTOGRAPH)
             .order_by(ListingItem.position, ListingItem.created_at)
         )
     ).all()
-    twins = await _raw_twins(db, [asset for _item, asset in rows])
+    twins = await _raw_twins(db, [asset for item, asset in rows if item.frame_ms is None])
     profiles = await _profiles(db, profile)
     suffix = listing.file_suffix or photo_index.default_suffix(listing.name)
     items = []
@@ -435,16 +487,19 @@ async def panel_listing(
             copy_name = photo_index.export_filename(
                 position, len(rows), slug=item.slug, room=item.room, suffix=suffix
             ).removesuffix(".jpg")
+        frame = item.frame_ms
         items.append(
             PanelListingItem(
                 asset_id=asset.id,
                 position=position,
-                filename=asset.filename,
+                filename=asset.filename if frame is None else f"{asset.filename} @ {frame} ms",
                 caption=item.caption or "",
-                path=_translate_for(asset, profiles),
+                path=_translate_for(asset, profiles) if frame is None else None,
                 raw_filename=twin.filename if twin else None,
                 raw_path=_translate_for(twin, profiles) if twin else None,
                 copy_name=copy_name,
+                frame_ms=frame,
+                grab_url=None if frame is None else f"/panel/grabs/{asset.id}/{frame}",
             )
         )
     raws = sum(1 for i in items if i.raw_filename)

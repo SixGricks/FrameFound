@@ -560,6 +560,8 @@ export interface ShowcaseRequest {
   places: string[];
   /** Leave out what these listings hold, and near-duplicates of it. */
   exclude_listing_ids: string[];
+  /** Rank video frames with the stills (full-size grabs on import). */
+  include_video: boolean;
 }
 
 export interface ShowcasePick {
@@ -576,6 +578,8 @@ export interface ShowcasePick {
   season: string;
   /** "drone" | "ground". */
   source: string;
+  /** A frame of a video (asset_id is the video): its time in ms. */
+  frame_ms: number | null;
 }
 
 export interface ShowcasePlaceCount {
@@ -590,6 +594,7 @@ export interface ShowcaseListingPick {
   kind: ShowcaseKind;
   season: string;
   source: string;
+  frame_ms: number | null;
 }
 
 export interface ShowcasePlace {

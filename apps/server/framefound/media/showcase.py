@@ -186,6 +186,12 @@ SAME_PLACE_KM = 2.0
 NEAR_DUPLICATE = 0.94
 MAX_ASPECT = 1.85
 FINISH_FLOOR_PERCENTILE = 75.0
+# Video frames: a 4K grab is 8.3 MP, enough for a calendar page though
+# under the stills' 12. The brief prefers stills "unless the grab is
+# clean", so a frame's score is marked down — it wins only where the stills
+# are thin (five GELCO courses have no finished-work stills at all).
+VIDEO_MIN_MEGAPIXELS = 8.0
+FRAME_PENALTY = 0.85
 # A photograph closer to "people on the course" / "a tractor on the course"
 # than to the empty course by more than these is left out (people only when
 # they are not allowed). Set against GELCO's shortlist by eye: above them
@@ -214,6 +220,10 @@ class Photo:
     captured_at: str | None = None
     thumbnail: str | None = None  # data-dir path, for the brightness check
     camera_make: str = ""
+    # A frame of a video: asset_id is then "<video id>@<ms>", unique per
+    # frame, and video_id / frame_ms say which.
+    video_id: str = ""
+    frame_ms: int | None = None
 
 
 @dataclass
@@ -250,6 +260,12 @@ def season_of(captured_at: str | None) -> str:
         return ""
 
 
+def photo_key(asset_id: str, frame_ms: int | None) -> str:
+    """A candidate's key: the asset id for a still, "<video id>@<ms>" for a
+    frame — one video offers many frames."""
+    return asset_id if frame_ms is None else f"{asset_id}@{frame_ms}"
+
+
 def stem_head(place: str, kind: str) -> str:
     """The front of a pick's file name: its place, and what it is when that
     is not the finished work — "ledgerock", "ledgerock-crew"."""
@@ -269,6 +285,8 @@ def file_stem(place: str, number: int, tags: dict[str, str]) -> str:
     parts = [stem_head(place, kind), f"{number:02d}"]
     if kind != "group":
         parts += [tags.get("season", ""), tags.get("source", "")]
+    if tags.get("frame") == "video":
+        parts.append("video")  # a 4K grab: 8 MP, not a still's 20
     return "-".join(p for p in parts if p)
 
 
@@ -370,6 +388,8 @@ def technical(photo: Photo, orientation: str, min_megapixels: float) -> tuple[fl
     if not photo.width or not photo.height:
         return 0.0, "size unknown"
     megapixels = photo.width * photo.height / 1e6
+    if photo.frame_ms is not None:
+        min_megapixels = min(min_megapixels, VIDEO_MIN_MEGAPIXELS)
     if megapixels < min_megapixels:
         return 0.0, f"{megapixels:.0f} MP is under {min_megapixels:.0f}"
     long_side, short_side = max(photo.width, photo.height), min(photo.width, photo.height)
@@ -607,6 +627,8 @@ def rank(
         # what is wanted.
         if kind == "finished" and WORK_WORDS.search(photo.relative_path.rsplit("/", 1)[0]):
             penalty *= 0.7
+        if photo.frame_ms is not None:
+            penalty *= FRAME_PENALTY
         value = float(base[index])
         # Penalties shrink a good score toward zero and push a bad one lower.
         value = value * penalty if value > 0 else value / penalty
@@ -622,7 +644,12 @@ def rank(
                     "light": round(float(light[index]), 4),
                     "penalty": round(penalty, 2),
                 },
-                {"season": season_of(photo.captured_at), "source": source_of(photo), "kind": kind},
+                {
+                    "season": season_of(photo.captured_at),
+                    "source": source_of(photo),
+                    "kind": kind,
+                    **({"frame": "video"} if photo.frame_ms is not None else {}),
+                },
             )
         )
 
@@ -657,6 +684,7 @@ def rank(
     offered: list[Any] = [
         np.asarray(p.embedding) for p in usable if exclude and p.asset_id in exclude
     ]
+    videos_offered: set[str] = set()
     for key in sorted(shortlists, key=lambda k: -shortlists[k][0].score):
         distinct: list[Pick] = []
         for pick in shortlists[key]:
@@ -665,8 +693,12 @@ def rank(
             vector = np.asarray(pick.photo.embedding)
             if any(float(vector @ other) >= NEAR_DUPLICATE for other in offered):
                 continue
+            if pick.photo.video_id and pick.photo.video_id in videos_offered:
+                continue  # one frame a video: a flight is one photograph, not eight
             distinct.append(pick)
             offered.append(vector)
+            if pick.photo.video_id:
+                videos_offered.add(pick.photo.video_id)
             if len(distinct) == alternates:
                 break
         # Drone overheads and ground-level views, mixed: a drone scores

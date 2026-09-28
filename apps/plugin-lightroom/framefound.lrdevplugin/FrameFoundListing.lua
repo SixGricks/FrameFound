@@ -93,12 +93,27 @@ end
 --- One listing's photographs sorted into what can be added, with what
 --  cannot recorded in the run's report. With copyTo, each entry also
 --  carries where its named copy goes: <copyTo>/<listing>/<copy_name>.<ext>.
-local function plan(listing, preferRaw, report, copyTo)
+local function plan(listing, preferRaw, report, copyTo, grabTo)
   local entries = {}
   local folder = copyTo and LrPathUtils.child(copyTo, safeFolderName(listing.name))
   for n, item in ipairs(listing.items or {}) do
     local path, isRaw = chooseFile(item, preferRaw)
-    if path then
+    if item.grab_url then
+      -- A frame of a video: there is no file on the NAS to add where it
+      -- is, so it is always a named copy — downloaded, full size — even
+      -- when copies were not asked for.
+      local grabFolder = folder or LrPathUtils.child(grabTo, safeFolderName(listing.name))
+      local stem = item.copy_name
+      if stem == nil or stem == "" then
+        stem = string.format("%02d-frame-%d", n, item.frame_ms or 0)
+      end
+      table.insert(entries, {
+        grab = item.grab_url,
+        name = item.filename,
+        folder = grabFolder,
+        copy = LrPathUtils.child(grabFolder, stem .. ".jpg"),
+      })
+    elseif path then
       local entry = { path = path, raw = isRaw, name = item.filename }
       if folder then
         local ext = string.lower(LrPathUtils.extension(path) or "jpg")
@@ -164,7 +179,10 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
   -- listing off the NAS takes minutes, and Lightroom stays usable. A copy
   -- already there from an earlier run is kept — it may have been edited.
   local ready = {}
-  local copying = entries[1] ~= nil and entries[1].copy ~= nil
+  local copying = false
+  for _, entry in ipairs(entries) do
+    copying = copying or entry.copy ~= nil
+  end
   for n, entry in ipairs(entries) do
     if entry.copy then
       if LrFileUtils.exists(entry.copy) then
@@ -172,11 +190,17 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
       else
         LrFileUtils.createAllDirectories(entry.folder)
         local ok, copied = LrTasks.pcall(function()
+          if entry.grab then
+            return Client.download(entry.grab, entry.copy)
+          end
           return LrFileUtils.copy(entry.path, entry.copy)
         end)
         if ok and copied ~= false and LrFileUtils.exists(entry.copy) then
           report.copied = report.copied + 1
           report.copyFolder = entry.folder
+          if entry.grab then
+            report.grabbed = report.grabbed + 1
+          end
         else
           table.insert(report.failed, entry.name or entry.path)
           entry = nil
@@ -185,7 +209,10 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
       if entry then
         entry.path = entry.copy
       end
-      -- Copying is the slow part, so it is what the bar measures.
+    end
+    if copying then
+      -- Copying and downloading are the slow part, so they are what the
+      -- bar measures.
       progress:setPortionComplete(before + n, total)
     end
     if entry then
@@ -254,6 +281,9 @@ local function summary(report, collections, chosen, stopped)
       copyLine = copyLine .. " in " .. report.copyFolder
     end
     copyLine = copyLine .. ": " .. report.copied .. " copied"
+    if report.grabbed > 0 then
+      copyLine = copyLine .. " (" .. report.grabbed .. " of them full-size frames from video)"
+    end
     if report.kept > 0 then
       copyLine = copyLine .. ", " .. report.kept .. " already there and kept as they were"
     end
@@ -479,7 +509,7 @@ LrTasks.startAsyncTask(function()
       functionContext = context,
     })
     local report = {
-      added = 0, reused = 0, raws = 0, photos = 0, unmapped = 0, copied = 0, kept = 0,
+      added = 0, reused = 0, raws = 0, photos = 0, unmapped = 0, copied = 0, kept = 0, grabbed = 0,
       failed = {}, unreachable = {}, unreadable = {},
     }
 
@@ -496,7 +526,7 @@ LrTasks.startAsyncTask(function()
         return Client.listing(listing.listing_id, props.profile)
       end)
       if fetched then
-        local entries = plan(detail, props.preferRaw, report, copyTo)
+        local entries = plan(detail, props.preferRaw, report, copyTo, props.copyFolder)
         table.insert(plans, { listing = listing, entries = entries })
         total = total + #entries
       else

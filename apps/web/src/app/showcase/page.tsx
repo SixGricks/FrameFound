@@ -41,7 +41,13 @@ const DEFAULTS: Omit<ShowcaseRequest, "library_ids" | "places" | "exclude_listin
   min_megapixels: 12,
   allow_people: false,
   kind: "finished",
+  include_video: false,
 };
+
+/** The media kind that shows a pick: its own image, or its video's frame. */
+function imageKind(pick: ShowcasePick, still: "thumbnail" | "preview"): string {
+  return pick.frame_ms == null ? still : `frame?ts=${pick.frame_ms}`;
+}
 
 const KINDS: { value: ShowcaseKind; label: string }[] = [
   { value: "finished", label: "The finished work" },
@@ -54,7 +60,8 @@ function describe(pick: ShowcasePick): string {
   const when = pick.captured_at
     ? new Date(pick.captured_at).toLocaleDateString(undefined, { month: "short", year: "numeric" })
     : "undated";
-  return `${pick.megapixels} MP · ${pick.width}×${pick.height} · ${when}`;
+  const what = pick.frame_ms == null ? "" : ` · video frame at ${Math.floor(pick.frame_ms / 1000)} s`;
+  return `${pick.megapixels} MP · ${pick.width}×${pick.height}${what} · ${when}`;
 }
 
 // One place: the pick large and whole, and every candidate in a carousel
@@ -112,6 +119,7 @@ function PlaceCard({
         {pick && <span className="faint mono">{describe(pick)}</span>}
         {pick?.season && <span className="pill">{pick.season}</span>}
         {pick?.source && <span className="pill">{pick.source}</span>}
+        {pick && pick.frame_ms != null && <span className="pill">video frame</span>}
         <span className="faint mono" style={{ marginLeft: "auto" }}>
           {count === 1 ? "1 option" : `${current + 1} of ${count}`}
         </span>
@@ -125,12 +133,17 @@ function PlaceCard({
               ? { aspectRatio: `${pick.width} / ${pick.height}` }
               : undefined
           }
-          href={mediaUrl(pick.asset_id, "preview")}
+          href={mediaUrl(pick.asset_id, imageKind(pick, "preview"))}
           target="_blank"
           rel="noreferrer"
           title={`Open larger — ${pick.relative_path}`}
         >
-          <Thumb assetId={pick.asset_id} mediaType="image" status="ready" kind="preview" />
+          <Thumb
+            assetId={pick.asset_id}
+            mediaType="image"
+            status="ready"
+            kind={imageKind(pick, "preview")}
+          />
         </a>
       )}
       {count > 1 && (
@@ -146,7 +159,7 @@ function PlaceCard({
           <div className="showcase-carousel" ref={strip}>
             {place.picks.map((alt, index) => (
               <button
-                key={alt.asset_id}
+                key={`${alt.asset_id}@${alt.frame_ms ?? ""}`}
                 type="button"
                 className="showcase-alt"
                 data-active={index === current}
@@ -154,7 +167,12 @@ function PlaceCard({
                 onClick={() => onPick(index)}
                 title={index === current ? "The pick" : `Use this one — ${alt.relative_path}`}
               >
-                <Thumb assetId={alt.asset_id} mediaType="image" status="ready" />
+                <Thumb
+                  assetId={alt.asset_id}
+                  mediaType="image"
+                  status="ready"
+                  kind={imageKind(alt, "thumbnail")}
+                />
                 <span className="showcase-alt-label">
                   {index === 0 ? "Best" : `#${index + 1}`}
                   {index === current ? " · chosen" : ""}
@@ -281,6 +299,7 @@ export default function ShowcasePage() {
         kind: resultKind,
         season: pick.season,
         source: pick.source,
+        frame_ms: pick.frame_ms,
       }));
       const listingName =
         target === "new" ? name.trim() || "Showcase" : listings.find((l) => l.id === target)?.name;
@@ -501,6 +520,18 @@ export default function ShowcasePage() {
             <option value={12}>≥ 12 MP (calendar page)</option>
             <option value={20}>≥ 20 MP (large prints)</option>
           </select>
+          <label
+            className="faint"
+            style={{ display: "flex", gap: 6, fontSize: "0.8rem" }}
+            title="Frames of the videos are ranked with the stills (a 4K frame is 8 MP); Lightroom's import grabs each one at full size"
+          >
+            <input
+              type="checkbox"
+              checked={form.include_video}
+              onChange={(e) => setForm({ ...form, include_video: e.target.checked })}
+            />
+            Include video frames
+          </label>
           {form.kind === "finished" && (
             <label className="faint" style={{ display: "flex", gap: 6, fontSize: "0.8rem" }}>
               <input

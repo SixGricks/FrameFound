@@ -593,6 +593,59 @@ async def test_a_second_batch_numbers_on_from_the_first(env: dict) -> None:
     assert [i["export_name"] for i in detail["items"]] == ["ledgerock-02-fall.jpg"]
 
 
+async def test_a_frame_of_a_video_is_a_listing_item_lightroom_downloads(env: dict) -> None:
+    """Five GELCO courses were filmed, not photographed: a frame is an item,
+    and the panel grabs it full size from the original."""
+    import shutil
+    import subprocess
+
+    client, ids = env["client"], env["ids"]
+    saved = await client.post(
+        "/api/v1/showcase/listing",
+        json={
+            "name": "Batch 3",
+            "picks": [
+                {
+                    "asset_id": ids["video"],
+                    "place": "Stonewall",
+                    "season": "summer",
+                    "source": "drone",
+                    "frame_ms": 1000,
+                }
+            ],
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    listing_id = saved.json()["listing_id"]
+    listings = (await client.get("/api/v1/panel/listings")).json()
+    assert [(x["name"], x["photos"]) for x in listings if x["name"] == "Batch 3"] == [
+        ("Batch 3", 1)
+    ]
+    item = (await client.get(f"/api/v1/panel/listings/{listing_id}")).json()["items"][0]
+    assert item["path"] is None and item["frame_ms"] == 1000
+    assert item["copy_name"] == "stonewall-01-summer-drone-video"
+    assert item["grab_url"] == f"/panel/grabs/{ids['video']}/1000"
+
+    # Not a video, or not there: said plainly.
+    assert (await client.get(f"/api/v1/panel/grabs/{ids['front']}/0")).status_code == 404
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        assert (await client.get(f"/api/v1{item['grab_url']}")).status_code == 502
+        return
+    # A real two-second video where the catalogue says it is.
+    subprocess.run(  # noqa: S603 - fixed binary, argv form, test-made path
+        [ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10",
+         "-t", "2", str(env["tmp"] / "media" / "walk.mp4")],
+        check=True,
+    )  # fmt: skip
+    grab = await client.get(f"/api/v1{item['grab_url']}")
+    assert grab.status_code == 200 and grab.headers["content-type"] == "image/jpeg"
+    with Image.open(io.BytesIO(grab.content)) as image:
+        assert image.size == (640, 360), "full size"
+    cached = get_settings().data_dir / "grabs" / ids["video"] / "1000.jpg"
+    assert cached.is_file(), "kept, so a second import does not grab again"
+
+
 async def test_a_property_listing_keeps_gallery_order_names_in_lightroom(env: dict) -> None:
     listing = await _create(env, ["front", "kitchen"])
     panel = (await env["client"].get(f"/api/v1/panel/listings/{listing['id']}")).json()

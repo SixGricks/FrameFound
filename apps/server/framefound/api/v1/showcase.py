@@ -55,6 +55,9 @@ class ShowcaseRequest(BaseModel):
     # Leave out what these listings already hold (and near-duplicates of
     # it): a second batch to review, not the first one again.
     exclude_listing_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+    # Rank video frames with the stills: a course filmed but not
+    # photographed still gets its best views (full-size grabs on import).
+    include_video: bool = False
 
 
 class PickOut(BaseModel):
@@ -69,6 +72,8 @@ class PickOut(BaseModel):
     parts: dict[str, float]
     season: str
     source: str
+    # A frame of a video (asset_id is the video): its time, in ms.
+    frame_ms: int | None = None
 
 
 class PlaceOut(BaseModel):
@@ -94,6 +99,7 @@ class ShowcasePickIn(BaseModel):
     kind: Kind = "finished"
     season: str = Field(default="", max_length=12)
     source: str = Field(default="", max_length=12)
+    frame_ms: int | None = Field(default=None, ge=0)
 
 
 class ShowcaseListingRequest(BaseModel):
@@ -168,6 +174,56 @@ async def list_places(
     return sorted(merged.values(), key=lambda p: p.label.lower())
 
 
+# Videos ffmpeg decodes for a grab. Blackmagic RAW needs Blackmagic's SDK.
+GRAB_EXTENSIONS = ("mp4", "mov", "m4v")
+
+
+async def _video_frames(db: DbDep, library_ids: list[uuid.UUID]) -> list[showcase_lib.Photo]:
+    """Every sampled frame of every video a grab can be made from, as a
+    candidate: its embedding and frame image are already in the catalogue."""
+    stmt = (
+        select(
+            Asset.id,
+            Asset.relative_path,
+            Asset.filename,
+            Asset.width,
+            Asset.height,
+            Asset.gps_lat,
+            Asset.gps_lon,
+            Asset.captured_at,
+            Asset.camera_make,
+            Frame.ts_ms,
+            Frame.relative_path.label("frame_path"),
+            Frame.embedding,
+        )
+        .join(Frame, Frame.asset_id == Asset.id)
+        .where(
+            Asset.media_type == "video",
+            Frame.embedding.is_not(None),
+            func.lower(Asset.extension).in_(GRAB_EXTENSIONS),
+        )
+    )
+    if library_ids:
+        stmt = stmt.where(Asset.library_id.in_(library_ids))
+    return [
+        showcase_lib.Photo(
+            asset_id=showcase_lib.photo_key(str(row.id), row.ts_ms),
+            relative_path=row.relative_path,
+            filename=row.filename,
+            width=row.width or 0,
+            height=row.height or 0,
+            embedding=list(row.embedding),
+            gps=(row.gps_lat, row.gps_lon) if row.gps_lat is not None else None,
+            captured_at=row.captured_at.isoformat() if row.captured_at else None,
+            thumbnail=row.frame_path,
+            camera_make=row.camera_make or "",
+            video_id=str(row.id),
+            frame_ms=int(row.ts_ms),
+        )
+        for row in (await db.execute(stmt)).all()
+    ]
+
+
 @router.post("", response_model=ShowcaseResponse)
 async def search_showcase(
     body: ShowcaseRequest, _user: CurrentUser, db: DbDep, settings: SettingsDep
@@ -230,6 +286,8 @@ async def search_showcase(
         )
         for row in rows
     ]
+    if body.include_video:
+        photos += await _video_frames(db, body.library_ids)
     try:
         vectors = await asyncio.to_thread(_prompt_vectors, body.subject, body.avoid, body.kind)
     except EmbeddingUnavailable as err:
@@ -238,10 +296,10 @@ async def search_showcase(
     shown: set[str] | None = None
     if body.exclude_listing_ids:
         shown = {
-            str(asset_id)
-            for (asset_id,) in (
+            showcase_lib.photo_key(str(asset_id), frame_ms)
+            for asset_id, frame_ms in (
                 await db.execute(
-                    select(ListingItem.asset_id).where(
+                    select(ListingItem.asset_id, ListingItem.frame_ms).where(
                         ListingItem.listing_id.in_(body.exclude_listing_ids)
                     )
                 )
@@ -271,7 +329,8 @@ async def search_showcase(
                 label=place.label,
                 picks=[
                     PickOut(
-                        asset_id=uuid.UUID(p.photo.asset_id),
+                        asset_id=uuid.UUID(p.photo.video_id or p.photo.asset_id),
+                        frame_ms=p.photo.frame_ms,
                         filename=p.photo.filename,
                         relative_path=p.photo.relative_path,
                         width=p.photo.width,
@@ -301,6 +360,9 @@ def _caption(place: str, pick: ShowcasePickIn, when: datetime | None) -> str:
     words = [w.capitalize() for w in (pick.season, pick.source) if w]
     if pick.kind in ("crew", "construction"):
         words.append(pick.kind.capitalize())
+    if pick.frame_ms is not None:
+        seconds = pick.frame_ms // 1000
+        words.append(f"Video frame at {seconds // 60}:{seconds % 60:02d}")
     if when:
         words.append(when.strftime("%B %Y"))
     return " — ".join(x for x in (place, " · ".join(words)) if x)
@@ -378,9 +440,12 @@ async def create_showcase_listing(
         head = showcase_lib.stem_head(place, pick.kind)
         numbers[head] = numbers.get(head, 0) + 1
         tags = {"season": pick.season, "source": pick.source, "kind": pick.kind}
+        if pick.frame_ms is not None:
+            tags["frame"] = "video"
         db.add(
             ListingItem(
                 listing_id=listing.id,
+                frame_ms=pick.frame_ms,
                 asset_id=asset.id,
                 position=position,
                 slug=showcase_lib.file_stem(place, numbers[head], tags)[:80],

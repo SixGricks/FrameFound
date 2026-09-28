@@ -294,6 +294,39 @@ def test_a_second_batch_shows_nothing_from_the_first_nor_a_near_copy() -> None:
     assert "a982" in second
 
 
+def test_video_frames_compete_with_the_stills_one_frame_a_video() -> None:
+    """A course filmed but not photographed still gets its best views."""
+
+    def frame(n: int, video: str, ms: int, emb: list[float]) -> showcase.Photo:
+        return _photo(
+            n,
+            "Stonewall/drone/DJI_0001.MP4",
+            emb,
+            width=3840,
+            height=2160,  # 8.3 MP: under a still's 12, enough for a frame
+            video_id=video,
+            frame_ms=ms,
+        )
+
+    photos = _library()
+    photos += [
+        frame(990, "v1", 70000, _unit(1, 0, 1, 0, 0, 1, 0.3)),
+        frame(991, "v1", 80000, _unit(1, 0, 1, 0, 0, 1, 0, 0.9)),  # same flight, other view
+        frame(992, "v2", 10000, _unit(1, 0, 1, 0, 0, 1, -0.9)),
+    ]
+    places, _ = showcase.rank(photos, VECTORS, alternates=5)
+    stonewall = next(p for p in places if p.label == "Stonewall")
+    videos = [p.photo.video_id for p in stonewall.picks]
+    assert sorted(videos) == ["v1", "v2"], "one frame a video"
+    assert all(p.tags["frame"] == "video" for p in stonewall.picks)
+    assert all(p.parts["penalty"] == showcase.FRAME_PENALTY for p in stonewall.picks)
+    assert (
+        showcase.photo_key("abc", 70000) == "abc@70000" and showcase.photo_key("abc", None) == "abc"
+    )
+    tags = {"season": "summer", "source": "drone", "kind": "finished", "frame": "video"}
+    assert showcase.file_stem("Stonewall", 1, tags) == "stonewall-01-summer-drone-video"
+
+
 def test_only_the_chosen_places_even_when_merged_by_gps() -> None:
     here = (40.9, -73.8)
     photos = _library()
