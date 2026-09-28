@@ -26,6 +26,7 @@ local LrColor = import "LrColor"
 local LrDialogs = import "LrDialogs"
 local LrFileUtils = import "LrFileUtils"
 local LrFunctionContext = import "LrFunctionContext"
+local LrPathUtils = import "LrPathUtils"
 local LrProgressScope = import "LrProgressScope"
 local LrTasks = import "LrTasks"
 local LrView = import "LrView"
@@ -80,14 +81,35 @@ local function unreachableAdvice(path)
   return "Is that drive connected? Open it in Explorer or Finder once, then try again."
 end
 
+--- A folder name Windows and macOS can both hold: no reserved characters,
+--  and no trailing space or dot — the name that made GELCO's "LedgeRock "
+--  unopenable from Windows.
+local function safeFolderName(name)
+  local clean = tostring(name or "FrameFound"):gsub('[<>:"/\\|%?%*%c]', "-")
+  clean = clean:gsub("[%s%.]+$", ""):gsub("^%s+", "")
+  return clean ~= "" and clean or "FrameFound"
+end
+
 --- One listing's photographs sorted into what can be added, with what
---  cannot recorded in the run's report.
-local function plan(listing, preferRaw, report)
+--  cannot recorded in the run's report. With copyTo, each entry also
+--  carries where its named copy goes: <copyTo>/<listing>/<copy_name>.<ext>.
+local function plan(listing, preferRaw, report, copyTo)
   local entries = {}
-  for _, item in ipairs(listing.items or {}) do
+  local folder = copyTo and LrPathUtils.child(copyTo, safeFolderName(listing.name))
+  for n, item in ipairs(listing.items or {}) do
     local path, isRaw = chooseFile(item, preferRaw)
     if path then
-      table.insert(entries, { path = path, raw = isRaw, name = item.filename })
+      local entry = { path = path, raw = isRaw, name = item.filename }
+      if folder then
+        local ext = string.lower(LrPathUtils.extension(path) or "jpg")
+        local stem = item.copy_name
+        if stem == nil or stem == "" then
+          stem = string.format("%02d-", n) .. LrPathUtils.removeExtension(item.filename or "photo")
+        end
+        entry.folder = folder
+        entry.copy = LrPathUtils.child(folder, stem .. "." .. ext)
+      end
+      table.insert(entries, entry)
     elseif item.path == nil then
       -- No profile covers this photograph's library on this machine.
       report.unmapped = report.unmapped + 1
@@ -138,6 +160,40 @@ end
 --  catalogue is written once per listing, so the progress bar moves and a
 --  cancel stops between listings rather than losing a finished one.
 local function importOne(catalog, set, name, entries, report, progress, before, total)
+  -- Named copies first, outside the catalogue's write lock: copying a
+  -- listing off the NAS takes minutes, and Lightroom stays usable. A copy
+  -- already there from an earlier run is kept — it may have been edited.
+  local ready = {}
+  local copying = entries[1] ~= nil and entries[1].copy ~= nil
+  for n, entry in ipairs(entries) do
+    if entry.copy then
+      if LrFileUtils.exists(entry.copy) then
+        report.kept = report.kept + 1
+      else
+        LrFileUtils.createAllDirectories(entry.folder)
+        local ok, copied = LrTasks.pcall(function()
+          return LrFileUtils.copy(entry.path, entry.copy)
+        end)
+        if ok and copied ~= false and LrFileUtils.exists(entry.copy) then
+          report.copied = report.copied + 1
+          report.copyFolder = entry.folder
+        else
+          table.insert(report.failed, entry.name or entry.path)
+          entry = nil
+        end
+      end
+      if entry then
+        entry.path = entry.copy
+      end
+      -- Copying is the slow part, so it is what the bar measures.
+      progress:setPortionComplete(before + n, total)
+    end
+    if entry then
+      table.insert(ready, entry)
+    end
+  end
+  entries = ready
+
   local photos = {}
   catalog:withWriteAccessDo("Import from FrameFound", function()
     for n, entry in ipairs(entries) do
@@ -162,7 +218,9 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
           report.raws = report.raws + 1
         end
       end
-      progress:setPortionComplete(before + n, total)
+      if not copying then
+        progress:setPortionComplete(before + n, total)
+      end
     end
   end, { timeout = 120 })
   if #photos == 0 then
@@ -190,6 +248,17 @@ local function summary(report, collections, chosen, stopped)
   if report.raws > 0 then
     table.insert(lines, report.raws .. " are the RAW original.")
   end
+  if report.copied > 0 or report.kept > 0 then
+    local copyLine = "Named copies"
+    if report.copyFolder then
+      copyLine = copyLine .. " in " .. report.copyFolder
+    end
+    copyLine = copyLine .. ": " .. report.copied .. " copied"
+    if report.kept > 0 then
+      copyLine = copyLine .. ", " .. report.kept .. " already there and kept as they were"
+    end
+    table.insert(lines, copyLine .. ". The originals on the NAS are untouched.")
+  end
   if #collections > 1 then
     table.insert(lines, "To edit them together: Ctrl+A (⌘A on a Mac) in the grid selects "
       .. "every one. In Develop, Sync Settings copies one photograph's edits to the rest.")
@@ -215,7 +284,9 @@ local function summary(report, collections, chosen, stopped)
   if #report.unreadable > 0 then
     table.insert(lines, "Could not read from FrameFound: " .. namedList(report.unreadable))
   end
-  table.insert(lines, "Nothing was copied or moved.")
+  if report.copied == 0 and report.kept == 0 then
+    table.insert(lines, "Nothing was copied or moved.")
+  end
   return table.concat(lines, "\n\n")
 end
 
@@ -279,6 +350,12 @@ LrTasks.startAsyncTask(function()
     local props = LrBinding.makePropertyTable(context)
     props.profile = prefixes[prefs.profile] and prefs.profile or order[1]
     props.preferRaw = prefs.preferRaw ~= false
+    -- Named copies: Lightroom cannot rename a file, and FrameFound never
+    -- renames an original, so a copy is how the files in Lightroom get the
+    -- listing's names ("ledgerock-03-fall-drone.dng").
+    props.copy = prefs.copy ~= false
+    props.copyFolder = prefs.copyFolder
+      or LrPathUtils.child(LrPathUtils.getStandardFilePath("pictures"), SET_NAME)
 
     -- Last run's ticks come back, so a batch can be topped up; with none,
     -- the newest listing is ticked.
@@ -331,10 +408,41 @@ LrTasks.startAsyncTask(function()
         title = "Use the RAW original (DNG, CR3, …) when the camera wrote one",
         value = LrView.bind("preferRaw"),
       }),
+      factory:checkbox({
+        title = "Copy them into a folder, named as FrameFound names them "
+          .. "(ledgerock-03-fall-drone.dng)",
+        value = LrView.bind("copy"),
+      }),
+      factory:row({
+        factory:static_text({
+          title = LrView.bind("copyFolder"),
+          width_in_chars = 50,
+          enabled = LrView.bind("copy"),
+        }),
+        factory:push_button({
+          title = "Choose…",
+          enabled = LrView.bind("copy"),
+          action = function()
+            local chosen = LrDialogs.runOpenPanel({
+              title = "Where should the named copies go?",
+              canChooseFiles = false,
+              canChooseDirectories = true,
+              canCreateDirectories = true,
+              allowsMultipleSelection = false,
+              initialDirectory = props.copyFolder,
+            })
+            if chosen and chosen[1] then
+              props.copyFolder = chosen[1]
+            end
+          end,
+        }),
+      }),
       factory:static_text({
         title = "Each listing becomes a collection under Collections › " .. SET_NAME
-          .. ", and all of them\nare shown together to edit. Nothing is copied or moved.",
-        height_in_lines = 2,
+          .. ", and all of them\nare shown together to edit. Copies go in a folder per "
+          .. "listing; unticked,\nthe originals are added where they are. The NAS is "
+          .. "never written to.",
+        height_in_lines = 3,
         text_color = LrColor(0.5, 0.5, 0.5),
       }),
     })
@@ -362,13 +470,16 @@ LrTasks.startAsyncTask(function()
     prefs.lastListings = table.concat(ids, ",")
     prefs.profile = props.profile
     prefs.preferRaw = props.preferRaw
+    prefs.copy = props.copy
+    prefs.copyFolder = props.copyFolder
+    local copyTo = props.copy and props.copyFolder or nil
 
     local progress = LrProgressScope({
       title = "Importing from FrameFound",
       functionContext = context,
     })
     local report = {
-      added = 0, reused = 0, raws = 0, photos = 0, unmapped = 0,
+      added = 0, reused = 0, raws = 0, photos = 0, unmapped = 0, copied = 0, kept = 0,
       failed = {}, unreachable = {}, unreadable = {},
     }
 
@@ -385,7 +496,7 @@ LrTasks.startAsyncTask(function()
         return Client.listing(listing.listing_id, props.profile)
       end)
       if fetched then
-        local entries = plan(detail, props.preferRaw, report)
+        local entries = plan(detail, props.preferRaw, report, copyTo)
         table.insert(plans, { listing = listing, entries = entries })
         total = total + #entries
       else

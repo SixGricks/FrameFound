@@ -54,5 +54,5 @@ return {
   LrLibraryMenuItems = menu(),
   LrExportMenuItems = menu(),
 
-  VERSION = { major = 0, minor = 4, revision = 1, build = 0 },
+  VERSION = { major = 0, minor = 5, revision = 0, build = 0 },
 }

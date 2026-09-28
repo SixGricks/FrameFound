@@ -961,11 +961,12 @@ export default function ListingPage() {
                 they are (the RAW when the camera wrote one), so nothing is
                 re-encoded and nothing is copied off the NAS. */}
             <p className="faint" style={{ fontSize: "0.78rem", margin: 0 }}>
-              In Lightroom Classic: <strong>Library → Plug-in Extras → Import FrameFound
+              In Lightroom Classic: <strong>File → Plug-in Extras → Import FrameFound
               listings…</strong> and tick “{listing?.name ?? "this listing"}” — or as many
-              listings as you like, to edit them all in one grid. The originals are added where
-              they are — the RAW when the camera wrote one — each listing into a collection of
-              its name. Nothing is copied or moved.
+              listings as you like, to edit them all in one grid. With “Copy them into a folder”
+              ticked, each photograph — the RAW when the camera wrote one — is copied under the
+              name this page shows and added from there; unticked, the originals are added where
+              they are. The NAS is never written to.
             </p>
           </div>
 

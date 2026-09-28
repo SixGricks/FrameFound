@@ -1419,6 +1419,7 @@ def export_listing_zip(
                 await db.commit()
                 title = listing.name
                 notes = listing.notes
+                by_place = listing.file_naming == "place"
                 suffix = listing.file_suffix or photo_index.default_suffix(listing.name)
                 # Digested before the inputs are read, so a change made while
                 # this runs leaves the finished zip stale — the safe direction.
@@ -1489,6 +1490,7 @@ def export_listing_zip(
                                 room=room,
                                 suffix=suffix,
                                 naming=naming,
+                                by_place=by_place,
                             )
                             archive.writestr(name, data)
                             if not include_index:

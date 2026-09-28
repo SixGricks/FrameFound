@@ -226,3 +226,91 @@ def test_options_stop_at_the_floor_but_a_place_always_keeps_its_best(
     assert [p.photo.asset_id for p in options()] == [everything[0].photo.asset_id], (
         "below the floor, a place still shows its best"
     )
+
+
+def _offered(places: list[showcase.Place]) -> set[str]:
+    return {pick.photo.asset_id for place in places for pick in place.picks}
+
+
+def test_each_kind_looks_for_its_own_photographs() -> None:
+    """The calendar brief: mostly the finished work, a few crew shots in a
+    scenic setting, one or two of the construction, and a group photo."""
+    photos = _library()  # the work: construction at four courses
+    photos += [
+        _photo(900, "Pete Dye/a.JPG", _unit(1, 0, 1, 0, 0, 1)),  # finished, nobody in it
+        _photo(901, "Pete Dye/b.JPG", _unit(1, 0, 1, 0, 1, 0, 0.5)),  # a crew on the course
+        _photo(902, "Pete Dye/c.JPG", _unit(0.5, 0, 0.6, 0, 1, 0, 0, 0.5), faces=6),  # the team
+    ]
+    finished = _offered(showcase.rank(photos, VECTORS, alternates=5)[0])
+    assert "a900" in finished and not finished & {"a901", "a902"}
+
+    crew = _offered(showcase.rank(photos, VECTORS, alternates=5, kind="crew")[0])
+    assert "a901" in crew and "a900" not in crew, "people, in front of the course"
+
+    work = _offered(showcase.rank(photos, VECTORS, alternates=5, kind="construction")[0])
+    assert "a900" not in work and any(int(a[1:]) < 100 for a in work), "the work, not the finish"
+
+    places, _ = showcase.rank(photos, VECTORS, alternates=5, kind="group")
+    assert [p.label for p in places] == ["Company photo"], "a group photo is not of a place"
+    assert _offered(places) == {"a902"}, "four or more faces"
+    assert places[0].picks[0].tags["kind"] == "group"
+
+
+def test_a_ground_level_view_takes_the_last_place_when_none_made_it() -> None:
+    """Drone overheads outscore the ground almost every time; the brief
+    wants both."""
+    photos = _library()
+    for n, (a, b) in enumerate([(0.8, 0), (0, 0.8), (-0.8, 0)]):
+        photos.append(
+            _photo(
+                960 + n, f"Pete Dye/DJI_{n}.JPG", _unit(1, 0, 1, 0, 0, 1, a, b), camera_make="DJI"
+            )
+        )
+    # Ground level, a little less striking than the aerials.
+    photos.append(
+        _photo(970, "Pete Dye/IMG_1.JPG", _unit(0.8, 0, 0.9, 0, 0, 1, 0, -0.8), camera_make="Canon")
+    )
+    places, _ = showcase.rank(photos, VECTORS, alternates=3)
+    options = next(p.picks for p in places if p.label == "Pete Dye")
+    assert [p.tags["source"] for p in options] == ["drone", "drone", "ground"]
+    assert options[-1].photo.asset_id == "a970", "the ground view took the last place"
+
+    places, _ = showcase.rank(photos, VECTORS, alternates=4)
+    options = next(p.picks for p in places if p.label == "Pete Dye")
+    assert [p.tags["source"] for p in options].count("ground") == 1, "no second ground view forced"
+
+
+def test_only_the_chosen_places_even_when_merged_by_gps() -> None:
+    here = (40.9, -73.8)
+    photos = _library()
+    photos += [
+        _photo(950, "Hudson National/a.JPG", _unit(1, 0, 1, 0, 0, 1, 0.5), gps=here),
+        _photo(951, "Hudson Natl/b.JPG", _unit(1, 0, 1, 0, 0, 1, 0, 0.5), gps=here),
+        _photo(952, "North Fork/c.JPG", _unit(1, 0, 1, 0, 0, 1)),
+    ]
+    places, _ = showcase.rank(photos, VECTORS, alternates=5, only_places={"hudsonnatl"})
+    assert [p.key for p in places] == ["hudsonnational"], "the folder it was merged into"
+    assert _offered(places) == {"a950", "a951"}
+
+
+def test_tags_and_file_names_say_where_when_and_how() -> None:
+    assert showcase.season_of("2023-10-14T09:12:00") == "fall"
+    assert showcase.season_of("2024-01-02T09:12:00") == "winter"
+    assert showcase.season_of(None) == ""
+
+    def shot(make: str, name: str = "IMG_1.JPG") -> showcase.Photo:
+        return _photo(1, f"x/{name}", _unit(1), camera_make=make)
+
+    assert showcase.source_of(shot("DJI")) == "drone"
+    assert showcase.source_of(shot("Hasselblad")) == "drone", "DJI's Mavic 3 camera"
+    assert showcase.source_of(shot("Canon")) == "ground"
+    assert showcase.source_of(shot("", "DJI_0241.JPG")) == "drone"
+
+    finished = {"season": "fall", "source": "drone", "kind": "finished"}
+    crew = {"season": "summer", "source": "ground", "kind": "crew"}
+    assert showcase.file_stem("LedgeRock", 3, finished) == "ledgerock-03-fall-drone"
+    assert showcase.file_stem("North Fork Country Club", 12, crew) == (
+        "north-fork-country-club-crew-12-summer-ground"
+    )
+    assert showcase.file_stem("Company photo", 2, {"kind": "group"}) == "company-photo-02"
+    assert showcase.file_stem("LedgeRock", 1, {"kind": "finished"}) == "ledgerock-01", "undated"

@@ -76,8 +76,12 @@ def export_filename(
     room: str,
     suffix: str,
     naming: str = "seo",
+    by_place: bool = False,
 ) -> str:
     """The name one photograph carries in the zip.
+
+    by_place: a showcase listing's slug is already the whole name, place
+    first ("ledgerock-03-fall-drone"), so the files sort by course.
 
     "seo": `01-kitchen-island-pantry-130-davis-rd-auction.jpg`. Hyphens,
     because search engines read them as word breaks and underscores as
@@ -87,6 +91,8 @@ def export_filename(
     "simple": the original `01_kitchen.jpg`, for portals that rename on
     upload anyway.
     """
+    if by_place and slug:
+        return f"{slug}.jpg"
     if naming == "simple":
         return f"{number:02d}_{room or 'photo'}.jpg"
     width = 2 if total <= 99 else 3

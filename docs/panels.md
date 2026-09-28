@@ -105,7 +105,14 @@ Changes to `Info.lua` need Lightroom restarted, not just Reload Plug-in:
   added), and every collection imported is shown together, so thirty listings
   of eight photos are 240 photos in one grid: Ctrl+A, then Sync Settings in
   Develop. A progress bar can cancel between listings; what is done is kept.
-  Last run's ticks come back next time. When the camera wrote a RAW
+  Last run's ticks come back next time. **Copy them into a folder, named as
+  FrameFound names them** (on by default) copies each photograph into
+  `Pictures\FrameFound\<listing>\` under the listing's file name and adds
+  the copy: a showcase listing names files by place
+  (`ledgerock-03-fall-drone.dng`), a property listing in gallery order
+  (`01-kitchen-island-…`). Lightroom cannot rename a file and FrameFound
+  never renames an original, so a copy is how the names reach Lightroom. A
+  copy already there from an earlier run is kept as it is. When the camera wrote a RAW
   beside the JPEG (DJI's DNG, Canon's CR3) the RAW is added instead — it keeps
   the sky highlights a printed page needs; untick the option for the JPEGs.
   Photographs already in the catalogue are reused, so importing again after

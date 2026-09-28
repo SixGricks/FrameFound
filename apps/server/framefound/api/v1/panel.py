@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 from framefound.auth.deps import DbDep, PanelPrincipal, require_panel_scope
 from framefound.config import get_settings
 from framefound.db.models import Asset, Library, Listing, ListingItem, PathMapping
+from framefound.media import photo_index
 from framefound.media.signing import SigningError, sign_media_url
 
 # A panel authenticates with a bearer token, which an <img> or <video> element
@@ -327,6 +328,10 @@ class PanelListingItem(BaseModel):
     # The RAW original beside it, when the catalogue has one.
     raw_filename: str | None
     raw_path: str | None
+    # The name a copy should carry, less its extension: place first for a
+    # showcase ("ledgerock-03-fall-drone"), gallery order for a property
+    # ("01-kitchen-island-130-davis-rd-auction").
+    copy_name: str
 
 
 class PanelListingDetail(BaseModel):
@@ -420,9 +425,16 @@ async def panel_listing(
     ).all()
     twins = await _raw_twins(db, [asset for _item, asset in rows])
     profiles = await _profiles(db, profile)
+    suffix = listing.file_suffix or photo_index.default_suffix(listing.name)
     items = []
     for position, (item, asset) in enumerate(rows, start=1):
         twin = twins.get(asset.id)
+        if listing.file_naming == "place" and item.slug:
+            copy_name = item.slug
+        else:
+            copy_name = photo_index.export_filename(
+                position, len(rows), slug=item.slug, room=item.room, suffix=suffix
+            ).removesuffix(".jpg")
         items.append(
             PanelListingItem(
                 asset_id=asset.id,
@@ -432,6 +444,7 @@ async def panel_listing(
                 path=_translate_for(asset, profiles),
                 raw_filename=twin.filename if twin else None,
                 raw_path=_translate_for(twin, profiles) if twin else None,
+                copy_name=copy_name,
             )
         )
     raws = sum(1 for i in items if i.raw_filename)

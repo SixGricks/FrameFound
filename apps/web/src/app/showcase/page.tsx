@@ -1,18 +1,21 @@
 "use client";
 
-// Showcase: the best finished photographs, one per place.
+// Showcase: the best photographs, one place at a time.
 //
-// Built for GELCO's calendar — fourteen masterpiece photographs from
-// fourteen courses — and general on purpose: subject and libraries are
-// settings. The server ranks (quality, finished-not-in-progress, print size,
-// no people, one per place by folder and GPS); this page is where a person
-// chooses. Each place offers alternates; clicking one makes it the pick.
-// The chosen set becomes a listing, and the listing's export is what gets
-// sent: full-size files named after each place, a photo index, contact
-// sheets to choose from.
+// Built for GELCO's calendar — the best finished work of each course, a few
+// crew and construction shots, a company group photo — and general on
+// purpose: subject, libraries and places are settings. The server ranks
+// (quality, light, finished-not-in-progress, print size, no people or
+// machines, one place at a time by folder and GPS); this page is where a
+// person chooses. Each place offers options in a carousel under the pick.
+//
+// The result goes into a listing — a new one, or one already started, so a
+// finished-work search, a crew search and a group-photo search make one
+// shortlist. Its files are named by place ("ledgerock-03-fall-drone"), and
+// Lightroom's "Import FrameFound listings…" brings it in under those names.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
@@ -20,12 +23,16 @@ import {
   api,
   mediaUrl,
   type Library,
+  type ListingSummary,
+  type ShowcaseKind,
+  type ShowcaseListingPick,
   type ShowcasePick,
   type ShowcasePlace,
+  type ShowcasePlaceCount,
   type ShowcaseRequest,
 } from "@/lib/api";
 
-const DEFAULTS: Omit<ShowcaseRequest, "library_ids"> = {
+const DEFAULTS: Omit<ShowcaseRequest, "library_ids" | "places"> = {
   subject: "golf course",
   avoid: "",
   count: 20,
@@ -33,7 +40,15 @@ const DEFAULTS: Omit<ShowcaseRequest, "library_ids"> = {
   orientation: "landscape",
   min_megapixels: 12,
   allow_people: false,
+  kind: "finished",
 };
+
+const KINDS: { value: ShowcaseKind; label: string }[] = [
+  { value: "finished", label: "The finished work" },
+  { value: "crew", label: "Crew, in a scenic setting" },
+  { value: "construction", label: "Construction, the dramatic kind" },
+  { value: "group", label: "A company group photo" },
+];
 
 function describe(pick: ShowcasePick): string {
   const when = pick.captured_at
@@ -95,6 +110,8 @@ function PlaceCard({
           {rank + 1}. {place.label}
         </strong>
         {pick && <span className="faint mono">{describe(pick)}</span>}
+        {pick?.season && <span className="pill">{pick.season}</span>}
+        {pick?.source && <span className="pill">{pick.source}</span>}
         <span className="faint mono" style={{ marginLeft: "auto" }}>
           {count === 1 ? "1 option" : `${current + 1} of ${count}`}
         </span>
@@ -160,16 +177,24 @@ function PlaceCard({
 }
 
 export default function ShowcasePage() {
-  const router = useRouter();
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [chosenLibraries, setChosenLibraries] = useState<Set<string>>(new Set());
+  const [placeOptions, setPlaceOptions] = useState<ShowcasePlaceCount[]>([]);
+  // Labels of the places to search; empty = every place.
+  const [onlyPlaces, setOnlyPlaces] = useState<Set<string>>(new Set());
   const [form, setForm] = useState(DEFAULTS);
   const [places, setPlaces] = useState<ShowcasePlace[] | null>(null);
+  // What the results on screen were searched for — the form may have moved on.
+  const [resultKind, setResultKind] = useState<ShowcaseKind>("finished");
   const [considered, setConsidered] = useState(0);
-  // Per place: which alternate is the pick, and whether the place is in.
+  // Per place: which option is the pick, and whether the place is in.
   const [pickIndex, setPickIndex] = useState<Record<string, number>>({});
   const [included, setIncluded] = useState<Record<string, boolean>>({});
+  const [listings, setListings] = useState<ListingSummary[]>([]);
+  // "new", or the id of a listing to add to.
+  const [target, setTarget] = useState("new");
   const [name, setName] = useState("GELCO calendar candidates");
+  const [saved, setSaved] = useState<{ id: string; name: string; added: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -183,14 +208,39 @@ export default function ShowcasePage() {
         setChosenLibraries(new Set(gelco ? [gelco.id] : libs.map((l) => l.id)));
       })
       .catch(() => setLibraries([]));
+    api
+      .listings()
+      .then(setListings)
+      .catch(() => setListings([]));
   }, []);
+
+  // The places the chosen libraries hold, for "only these places".
+  useEffect(() => {
+    if (!chosenLibraries.size) {
+      setPlaceOptions([]);
+      return;
+    }
+    api
+      .showcasePlaces([...chosenLibraries])
+      .then((found) => {
+        setPlaceOptions(found);
+        // Keep only choices that still exist.
+        setOnlyPlaces((prev) => new Set([...prev].filter((l) => found.some((p) => p.label === l))));
+      })
+      .catch(() => setPlaceOptions([]));
+  }, [chosenLibraries]);
 
   async function search() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.showcase({ ...form, library_ids: [...chosenLibraries] });
+      const res = await api.showcase({
+        ...form,
+        library_ids: [...chosenLibraries],
+        places: [...onlyPlaces],
+      });
       setPlaces(res.places);
+      setResultKind(form.kind);
       setConsidered(res.considered);
       setPickIndex(Object.fromEntries(res.places.map((p) => [p.key, 0])));
       setIncluded(Object.fromEntries(res.places.map((p) => [p.key, true])));
@@ -201,27 +251,47 @@ export default function ShowcasePage() {
     }
   }
 
+  const chosenPlaces = useMemo(() => (places ?? []).filter((p) => included[p.key]), [
+    places,
+    included,
+  ]);
   const selected = useMemo(
     () =>
-      (places ?? [])
-        .filter((p) => included[p.key])
+      chosenPlaces
         .map((p) => ({ place: p.label, pick: p.picks[pickIndex[p.key] ?? 0] }))
         .filter((s): s is { place: string; pick: ShowcasePick } => Boolean(s.pick)),
-    [places, included, pickIndex],
+    [chosenPlaces, pickIndex],
+  );
+  const everyOption = useMemo(
+    () => chosenPlaces.flatMap((p) => p.picks.map((pick) => ({ place: p.label, pick }))),
+    [chosenPlaces],
   );
 
-  async function makeListing() {
-    if (!selected.length) return;
+  async function save(which: { place: string; pick: ShowcasePick }[]) {
+    if (!which.length) return;
     setBusy(true);
     setError(null);
     try {
-      const { listing_id } = await api.showcaseListing(
-        name.trim() || "Showcase",
-        selected.map((s) => ({ asset_id: s.pick.asset_id, place: s.place })),
+      const picks: ShowcaseListingPick[] = which.map(({ place, pick }) => ({
+        asset_id: pick.asset_id,
+        place,
+        kind: resultKind,
+        season: pick.season,
+        source: pick.source,
+      }));
+      const listingName =
+        target === "new" ? name.trim() || "Showcase" : listings.find((l) => l.id === target)?.name;
+      const res = await api.showcaseListing(
+        target === "new" ? { name: listingName ?? "Showcase" } : { listing_id: target },
+        picks,
       );
-      router.push(`/listings/${listing_id}`);
+      setSaved({ id: res.listing_id, name: listingName ?? "the listing", added: res.added });
+      // The next search adds to the same listing.
+      setTarget(res.listing_id);
+      setListings(await api.listings());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the listing");
+      setError(err instanceof Error ? err.message : "Could not save to the listing");
+    } finally {
       setBusy(false);
     }
   }
@@ -235,11 +305,20 @@ export default function ShowcasePage() {
     });
   }
 
+  function togglePlace(label: string) {
+    setOnlyPlaces((current) => {
+      const next = new Set(current);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }
+
   return (
     <Shell>
       <div className="sectionhead" style={{ marginTop: 0 }}>
         <h2>Showcase</h2>
-        <span className="faint mono">the best finished work, one photograph per place</span>
+        <span className="faint mono">the best of the work, one place at a time</span>
       </div>
 
       {error && (
@@ -262,6 +341,18 @@ export default function ShowcasePage() {
           ))}
         </div>
         <div className="toolbar" style={{ flexWrap: "wrap" }}>
+          <select
+            className="select"
+            value={form.kind}
+            onChange={(e) => setForm({ ...form, kind: e.target.value as ShowcaseKind })}
+            aria-label="Looking for"
+          >
+            {KINDS.map((k) => (
+              <option key={k.value} value={k.value}>
+                Looking for: {k.label}
+              </option>
+            ))}
+          </select>
           <label className="faint" style={{ fontSize: "0.8rem" }}>
             The finished work is a
             <input
@@ -281,6 +372,38 @@ export default function ShowcasePage() {
             aria-label="Avoid"
           />
         </div>
+        {placeOptions.length > 0 && (
+          <details className="showcase-places">
+            <summary className="faint" style={{ fontSize: "0.8rem", cursor: "pointer" }}>
+              {onlyPlaces.size
+                ? `Only these places: ${onlyPlaces.size} of ${placeOptions.length}`
+                : `All ${placeOptions.length} places — choose some`}
+            </summary>
+            <div className="toolbar" style={{ flexWrap: "wrap", gap: "4px 14px" }}>
+              <button type="button" className="btn" onClick={() => setOnlyPlaces(new Set())}>
+                All places
+              </button>
+              {placeOptions.map((p) => (
+                <label
+                  key={p.key}
+                  className="faint"
+                  style={{ display: "flex", gap: 6, fontSize: "0.8rem" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={onlyPlaces.has(p.label)}
+                    onChange={() => togglePlace(p.label)}
+                  />
+                  {p.label} <span className="mono">({p.photos})</span>
+                </label>
+              ))}
+            </div>
+            <p className="faint" style={{ fontSize: "0.75rem", margin: "6px 0 0" }}>
+              Photographs in collection folders (Photo Exports, social posts) are placed by GPS
+              and count toward their place.
+            </p>
+          </details>
+        )}
         <div className="toolbar" style={{ flexWrap: "wrap" }}>
           <label className="faint" style={{ fontSize: "0.8rem" }}>
             Places
@@ -337,14 +460,16 @@ export default function ShowcasePage() {
             <option value={12}>≥ 12 MP (calendar page)</option>
             <option value={20}>≥ 20 MP (large prints)</option>
           </select>
-          <label className="faint" style={{ display: "flex", gap: 6, fontSize: "0.8rem" }}>
-            <input
-              type="checkbox"
-              checked={form.allow_people}
-              onChange={(e) => setForm({ ...form, allow_people: e.target.checked })}
-            />
-            Allow people in frame
-          </label>
+          {form.kind === "finished" && (
+            <label className="faint" style={{ display: "flex", gap: 6, fontSize: "0.8rem" }}>
+              <input
+                type="checkbox"
+                checked={form.allow_people}
+                onChange={(e) => setForm({ ...form, allow_people: e.target.checked })}
+              />
+              Allow people in frame
+            </label>
+          )}
           <button
             className="btn btn-primary"
             disabled={busy || !chosenLibraries.size}
@@ -359,7 +484,7 @@ export default function ShowcasePage() {
         <>
           <div className="sectionhead">
             <h2>
-              {places.length} places · {selected.length} chosen
+              {places.length} places · {selected.length} chosen · {everyOption.length} options
             </h2>
             <span className="faint mono">
               from {considered.toLocaleString()} photographs — choose from the strip under each
@@ -387,27 +512,59 @@ export default function ShowcasePage() {
           </div>
 
           <div className="card" style={{ position: "sticky", bottom: 8, marginTop: 12 }}>
-            <div className="toolbar" style={{ marginTop: 0 }}>
-              <input
-                className="input"
-                style={{ flex: 1, minWidth: 220 }}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                aria-label="Listing name"
-              />
+            <div className="toolbar" style={{ marginTop: 0, flexWrap: "wrap" }}>
+              <select
+                className="select"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                aria-label="Save to"
+              >
+                <option value="new">Save to a new listing…</option>
+                {listings.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    Add to {l.name} ({l.item_count})
+                  </option>
+                ))}
+              </select>
+              {target === "new" && (
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 200 }}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  aria-label="Listing name"
+                />
+              )}
+              <button
+                className="btn"
+                disabled={busy || !selected.length}
+                onClick={() => save(selected)}
+                title="The chosen photograph of each place"
+              >
+                Add the chosen {selected.length}
+              </button>
               <button
                 className="btn btn-primary"
-                disabled={busy || !selected.length}
-                onClick={makeListing}
-                title="A listing in this order, each file named after its place; export it at full size to send"
+                disabled={busy || !everyOption.length}
+                onClick={() => save(everyOption)}
+                title="Every option of every place that is ticked"
               >
-                Make a listing of {selected.length}
+                Add every option ({everyOption.length})
               </button>
             </div>
-            <span className="faint" style={{ fontSize: "0.75rem" }}>
-              Then Export on the listing: choose “Full size” and keep the photo index and
-              contact sheets — that zip is what gets sent.
-            </span>
+            {saved ? (
+              <span className="faint" style={{ fontSize: "0.75rem" }}>
+                Added {saved.added} to <Link href={`/listings/${saved.id}`}>{saved.name}</Link>.
+                Search again (crew, construction, a group photo) and add to the same listing. In
+                Lightroom Classic: File → Plug-in Extras → Import FrameFound listings…, with “Copy
+                them into a folder” ticked, brings the files in named by place.
+              </span>
+            ) : (
+              <span className="faint" style={{ fontSize: "0.75rem" }}>
+                Files are named by place — ledgerock-03-fall-drone — in the listing&apos;s export
+                and in Lightroom.
+              </span>
+            )}
           </div>
         </>
       )}

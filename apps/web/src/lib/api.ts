@@ -541,7 +541,11 @@ export interface ListingDetail extends ListingSummary {
 
 export type ListingNaming = "seo" | "simple";
 
-/** Showcase: the best finished photographs, one per place. */
+/** What a showcase looks for: the finished work, a crew in a scenic
+ *  setting, dramatic construction, or a company group photo. */
+export type ShowcaseKind = "finished" | "crew" | "construction" | "group";
+
+/** Showcase: the best photographs, one place at a time. */
 export interface ShowcaseRequest {
   library_ids: string[];
   subject: string;
@@ -551,6 +555,9 @@ export interface ShowcaseRequest {
   orientation: "landscape" | "portrait" | "any";
   min_megapixels: number;
   allow_people: boolean;
+  kind: ShowcaseKind;
+  /** Only these places (labels from showcasePlaces); empty for all. */
+  places: string[];
 }
 
 export interface ShowcasePick {
@@ -563,6 +570,24 @@ export interface ShowcasePick {
   captured_at: string | null;
   score: number;
   parts: Record<string, number>;
+  /** "spring" | "summer" | "fall" | "winter", or "" undated. */
+  season: string;
+  /** "drone" | "ground". */
+  source: string;
+}
+
+export interface ShowcasePlaceCount {
+  key: string;
+  label: string;
+  photos: number;
+}
+
+export interface ShowcaseListingPick {
+  asset_id: string;
+  place: string;
+  kind: ShowcaseKind;
+  season: string;
+  source: string;
 }
 
 export interface ShowcasePlace {
@@ -1077,11 +1102,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  showcaseListing: (name: string, picks: { asset_id: string; place: string }[]) =>
-    request<{ listing_id: string }>("/showcase/listing", {
+  showcasePlaces: (libraryIds: string[]) =>
+    request<ShowcasePlaceCount[]>(
+      `/showcase/places?${libraryIds.map((id) => `library_ids=${encodeURIComponent(id)}`).join("&")}`,
+    ),
+  /** A new listing by `target.name`, or add to `target.listing_id`. */
+  showcaseListing: (
+    target: { name: string } | { listing_id: string },
+    picks: ShowcaseListingPick[],
+  ) =>
+    request<{ listing_id: string; added: number }>("/showcase/listing", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, picks }),
+      body: JSON.stringify({ ...target, picks }),
     }),
   createListing: (name: string, assetIds: string[]) =>
     request<ListingDetail>("/listings", {

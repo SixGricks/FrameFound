@@ -270,7 +270,12 @@ async def _detail(db: DbDep, listing: Listing, classified: bool) -> ListingDetai
             continue
         room = item.room if item.room in rooms_lib.ROOM_LABELS else ""
         names[item.asset_id] = photo_index.export_filename(
-            len(names) + 1, total, slug=item.slug, room=room, suffix=suffix
+            len(names) + 1,
+            total,
+            slug=item.slug,
+            room=room,
+            suffix=suffix,
+            by_place=listing.file_naming == "place",
         )
     items = [
         _item_out(item, asset, edited_at.get(item.asset_id), names.get(item.asset_id))

@@ -641,6 +641,12 @@ class Listing(Base):
     )
     # What the last run did, in a line the page shows as-is.
     ai_edit_message: Mapped[str] = mapped_column(String(300), default="", server_default="")
+    # "gallery": files named in gallery order (01-kitchen-…), for MLS.
+    # "place": each item's slug is its whole file name, place first
+    # (ledgerock-03-fall-drone), for a showcase browsed by place.
+    file_naming: Mapped[str] = mapped_column(
+        String(12), default="gallery", server_default="gallery"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -514,3 +514,63 @@ async def test_a_panel_opens_a_listing_at_workstation_paths_with_its_raw_origina
     unmapped = (await client.get(url)).json()
     assert all(i["path"] is None for i in unmapped["items"]), "no profile, no guessed paths"
     assert (await client.get(f"/api/v1/panel/listings/{uuidlib.uuid4()}")).status_code == 404
+
+
+async def test_a_showcase_listing_names_files_by_place_across_searches(env: dict) -> None:
+    """GELCO's shortlist: every course's best in one listing, then crew
+    shots added to it — each file named by course, numbered within it."""
+    client, ids = env["client"], env["ids"]
+
+    def pick(key: str, **kw: str) -> dict[str, str]:
+        return {"asset_id": ids[key], "place": "LedgeRock", **kw}
+
+    first = await client.post(
+        "/api/v1/showcase/listing",
+        json={
+            "name": "GELCO Calendar 2027",
+            "picks": [
+                pick("front", season="fall", source="drone"),
+                pick("kitchen", season="summer", source="ground"),
+            ],
+        },
+    )
+    assert first.status_code == 201, first.text
+    listing_id = first.json()["listing_id"]
+    second = await client.post(
+        "/api/v1/showcase/listing",
+        json={
+            "listing_id": listing_id,
+            "picks": [
+                pick("bedroom", season="fall", source="drone"),
+                pick("front"),  # already in the listing
+                pick("mystery", kind="crew", season="fall", source="ground"),
+            ],
+        },
+    )
+    assert second.json()["added"] == 2
+
+    detail = (await client.get(f"/api/v1/listings/{listing_id}")).json()
+    assert [i["export_name"] for i in detail["items"]] == [
+        "ledgerock-01-fall-drone.jpg",
+        "ledgerock-02-summer-ground.jpg",
+        "ledgerock-03-fall-drone.jpg",
+        "ledgerock-crew-01-fall-ground.jpg",
+    ], "numbering continues within each place and kind"
+    assert detail["items"][3]["caption"] == "LedgeRock — Fall · Ground · Crew"
+
+    panel = (await client.get(f"/api/v1/panel/listings/{listing_id}")).json()
+    assert [i["copy_name"] for i in panel["items"]][0] == "ledgerock-01-fall-drone", (
+        "Lightroom's copies carry the same names"
+    )
+    assert (
+        await client.post(
+            "/api/v1/showcase/listing",
+            json={"listing_id": str(uuidlib.uuid4()), "picks": [pick("front")]},
+        )
+    ).status_code == 404
+
+
+async def test_a_property_listing_keeps_gallery_order_names_in_lightroom(env: dict) -> None:
+    listing = await _create(env, ["front", "kitchen"])
+    panel = (await env["client"].get(f"/api/v1/panel/listings/{listing['id']}")).json()
+    assert [i["copy_name"][:3] for i in panel["items"]] == ["01-", "02-"]
