@@ -131,6 +131,42 @@ file names that say the course. It is all built into Showcase:
 - **Running thin:** Mount Kisco has nothing left above the floor, and
   Hudson National only crew shots. A third batch will be thinner still.
 
+**Batch 3, and video frames.** The finished stills were used up: batch 3
+from stills alone offered two new good ones, the rest being photos turned
+down in batch 2. The drone video had not been touched: every course has
+some (LedgeRock 451 clips), and it holds the only finished work of five
+courses. So Showcase now has **"Include video frames"**:
+- Every video's keyframes are ranked with the stills through the same gates.
+  They already have embeddings and frame images in the catalogue.
+- A 4K frame (8.3 MP) passes where a still needs 12. Frames are marked down
+  (`FRAME_PENALTY` 0.85), so stills are preferred as the brief says.
+- One frame per video.
+- A listing item can be a frame (`listing_items.frame_ms`, migration 0023).
+- The panel's `/panel/grabs/{video}/{ms}` (export scope) grabs it full size
+  from the original with ffmpeg, reading only.
+- **Grabs are 16-bit TIFFs.** The clips are 10-bit HEVC, and a JPEG grab
+  kept 256 of 1,024 levels at about quality 75, which would band a sky.
+  Each is about 22 MB, cached in `data/grabs/`.
+- Plugin 0.6.0 downloads each grab under its name
+  (`madison-01-spring-drone-video.tif`) and imports it.
+
+**"GELCO Masterpiece Calendar — batch 3":** 50 photographs, chosen by eye
+from 107 offered. None is shared with batches 1 and 2.
+- **Finished work (40), 37 of them video frames:**
+  - **First time in any batch:** Honey Brook (sunset over the pond, a
+    bunker at dusk, a spring fairway), Madison (striped fairways under blue
+    sky), Stonewall's layout, and Lehigh.
+  - **The rest:** more LedgeRock golden hour, Edgewood's fountain pond,
+    North Fork in autumn.
+- **Crew (3), construction (7).**
+- **Company photo:** nothing new worth adding; there is no posed team photo.
+- **Left out on review:** a porta-john, houses and a road, parked cars,
+  the crane, brown turf, an upside-down frame, and near-repeats.
+- **Grabs:** all 44 are made on the server, 16-bit 3840×2160, 1.1 GB, about
+  6 s each. So the import only downloads.
+- **Commonwealth still has nothing finished:** its stills and video are the
+  pump-station removal and a crane.
+
 ### 2026-09-26 (late) — up to 20 Showcase options a place, where the photographs earn it
 
 The operator wanted more than 8 options from courses with many great

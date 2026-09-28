@@ -112,7 +112,13 @@ Changes to `Info.lua` need Lightroom restarted, not just Reload Plug-in:
   (`ledgerock-03-fall-drone.dng`), a property listing in gallery order
   (`01-kitchen-island-…`). Lightroom cannot rename a file and FrameFound
   never renames an original, so a copy is how the names reach Lightroom. A
-  copy already there from an earlier run is kept as it is. When the camera wrote a RAW
+  copy already there from an earlier run is kept as it is. A listing item
+  can also be a **frame of a video** (a showcase with "Include video
+  frames"): there is no file to add in place, so the plugin downloads a
+  full-size grab from `/panel/grabs/{video}/{ms}`. That is a 16-bit TIFF
+  made from the original by ffmpeg, which only reads it, and cached on the
+  server. The download is named like the rest
+  (`stonewall-01-summer-drone-video.tif`). When the camera wrote a RAW
   beside the JPEG (DJI's DNG, Canon's CR3) the RAW is added instead — it keeps
   the sky highlights a printed page needs; untick the option for the JPEGs.
   Photographs already in the catalogue are reused, so importing again after
