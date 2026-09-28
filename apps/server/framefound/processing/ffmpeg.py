@@ -195,6 +195,37 @@ def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 192
         raise FfmpegError("No frame could be extracted from the video")
 
 
+def extract_still(src: Path, dst: Path, at_seconds: float) -> None:
+    """One frame at full size and full depth, for an editor: a 16-bit TIFF.
+
+    GELCO's drone clips are 10-bit HEVC. A JPEG grab keeps 256 levels a
+    channel of their 1,024 (and a first try came out at quality ~75), so a
+    sky pushed in Lightroom bands; a 16-bit TIFF keeps them all. Deflate
+    compression brings a 4K frame to a few tens of megabytes."""
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            f"{max(0.0, at_seconds):.3f}",
+            "-i",
+            str(src),
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "rgb48le",
+            "-compression_algo",
+            "deflate",
+            str(dst),
+        ],
+        POSTER_TIMEOUT_S,
+    )
+    if not dst.is_file() or dst.stat().st_size == 0:
+        raise FfmpegError("No frame could be extracted from the video")
+
+
 def downscale_still(src: Path, dst: Path, max_edge: int) -> None:
     """Scale a still image down during decode, writing a JPEG.
 

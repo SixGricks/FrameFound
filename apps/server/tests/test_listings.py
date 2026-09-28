@@ -625,6 +625,7 @@ async def test_a_frame_of_a_video_is_a_listing_item_lightroom_downloads(env: dic
     assert item["path"] is None and item["frame_ms"] == 1000
     assert item["copy_name"] == "stonewall-01-summer-drone-video"
     assert item["grab_url"] == f"/panel/grabs/{ids['video']}/1000"
+    assert item["grab_ext"] == "tif", "a 16-bit TIFF keeps a 10-bit clip's levels"
 
     # Not a video, or not there: said plainly.
     assert (await client.get(f"/api/v1/panel/grabs/{ids['front']}/0")).status_code == 404
@@ -639,10 +640,9 @@ async def test_a_frame_of_a_video_is_a_listing_item_lightroom_downloads(env: dic
         check=True,
     )  # fmt: skip
     grab = await client.get(f"/api/v1{item['grab_url']}")
-    assert grab.status_code == 200 and grab.headers["content-type"] == "image/jpeg"
-    with Image.open(io.BytesIO(grab.content)) as image:
-        assert image.size == (640, 360), "full size"
-    cached = get_settings().data_dir / "grabs" / ids["video"] / "1000.jpg"
+    assert grab.status_code == 200 and grab.headers["content-type"] == "image/tiff"
+    assert grab.content[:4] == b"II*\x00", "a little-endian TIFF"
+    cached = get_settings().data_dir / "grabs" / ids["video"] / "1000.tif"
     assert cached.is_file(), "kept, so a second import does not grab again"
 
 

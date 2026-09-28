@@ -111,7 +111,7 @@ local function plan(listing, preferRaw, report, copyTo, grabTo)
         grab = item.grab_url,
         name = item.filename,
         folder = grabFolder,
-        copy = LrPathUtils.child(grabFolder, stem .. ".jpg"),
+        copy = LrPathUtils.child(grabFolder, stem .. "." .. (item.grab_ext or "jpg")),
       })
     elseif path then
       local entry = { path = path, raw = isRaw, name = item.filename }

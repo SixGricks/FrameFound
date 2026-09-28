@@ -339,6 +339,8 @@ class PanelListingItem(BaseModel):
     # a full-size grab from here (under /api/v1) and adds that.
     frame_ms: int | None = None
     grab_url: str | None = None
+    # The grab's file type, for the copy's name: a 16-bit TIFF.
+    grab_ext: str | None = None
 
 
 class PanelListingDetail(BaseModel):
@@ -351,6 +353,8 @@ class PanelListingDetail(BaseModel):
 
 # What a listing holds for an editor: photographs, and frames of videos.
 _A_PHOTOGRAPH = or_(Asset.media_type == "image", ListingItem.frame_ms.is_not(None))
+# A frame grab is a 16-bit TIFF (ffmpeg.extract_still).
+GRAB_EXT = "tif"
 
 
 @router.get("/grabs/{asset_id}/{frame_ms}", dependencies=[require_panel_scope("export")])
@@ -360,12 +364,13 @@ async def frame_grab(
     """A full-size still of one frame of a video, for an editor to work on.
 
     Grabbed from the original by ffmpeg — which only reads it — at the
-    video's own resolution, and kept in the data directory so a second
+    video's own resolution and bit depth (a 16-bit TIFF: see
+    ffmpeg.extract_still), and kept in the data directory so a second
     import does not grab it again. Needs the `export` scope: it is a new
     full-size file, as an FCP7 bin is.
     """
     from framefound.api.v1.showcase import GRAB_EXTENSIONS
-    from framefound.processing.ffmpeg import FfmpegError, extract_poster
+    from framefound.processing.ffmpeg import FfmpegError, extract_still
 
     asset = await db.get(Asset, asset_id)
     if asset is None or asset.media_type != "video":
@@ -375,14 +380,13 @@ async def frame_grab(
     library = await db.get(Library, asset.library_id)
     if library is None:
         raise HTTPException(status_code=404, detail="That library no longer exists")
-    grab = get_settings().data_dir / "grabs" / str(asset_id) / f"{frame_ms}.jpg"
+    grab = get_settings().data_dir / "grabs" / str(asset_id) / f"{frame_ms}.{GRAB_EXT}"
     if not grab.is_file():
         source = Path(library.root_path) / asset.relative_path
-        partial = grab.with_suffix(".part.jpg")
+        partial = grab.with_suffix(f".part.{GRAB_EXT}")
         partial.parent.mkdir(parents=True, exist_ok=True)
         try:
-            # Full size: the cap is only there so an 8K source stays sane.
-            await asyncio.to_thread(extract_poster, source, partial, frame_ms / 1000, 8192)
+            await asyncio.to_thread(extract_still, source, partial, frame_ms / 1000)
         except FfmpegError as err:
             partial.unlink(missing_ok=True)
             log.warning("panel.grab_failed", asset_id=str(asset_id), frame_ms=frame_ms)
@@ -391,7 +395,7 @@ async def frame_grab(
             ) from err
         partial.replace(grab)
         log.info("panel.grabbed", asset_id=str(asset_id), frame_ms=frame_ms)
-    return FileResponse(grab, media_type="image/jpeg")
+    return FileResponse(grab, media_type="image/tiff")
 
 
 @router.get("/listings", response_model=list[PanelListing])
@@ -500,6 +504,7 @@ async def panel_listing(
                 copy_name=copy_name,
                 frame_ms=frame,
                 grab_url=None if frame is None else f"/panel/grabs/{asset.id}/{frame}",
+                grab_ext=None if frame is None else GRAB_EXT,
             )
         )
     raws = sum(1 for i in items if i.raw_filename)
