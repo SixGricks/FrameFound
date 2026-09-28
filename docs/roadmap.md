@@ -39,6 +39,64 @@ the catalogue and the web UI.
 4. **Prune the build cache** (`manage.sh prune`, 26.6 GB reclaimable) and put
    it on a weekly schedule; it regrows by ~30 GB between prunes.
 
+### 2026-09-28 — the GELCO calendar brief, through Showcase, into Lightroom by course name
+
+Brian Ley's brief (George E. Ley Co.) sets rules for a 12-month calendar:
+- 13 courses;
+- mostly finished work, crew in at most 4 months, construction in 1–2;
+- one company group photo;
+- strong light, healthy turf, nothing unattractive, landscape for print;
+- drone and ground views mixed;
+- a season on each pick.
+
+The operator wanted every course's top 8 in **one** listing, with Lightroom
+file names that say the course. It is all built into Showcase:
+
+- **Only these places.** A picker of the libraries' places. Photos in
+  collection folders are placed by GPS, as before.
+- **Looking for:**
+  - the finished work;
+  - a crew in a scenic setting: a face detected, or a clear CLIP margin (the
+    loose one admitted a clubhouse and empty tees);
+  - dramatic construction;
+  - a company group photo: three or more faces, ranked by how many.
+- **Scoring, from the brief:**
+  - golden-hour or blue-sky light rewarded, flat grey penalised;
+  - brown turf, bare patches, debris and porta-johns penalised;
+  - people prompts that catch a close-up. A hooded worker with no face
+    detected had passed as "nobody".
+- **Drone and ground mixed.** When none of a course's options is a
+  ground-level view, the best one clearing the floor takes the last slot
+  (Pete Dye's pond, Cherry Valley's fairway).
+- **Tags:** season from the capture date; drone or ground from the camera
+  (DJI or Hasselblad, else ground).
+- **One listing, many searches.** "Add every option" or "Add the chosen",
+  to a new listing or one already started.
+- **Files named by place:**
+  - a showcase listing (`listings.file_naming = "place"`, migration 0022)
+    names each file `ledgerock-03-fall-drone`, numbered within its course
+    and kind across searches;
+  - captions read "LedgeRock — Fall · Drone · July 2023";
+  - the zip export uses the same names.
+- **Lightroom plugin 0.5.0: "Copy them into a folder, named as FrameFound
+  names them".** Lightroom cannot rename a file, and FrameFound never renames
+  an original. So each photo (its RAW when there is one) is copied to
+  `Pictures\FrameFound\<listing>\` under its name and added from there. A
+  copy from an earlier run is kept, never overwritten.
+
+**What the library held, judged by eye on contact sheets:**
+- Eight courses have finished stills: North Fork, LedgeRock, Pete Dye,
+  Edgewood, Cherry Valley, Chambersburg, Mount Kisco, Hudson National (5
+  clear the floor).
+- **Five do not.** Honey Brook, Stonewall, Madison, Commonwealth and Lehigh
+  have stills only of crews and machines. Their finished work is in 4K
+  drone video: Honey Brook at sunset, Stonewall's layout, Madison's
+  fairways. Getting frames into the listing and Lightroom is next.
+- **No posed company photo exists.** The nearest are candid: the crew on golf
+  carts at Chambersburg, the company event tent, lunch at Hudson National.
+- **Wilmington:** no folder, and no GELCO photo within 20 km of it.
+- The LedgeRock folder had been renamed: it reads `LedgeRock` now.
+
 ### 2026-09-26 (late) — up to 20 Showcase options a place, where the photographs earn it
 
 The operator wanted more than 8 options from courses with many great
