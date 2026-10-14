@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
 import Shell from "@/components/Shell";
 import { api, type HealthReport } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
+import { usePageTitle, usePoll } from "@/lib/hooks";
 
 const TONE: Record<string, string> = {
   ok: "ok",
@@ -18,15 +17,9 @@ const TONE: Record<string, string> = {
 };
 
 export default function HealthPage() {
-  const [health, setHealth] = useState<HealthReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const load = () => api.health().then(setHealth).catch((e) => setError(e.message));
-    load();
-    const timer = setInterval(load, 15000);
-    return () => clearInterval(timer);
-  }, []);
+  // Refreshed while the tab is visible; an error clears on the next success.
+  const { data: health, error } = usePoll<HealthReport>(api.health, 15000);
+  usePageTitle("System");
 
   return (
     <Shell>

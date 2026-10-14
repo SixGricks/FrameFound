@@ -820,7 +820,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // failing with a generic error. Outside /auth/ a 401 only ever means
     // "no valid session"; inside it, a wrong password is not an expiry.
     if (resp.status === 401 && !path.startsWith("/auth/") && typeof window !== "undefined") {
-      window.location.assign("/login");
+      // Back to the same page after signing in: a session that expired on a
+      // listing used to land on Search.
+      const here = window.location.pathname + window.location.search;
+      const next = here.startsWith("/login") ? "" : `?next=${encodeURIComponent(here)}`;
+      window.location.assign(`/login${next}`);
     }
     throw new ApiError(resp.status, body?.error?.message ?? `Request failed (${resp.status})`);
   }
@@ -944,7 +948,9 @@ export const api = {
     ),
   assetsNear: (lat: number, lon: number, radiusKm: number) =>
     request<NearbyAsset[]>(
-      `/assets/near${query({ lat, lon, radius_km: radiusKm, limit: 120 })}`,
+      // The server's maximum. A place view is silently capped at this many;
+      // the card's count says how many there really are.
+      `/assets/near${query({ lat, lon, radius_km: radiusKm, limit: 200 })}`,
     ),
 
   tags: () => request<TagSummary[]>("/tags"),

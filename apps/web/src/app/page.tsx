@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
+import { usePageTitle } from "@/lib/hooks";
 import Thumb from "@/components/Thumb";
 import { api, type Library, type SearchResponse } from "@/lib/api";
 import { highlight, shortDate, timecode } from "@/lib/format";
@@ -23,6 +24,7 @@ function SearchPage() {
   const router = useRouter();
   const params = useSearchParams();
   const initial = params.get("q") ?? "";
+  usePageTitle(initial ? `Search: ${initial}` : "Search");
 
   const [term, setTerm] = useState(initial);
   const [libraryId, setLibraryId] = useState(params.get("library") ?? "");
@@ -51,9 +53,13 @@ function SearchPage() {
     [],
   );
 
+  // The URL is the one trigger. Submitting used to run the search and then
+  // push the URL, whose change ran it again: the server's heaviest request,
+  // twice per query.
+  const urlLibrary = params.get("library") ?? "";
   useEffect(() => {
-    if (initial) run(initial, params.get("library") ?? "");
-  }, [initial, params, run]);
+    if (initial) run(initial, urlLibrary);
+  }, [initial, urlLibrary, run]);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -61,7 +67,6 @@ function SearchPage() {
     usp.set("q", term.trim());
     if (libraryId) usp.set("library", libraryId);
     router.push(`/?${usp}`);
-    run(term, libraryId);
   }
 
   const hasResults = results !== null;
@@ -127,7 +132,6 @@ function SearchPage() {
                 className="hint"
                 onClick={() => {
                   setTerm(example);
-                  run(example, libraryId);
                   router.push(`/?q=${encodeURIComponent(example)}`);
                 }}
               >

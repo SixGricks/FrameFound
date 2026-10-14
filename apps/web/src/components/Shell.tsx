@@ -43,6 +43,16 @@ const MANAGE = [
   { href: "/security", label: "Security", hint: "Access, 2FA, maps keys" },
 ];
 
+// Remembered across page mounts. The shell is mounted by every page (there is
+// no route-group layout), so each navigation used to re-check the session and
+// blank the header and content until /auth/me answered — two extra requests
+// and a flash on every click. The known user renders at once and is
+// re-validated in the background; alerts refresh on a clock, not per page.
+let knownUser: User | null = null;
+let knownAlerts: SystemAlert[] = [];
+let alertsFetchedAt = 0;
+const ALERTS_EVERY_MS = 60_000;
+
 function isActive(href: string, pathname: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
@@ -50,33 +60,54 @@ function isActive(href: string, pathname: string): boolean {
 export default function Shell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [user, setUser] = useState<User | null>(null);
-  const [checked, setChecked] = useState(false);
+  const [user, setUser] = useState<User | null>(knownUser);
+  const [checked, setChecked] = useState(knownUser !== null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [alerts, setAlerts] = useState<SystemAlert[]>([]);
+  const [alerts, setAlerts] = useState<SystemAlert[]>(knownAlerts);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let live = true;
     api
       .me()
-      .then(setUser)
-      .catch(() => router.replace("/login"))
-      .finally(() => setChecked(true));
+      .then((me) => {
+        knownUser = me;
+        if (live) setUser(me);
+      })
+      .catch(() => {
+        knownUser = null;
+        router.replace("/login");
+      })
+      .finally(() => {
+        if (live) setChecked(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [router]);
 
   // Problems that stop work get a line on every page. The NAS was unmounted
-  // for 39 days while the only signs of it sat on pages nobody opened.
+  // for 39 days while the only signs of it sat on pages nobody opened. Asked
+  // once a minute while the tab is visible, not once per navigation.
   useEffect(() => {
     if (!user) return;
     let live = true;
-    api
-      .alerts()
-      .then((found) => {
+    const refresh = async () => {
+      if (document.hidden) return;
+      try {
+        const found = await api.alerts();
+        knownAlerts = found;
+        alertsFetchedAt = Date.now();
         if (live) setAlerts(found);
-      })
-      .catch(() => undefined);
+      } catch {
+        /* the banner is best effort */
+      }
+    };
+    if (Date.now() - alertsFetchedAt > ALERTS_EVERY_MS) refresh();
+    const timer = setInterval(refresh, ALERTS_EVERY_MS);
     return () => {
       live = false;
+      clearInterval(timer);
     };
   }, [user]);
 
@@ -107,6 +138,9 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   async function signOut() {
     await api.logout().catch(() => undefined);
+    knownUser = null;
+    knownAlerts = [];
+    alertsFetchedAt = 0;
     router.replace("/login");
   }
 

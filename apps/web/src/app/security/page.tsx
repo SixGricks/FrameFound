@@ -13,7 +13,9 @@ import PanelTokensCard from "@/components/PanelTokensCard";
 import TailnetCard from "@/components/TailnetCard";
 import Shell from "@/components/Shell";
 import { api, type AuthSession, type RemoteAccess, type User } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { relativeTime } from "@/lib/format";
+import { usePageTitle } from "@/lib/hooks";
 
 const MODES = [
   {
@@ -56,6 +58,7 @@ export default function SecurityPage() {
   const [sessions, setSessions] = useState<AuthSession[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  usePageTitle("Security");
 
   // TOTP enrolment
   const [password, setPassword] = useState("");
@@ -90,7 +93,13 @@ export default function SecurityPage() {
     setTimeout(() => setNotice(null), 4000);
   }
 
+  // One action at a time. Nothing on this page had a busy state, so a double
+  // click submitted a one-time code twice and could switch the access mode
+  // before the first switch had answered.
+  const [busy, setBusy] = useState(false);
   async function guard(fn: () => Promise<unknown>, ok: string) {
+    if (busy) return;
+    setBusy(true);
     setError(null);
     try {
       await fn();
@@ -98,6 +107,8 @@ export default function SecurityPage() {
       flash(ok);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -130,16 +141,28 @@ export default function SecurityPage() {
                 borderColor: active ? "var(--amber-line)" : undefined,
                 background: active ? "var(--amber-soft)" : undefined,
               }}
-              onClick={() =>
+              disabled={busy || active}
+              onClick={() => {
+                const exposes = mode.id === "domain" || mode.id === "tunnel";
+                // Opening the server to the internet is one click; it should
+                // not be a stray one.
+                if (
+                  exposes &&
+                  !window.confirm(
+                    `Switch to ${mode.title}? This opens FrameFound to the internet. Two-factor authentication should be on first.`,
+                  )
+                ) {
+                  return;
+                }
                 guard(
                   () =>
                     api.updateRemoteAccess({
                       mode: mode.id,
-                      public_access_enabled: mode.id === "domain" || mode.id === "tunnel",
+                      public_access_enabled: exposes,
                     }),
                   `Access mode set to ${mode.title}`,
-                )
-              }
+                );
+              }}
             >
               <p className="eyebrow" style={{ color: active ? "var(--amber)" : undefined }}>
                 {active ? "Active" : "Choose"}
@@ -242,7 +265,13 @@ export default function SecurityPage() {
               <button
                 className="btn"
                 style={{ padding: "4px 10px" }}
-                onClick={() => navigator.clipboard.writeText(enrolment.secret)}
+                onClick={async () =>
+                  flash(
+                    (await copyText(enrolment.secret))
+                      ? "Key copied"
+                      : "Couldn't copy — select the key and copy it by hand",
+                  )
+                }
               >
                 Copy
               </button>
@@ -257,6 +286,7 @@ export default function SecurityPage() {
               />
               <button
                 className="btn btn-primary"
+                disabled={busy}
                 onClick={() =>
                   guard(async () => {
                     const result = await api.totpConfirm(code);
@@ -285,6 +315,7 @@ export default function SecurityPage() {
               />
               <button
                 className="btn btn-primary"
+                disabled={busy}
                 onClick={() =>
                   guard(async () => {
                     const started = await api.totpStart(password);
@@ -408,6 +439,7 @@ export default function SecurityPage() {
         <button
           className="btn"
           style={{ padding: "4px 12px" }}
+          disabled={busy}
           onClick={() =>
             guard(async () => {
               const { revoked } = await api.revokeOtherSessions();

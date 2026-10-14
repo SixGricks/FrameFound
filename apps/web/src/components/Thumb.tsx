@@ -4,7 +4,7 @@
 // lesson clear: a missing thumbnail must say WHY (still processing, no
 // preview available) instead of rendering a broken image.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { mediaUrl, type MediaType } from "@/lib/api";
 
@@ -29,6 +29,13 @@ export default function Thumb({
 }) {
   const [failed, setFailed] = useState(false);
   const working = status === "pending" || status === "processing";
+
+  // A new picture gets a fresh start. Reused for another asset (the Showcase
+  // carousel steps through picks in one slot), one image that failed to
+  // load left "No preview" on every picture after it.
+  useEffect(() => {
+    setFailed(false);
+  }, [assetId, kind]);
 
   if (failed || working) {
     return (

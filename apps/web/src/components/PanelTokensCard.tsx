@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, type PanelToken, type PanelTokenCreated } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { relativeTime, shortDate } from "@/lib/format";
 
 const HOSTS = [
@@ -30,6 +31,8 @@ export default function PanelTokensCard() {
   const [canExport, setCanExport] = useState(true);
   const [fresh, setFresh] = useState<PanelTokenCreated | null>(null);
   const [busy, setBusy] = useState(false);
+  // Whether the shown-once token reached the clipboard: null until tried.
+  const [copied, setCopied] = useState<boolean | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -91,9 +94,9 @@ export default function PanelTokensCard() {
           <div className="toolbar">
             <button
               className="btn btn-primary"
-              onClick={() => navigator.clipboard?.writeText(fresh.token)}
+              onClick={async () => setCopied(await copyText(fresh.token))}
             >
-              Copy token
+              {copied === null ? "Copy token" : copied ? "Copied" : "Select and copy it by hand"}
             </button>
             <button className="btn" onClick={() => setFresh(null)}>
               Done
@@ -140,7 +143,11 @@ export default function PanelTokensCard() {
             onChange={(e) => setCanExport(e.target.checked)}
           />
           <span>
-            Allow exporting bins <span className="faint">— needed to send clips into a timeline</span>
+            Allow export{" "}
+            <span className="faint">
+              — writing an FCP7 bin from Premiere, and grabbing full-size video frames for a
+              Lightroom listing. Searching and adding files in place need only read.
+            </span>
           </span>
         </label>
         <button className="btn btn-primary" disabled={busy || !name.trim()} onClick={create}>
@@ -186,7 +193,13 @@ export default function PanelTokensCard() {
                     ) : (
                       <button
                         className="btn"
+                        disabled={busy}
                         onClick={async () => {
+                          // Irreversible, and the machine using it stops
+                          // working at once: not a one-click action.
+                          if (!window.confirm(`Revoke "${token.name}"? The machine using it loses access immediately.`)) {
+                            return;
+                          }
                           await api.revokePanelToken(token.id);
                           await load();
                         }}

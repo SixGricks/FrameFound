@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 
 import { api, type RemoteAccess } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { shortDate } from "@/lib/format";
 
 const STEPS = [
@@ -69,7 +70,7 @@ export default function TailnetCard() {
                 <button
                   className="btn"
                   style={{ padding: "3px 10px" }}
-                  onClick={() => navigator.clipboard?.writeText(status.tailnet_url)}
+                  onClick={() => void copyText(status.tailnet_url)}
                 >
                   Copy
                 </button>

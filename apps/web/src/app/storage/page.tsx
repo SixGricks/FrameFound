@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import Shell from "@/components/Shell";
 import { api, type Mount, type StorageReport } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 
 const ROLE_TONE: Record<string, string> = { media: "ok", cache: "warn" };
 
@@ -127,7 +128,7 @@ export default function StoragePage() {
                 <button
                   className="btn"
                   style={{ padding: "3px 10px" }}
-                  onClick={() => navigator.clipboard?.writeText(fstab)}
+                  onClick={() => void copyText(fstab)}
                 >
                   Copy
                 </button>
@@ -188,7 +189,7 @@ export default function StoragePage() {
                 </td>
               </tr>
             ))}
-            {!report?.mounts.length && (
+            {report && !report.mounts.length && (
               <tr>
                 <td colSpan={7} className="faint">
                   Nothing mounted yet.

@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import Shell from "@/components/Shell";
+import { usePageTitle } from "@/lib/hooks";
 import Thumb from "@/components/Thumb";
 import {
   api,
@@ -139,6 +140,7 @@ function PlaceCard({
           title={`Open larger — ${pick.relative_path}`}
         >
           <Thumb
+            key={`${pick.asset_id}@${pick.frame_ms ?? ""}`}
             assetId={pick.asset_id}
             mediaType="image"
             status="ready"
@@ -201,6 +203,7 @@ export default function ShowcasePage() {
   // Labels of the places to search; empty = every place.
   const [onlyPlaces, setOnlyPlaces] = useState<Set<string>>(new Set());
   const [form, setForm] = useState(DEFAULTS);
+  usePageTitle("Showcase");
   const [places, setPlaces] = useState<ShowcasePlace[] | null>(null);
   // What the results on screen were searched for — the form may have moved on.
   const [resultKind, setResultKind] = useState<ShowcaseKind>("finished");

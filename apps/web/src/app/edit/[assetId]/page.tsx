@@ -198,6 +198,17 @@ export default function EditPage() {
 
   async function applyToListing() {
     if (!listingId) return;
+    // One click replaced every photograph's own adjustments — after a
+    // sixty-photo auto-edit run, that is sixty recipes gone with no history.
+    const photos = (listing?.items ?? []).filter((i) => i.media_type === "image").length;
+    const which = photos ? `all ${photos} photos` : "every photo";
+    if (
+      !window.confirm(
+        `Replace the edits on ${which} in this listing with this look? Each photo's own adjustments are superseded.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     try {
       await api.saveDevelop(assetId, recipe);
@@ -313,8 +324,32 @@ export default function EditPage() {
     .sort((a, b) => a.position - b.position)
     .map((i) => i.asset_id);
   const at = siblings.indexOf(assetId);
-  const go = (target: string) =>
-    router.push(`/edit/${target}?listing=${listingId}`);
+
+  // Leaving saves first. Stepping through a listing with Next, or going back
+  // to it, discarded the current photograph's adjustments without a word.
+  const leave = async (href: string) => {
+    if (dirty) {
+      try {
+        await api.saveDevelop(assetId, recipe);
+        setDirty(false);
+      } catch {
+        setError("Could not save before moving on — the edits are still here.");
+        return;
+      }
+    }
+    router.push(href);
+  };
+  const go = (target: string) => leave(`/edit/${target}?listing=${listingId}`);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   return (
     <Shell>
@@ -340,13 +375,21 @@ export default function EditPage() {
 
       <div className="toolbar">
         {listingId ? (
-          <Link className="btn" href={`/listings/${listingId}`} style={{ padding: "6px 12px" }}>
+          <button
+            className="btn"
+            style={{ padding: "6px 12px" }}
+            onClick={() => leave(`/listings/${listingId}`)}
+          >
             ← Listing
-          </Link>
+          </button>
         ) : (
-          <Link className="btn" href={`/assets/${assetId}`} style={{ padding: "6px 12px" }}>
+          <button
+            className="btn"
+            style={{ padding: "6px 12px" }}
+            onClick={() => leave(`/assets/${assetId}`)}
+          >
             ← Asset
-          </Link>
+          </button>
         )}
         {at > 0 && (
           <button className="btn" onClick={() => go(siblings[at - 1]!)}>

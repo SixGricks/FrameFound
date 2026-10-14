@@ -4,11 +4,10 @@
 // "what it does", and a failure feed is always visible rather than buried
 // in container logs.
 
-import { useEffect, useState } from "react";
-
 import Shell from "@/components/Shell";
 import { api, type ProcessingReport } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
+import { usePageTitle, usePoll } from "@/lib/hooks";
 
 const QUEUE_LABELS: Record<string, string> = {
   visuals: "Thumbnails & posters",
@@ -27,23 +26,10 @@ const TASK_LABELS: Record<string, string> = {
 };
 
 export default function ProcessingPage() {
-  const [report, setReport] = useState<ProcessingReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      api
-        .processing()
-        .then((data) => !cancelled && setReport(data))
-        .catch((err) => !cancelled && setError(err.message));
-    load();
-    const timer = setInterval(load, 5000); // live view while work drains
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
+  // Live view while work drains. A hidden tab stops asking, and one failed
+  // tick no longer leaves its error on screen after the next one succeeds.
+  const { data: report, error } = usePoll<ProcessingReport>(api.processing, 5000);
+  usePageTitle("Processing");
 
   return (
     <Shell>

@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { api } from "@/lib/api";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
@@ -14,13 +15,18 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Where the expired session was. Only a path on this site: an absolute or
+  // protocol-relative value is not followed.
+  const next = params.get("next") ?? "";
+  const destination = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
       await api.login(email, password, needsCode ? totpCode : undefined);
-      router.push("/");
+      router.push(destination);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign-in failed";
       // The server asks for a second factor only after the password checks
@@ -102,5 +108,14 @@ export default function LoginPage() {
         </button>
       </form>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  // useSearchParams needs a Suspense boundary for the static shell.
+  return (
+    <Suspense fallback={<main className="authpage" />}>
+      <LoginForm />
+    </Suspense>
   );
 }

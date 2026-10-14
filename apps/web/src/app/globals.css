@@ -32,6 +32,12 @@
   --font-display: var(--font-instrument), Georgia, serif;
   --font-ui: var(--font-archivo), "Helvetica Neue", sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  /* The theme is dark-only. Without this the browser drew its own controls —
+     select popups, number spinners, the editor's range sliders, most
+     checkboxes — in light UA chrome on the charcoal page. */
+  color-scheme: dark;
+  accent-color: var(--amber);
 }
 
 * {
@@ -1235,7 +1241,7 @@ h2 {
   list-style: none;
   max-height: 260px;
   overflow-y: auto;
-  background: var(--surface-1);
+  background: var(--surface); /* --surface-1 was never defined: the list floated transparent */
   border: 1px solid var(--line-bright);
   border-radius: var(--radius);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.36);
@@ -1354,4 +1360,34 @@ h2 {
   margin-left: auto;
   color: inherit;
   white-space: nowrap;
+}
+
+/* ---- 2026-10 review ------------------------------------------------------ */
+
+/* Links inside prose were indistinguishable from the text around them. Tiles,
+   buttons and nav links keep their own styling. */
+.card p a,
+.card .faint a,
+p a,
+.empty a,
+.alertbar a,
+small a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* A pressed toggle, for buttons that switch a view rather than act. */
+.btn[aria-pressed="true"] {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+/* On a touch screen there is no hover to reveal the "down to here" control,
+   so an invisible button covered the bottom of every face tile and a tap
+   there silently selected a range. Shown outright where nothing hovers. */
+@media (hover: none) {
+  .facepick-downto {
+    opacity: 1;
+  }
 }

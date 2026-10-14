@@ -20,6 +20,7 @@ import { useParams, useRouter } from "next/navigation";
 import Autocomplete from "@/components/Autocomplete";
 import FaceCrop from "@/components/FaceCrop";
 import Shell from "@/components/Shell";
+import { usePageTitle } from "@/lib/hooks";
 import { api, type FaceRef, type PersonDetail } from "@/lib/api";
 
 // The id-taking endpoints accept at most this many per call.
@@ -32,6 +33,7 @@ export default function PersonPage() {
 
   const [person, setPerson] = useState<PersonDetail | null>(null);
   const [suggested, setSuggested] = useState<FaceRef[]>([]);
+  usePageTitle(person?.name || "People");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -245,6 +247,7 @@ export default function PersonPage() {
               type="button"
               className="facepick"
               data-selected={chosen.has(face.face_id)}
+              aria-pressed={chosen.has(face.face_id)}
               onClick={(event) => choose(list, index, event.shiftKey, isPending)}
               title={`${face.filename} — shift-click to select a range`}
             >

@@ -307,6 +307,7 @@ export default function SlideshowsPage() {
                     <button
                       className="btn"
                       onClick={async () => {
+                        if (!window.confirm("Delete this slideshow and its rendered video?")) return;
                         await api.deleteSlideshow(show.id);
                         await loadShows();
                       }}

@@ -150,7 +150,10 @@ function ListingsInner() {
             disabled={busy}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && folders.length === 0) createEmpty();
+              // The dropdown promises "press Enter for an empty listing";
+              // Enter used to be ignored while it was open.
+              if (e.key === "Enter" && name.trim()) createEmpty();
+              if (e.key === "Escape") setFolders([]);
             }}
             aria-label="New listing address"
           />

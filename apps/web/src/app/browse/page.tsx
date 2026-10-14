@@ -3,6 +3,12 @@
 // Contact-sheet browse. Defaults to "ready to view" because the first real
 // session surfaced thousands of still-processing assets as blank tiles —
 // the state is now filterable and always labelled rather than hidden.
+//
+// Every filter, the sort and the page live in the URL. Pressing Back from an
+// asset used to land on page 1 of all libraries, recently added, whatever had
+// been chosen; and the Libraries page's "Browse" link (`?library=…`) was
+// ignored. The URL is the state, so a view is linkable, survives a reload and
+// comes back as it was.
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -12,35 +18,58 @@ import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
 import { api, type AssetSummary, type Library } from "@/lib/api";
 import { duration, resolution, shortDate } from "@/lib/format";
+import { usePageTitle } from "@/lib/hooks";
 
 const PAGE_SIZE = 60;
+
+// The last page shown, so Back renders it at once (and the browser has a
+// height to restore the scroll position to) while it is re-fetched.
+let lastShown: { key: string; items: AssetSummary[]; total: number } | null = null;
 
 function BrowsePage() {
   const params = useSearchParams();
   const router = useRouter();
-  // Arriving from a tag hit or a Places card: the filter comes in on the URL so
-  // the view is linkable and survives a reload.
-  const [tag, setTag] = useState(params.get("tag") ?? "");
-  const [includeSuggested, setIncludeSuggested] = useState(false);
-  const [libraries, setLibraries] = useState<Library[]>([]);
-  const [libraryId, setLibraryId] = useState("");
-  const [mediaType, setMediaType] = useState("");
-  const [previewable, setPreviewable] = useState(true);
-  const [sort, setSort] = useState("recent");
-  const [page, setPage] = useState(1);
+  usePageTitle("Browse");
 
-  const [items, setItems] = useState<AssetSummary[]>([]);
-  const [total, setTotal] = useState(0);
+  const tag = params.get("tag") ?? "";
+  const includeSuggested = params.get("suggested") === "1";
+  const libraryId = params.get("library") ?? "";
+  const mediaType = params.get("media") ?? "";
+  const previewable = params.get("all") !== "1";
+  const sort = params.get("sort") ?? "recent";
+  const page = Math.max(1, Number(params.get("page") ?? "1") || 1);
+  const key = params.toString();
+
+  const [libraries, setLibraries] = useState<Library[]>([]);
+  const [items, setItems] = useState<AssetSummary[]>(lastShown?.key === key ? lastShown.items : []);
+  const [total, setTotal] = useState(lastShown?.key === key ? lastShown.total : 0);
   const [busy, setBusy] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.libraries().then(setLibraries).catch(() => undefined);
   }, []);
 
-  const load = useCallback(async () => {
+  /** Change filters in the URL. A new filter starts at page 1. */
+  const update = useCallback(
+    (changes: Record<string, string | null>, keepPage = false) => {
+      const usp = new URLSearchParams(params.toString());
+      for (const [name, value] of Object.entries(changes)) {
+        if (value === null || value === "") usp.delete(name);
+        else usp.set(name, value);
+      }
+      if (!keepPage) usp.delete("page");
+      const s = usp.toString();
+      router.replace(s ? `/browse?${s}` : "/browse", { scroll: false });
+    },
+    [params, router],
+  );
+
+  useEffect(() => {
+    let live = true;
     setBusy(true);
-    try {
-      const data = await api.assets({
+    api
+      .assets({
         library_id: libraryId || undefined,
         media_type: mediaType || undefined,
         previewable: previewable || undefined,
@@ -49,23 +78,28 @@ function BrowsePage() {
         sort,
         page,
         page_size: PAGE_SIZE,
+      })
+      .then((data) => {
+        if (!live) return;
+        lastShown = { key, items: data.items, total: data.total };
+        setItems(data.items);
+        setTotal(data.total);
+        setError(null);
+      })
+      .catch((err) => {
+        // A failed request is not "no assets match"; it is its own message.
+        if (live) setError(err instanceof Error ? err.message : "Could not load assets");
+      })
+      .finally(() => {
+        if (live) setBusy(false);
       });
-      setItems(data.items);
-      setTotal(data.total);
-    } finally {
-      setBusy(false);
-    }
-  }, [libraryId, mediaType, previewable, tag, includeSuggested, sort, page]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+    return () => {
+      live = false;
+    };
+  }, [key, libraryId, mediaType, previewable, tag, includeSuggested, sort, page]);
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const reset = <T,>(setter: (v: T) => void) => (value: T) => {
-    setter(value);
-    setPage(1);
-  };
+  const setPage = (n: number) => update({ page: n <= 1 ? null : String(n) }, true);
 
   return (
     <>
@@ -81,10 +115,7 @@ function BrowsePage() {
             <button
               className="chipx"
               aria-label="Clear the tag filter"
-              onClick={() => {
-                setTag("");
-                setPage(1);
-              }}
+              onClick={() => update({ tag: null, suggested: null })}
             >
               ×
             </button>
@@ -93,10 +124,7 @@ function BrowsePage() {
             <input
               type="checkbox"
               checked={includeSuggested}
-              onChange={(e) => {
-                setIncludeSuggested(e.target.checked);
-                setPage(1);
-              }}
+              onChange={(e) => update({ suggested: e.target.checked ? "1" : null })}
             />
             Include suggestions I haven&rsquo;t reviewed
           </label>
@@ -107,7 +135,7 @@ function BrowsePage() {
         <select
           className="select"
           value={libraryId}
-          onChange={(e) => reset(setLibraryId)(e.target.value)}
+          onChange={(e) => update({ library: e.target.value })}
           aria-label="Library"
         >
           <option value="">All libraries</option>
@@ -121,7 +149,7 @@ function BrowsePage() {
         <select
           className="select"
           value={mediaType}
-          onChange={(e) => reset(setMediaType)(e.target.value)}
+          onChange={(e) => update({ media: e.target.value })}
           aria-label="Media type"
         >
           <option value="">All media</option>
@@ -133,7 +161,7 @@ function BrowsePage() {
         <select
           className="select"
           value={sort}
-          onChange={(e) => reset(setSort)(e.target.value)}
+          onChange={(e) => update({ sort: e.target.value === "recent" ? null : e.target.value })}
           aria-label="Sort"
         >
           <option value="recent">Recently added</option>
@@ -151,7 +179,7 @@ function BrowsePage() {
           <input
             type="checkbox"
             checked={previewable}
-            onChange={(e) => reset(setPreviewable)(e.target.checked)}
+            onChange={(e) => update({ all: e.target.checked ? null : "1" })}
             style={{ accentColor: "var(--amber)" }}
           />
           Ready to view
@@ -161,16 +189,30 @@ function BrowsePage() {
           <span className="faint mono" style={{ fontSize: "0.78rem" }}>
             {page} / {pages}
           </span>
-          <button className="btn" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+          <button
+            className="btn"
+            disabled={page <= 1}
+            onClick={() => setPage(page - 1)}
+            aria-label="Previous page"
+          >
             ←
           </button>
-          <button className="btn" disabled={page >= pages} onClick={() => setPage(page + 1)}>
+          <button
+            className="btn"
+            disabled={page >= pages}
+            onClick={() => setPage(page + 1)}
+            aria-label="Next page"
+          >
             →
           </button>
         </div>
       </div>
 
-      {busy && items.length === 0 ? (
+      {error ? (
+        <div className="card" role="alert" style={{ borderColor: "var(--ember)" }}>
+          Could not load this page: {error}
+        </div>
+      ) : busy && items.length === 0 ? (
         <div className="empty">Loading…</div>
       ) : items.length === 0 ? (
         <div className="empty">

@@ -14,6 +14,7 @@ import { useParams, useRouter } from "next/navigation";
 
 import ListingNamingTable from "@/components/ListingNamingTable";
 import Shell from "@/components/Shell";
+import { usePageTitle } from "@/lib/hooks";
 import SkyPicker from "@/components/SkyPicker";
 import Thumb from "@/components/Thumb";
 import {
@@ -40,6 +41,7 @@ export default function ListingPage() {
 
   const [listing, setListing] = useState<ListingDetail | null>(null);
   const [rooms, setRooms] = useState<RoomOption[]>([]);
+  usePageTitle(listing?.name ?? "Listing");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);

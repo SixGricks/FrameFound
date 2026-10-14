@@ -11,6 +11,7 @@ import Shell from "@/components/Shell";
 import FacesInPhoto from "@/components/FacesInPhoto";
 import TagEditor from "@/components/TagEditor";
 import Thumb from "@/components/Thumb";
+import { copyText } from "@/lib/clipboard";
 import {
   api,
   mediaUrl,
@@ -79,8 +80,8 @@ function DetailPage() {
 
   async function copyPath() {
     if (!asset) return;
-    await navigator.clipboard.writeText(asset.relative_path);
-    setNotice("Path copied");
+    const copied = await copyText(asset.relative_path);
+    setNotice(copied ? "Path copied" : "Couldn't copy — select the path and copy it by hand");
     setTimeout(() => setNotice(null), 2200);
   }
 
