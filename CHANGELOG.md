@@ -6,6 +6,27 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (2026-10-14 review)
+- Server performance: the alerts banner probes shares off the event loop,
+  in parallel, with a timeout and a 30 s cache (one hung CIFS mount froze
+  the whole API for 59 s); the photo editor decodes and colour-manages a
+  photograph once per editing session instead of on every slider notch;
+  Showcase no longer sends 21,000-parameter `IN` lists or copies every
+  embedding into Python objects, and encodes its prompts once; `GET /people`
+  fetches covers in one query and honours the chosen cover; the session row
+  is written about once a minute rather than on every request; derivatives
+  carry `ETag`/`Last-Modified` and answer 304; nearest-asset, similar-media
+  and folder queries order, de-duplicate and filter in SQL before the limit;
+  pgvector searches set `hnsw.ef_search` so a library filter cannot starve
+  the result; indexes for Browse's default order and the jobs table
+  (migration 0024); the scanner's visual repair sweep runs every 30 minutes
+  instead of 5 and face clustering is queued only when faces changed.
+- Security: `/api/docs` is not served to the internet; the second-factor
+  endpoints share the login rate limiter; the `readonly` role is enforced.
+- Panels: see [docs/panels.md](docs/panels.md) ("2026-10-14 — review") —
+  Premiere panel 0.4.0, Lightroom plugin 0.7.0, `GET /panel/me`, name
+  matches before visual hits.
+
 ### Added
 - Slideshow rendering: propose a themed selection, review it, render an MP4.
   Ken Burns per still, theme colour grade, crossfades, optional operator-supplied

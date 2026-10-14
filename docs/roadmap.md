@@ -3,6 +3,196 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+## Where things stand — 2026-10-14 (system review: performance, web, panels)
+
+Asked for: a systematic look at performance, the web UI and both Adobe
+clients. Done as four parallel code reviews (server performance, web UI/UX,
+the two panels against their API, and the twelve items the September review
+left open), each finding re-read in the code before anything changed, and set
+against what production actually did — the database's own statistics, the
+API and scanner logs, and timings taken inside the running containers.
+
+**What production said first.**
+- **All three shares were unreachable for about fifteen hours on 10-13**
+  (06:26 to about 22:00). Every scan in that window failed as *unmounted* and
+  nothing was flagged missing: September's guard worked. Nobody was told,
+  which is the push-alert item below, now with a second outage behind it.
+- **The API froze for 59 seconds on 10-12.** `/system/alerts`, which every
+  page polls, read the CIFS mountpoints with `os.scandir` on the event loop;
+  one hung share held every request (`api.event_loop_blocked` in the log).
+- **The scanner's five-minute maintenance pass was the database's largest
+  consumer**: 187 million index probes each on `frames` and `derivatives`
+  and 39,000 full scans of `assets` in ten weeks, for a race that the sweep's
+  own one-hour grace period already keeps away. Face clustering was queued
+  268 times a day for the same 828 loose faces that never cluster.
+- **A Celery task's setup costs 0.09 s, not the "~3 s" the code claimed**
+  (measured in the worker container: engine 1 ms after the first, first
+  connection 85 ms). The "persistent worker loop" refactor the comment
+  argued for is not worth its risk; the dead batch task it justified is gone.
+- **Thirty days of traffic: 50 thumbnails and 44 frame grabs.** The operator
+  used the system for the GELCO batches and little else; the web findings
+  below matter for the next session more than for load.
+- The Docker build cache is back to **54.6 GB reclaimable** (26.6 at the
+  last review).
+
+### What the review fixed
+
+Every fix below has a test in `tests/test_review_2026_10.py` (24 of them)
+or an existing suite; each fails against the code as it was.
+
+**Server — performance**
+- `/system/alerts` and `/system/health` probe the shares in worker threads,
+  in parallel, with a 10 s timeout and a 30 s cache; a share that does not
+  answer is reported as unreachable rather than waited for.
+- The photo editor decodes and colour-manages a photograph **once per
+  editing session** (a per-asset cache of the 1600 px base), and the JPEG
+  decoder is asked for a quarter of the pixels; every slider notch used to
+  re-read the 45 MP original from the share and run the ICC transform at
+  full size. `_original_path`'s stat moved off the event loop.
+- Showcase: the face-count and thumbnail lookups were `IN (<every id>)`
+  lists of 21,000 parameters — asyncpg refuses more than 32,767, so Showcase
+  would have stopped working outright in about fifteen months. Joined on
+  the same scope instead. Embeddings come back as plain floats
+  (`tolist()`), not 512 numpy scalars each; the ~40 prompt vectors are
+  encoded once per provider instead of per search (1.4 s a search); the
+  near-duplicate test is one matrix product instead of a Python loop.
+- `GET /people` fetched covers one query per person (100 round trips a
+  page); one window query now, and the operator's chosen cover is finally
+  honoured on the list and detail pages (only the typeahead honoured it).
+- Every authenticated request — fifty thumbnails on a Browse page — rewrote
+  the session row and committed. The expiry is written once it has drifted
+  a minute. (The first version of this fix lost the write to an autoflush;
+  the test caught it.)
+- Derivatives and frames carry `ETag` and `Last-Modified`, answer 304, and
+  cache for a day; the frame endpoint and the scenes strip stop loading
+  512-float embeddings they never read.
+- pgvector searches set `hnsw.ef_search` for the transaction: the index
+  yields 40 rows before any filter, so a library holding a fifth of the
+  frames got eight hits for a limit of 25. "More like this" de-duplicates
+  per asset *before* the limit (DISTINCT ON over the nearest frames).
+- `/assets/near` orders in SQL (it took the box's first limit×4 rows in
+  arbitrary order and sorted those); `folders/assets` is a LIKE prefix
+  match (it loaded every image row of the library — 20,000 — to keep
+  seventy, and lost folders past the 20,000th); listing curation measures
+  sharpness on the local thumbnail instead of the original over the share.
+- Places clustering runs off the event loop. Visual search asks "is anything
+  indexed" with one row, not a count. `detect_faces` reads two columns for
+  the rejected set, not whole rows.
+- Indexes (migration 0024): `assets.first_indexed_at` for Browse's default
+  order; `jobs (task_name, asset_id)` and `(task_name, started_at)` for the
+  sweeps, whose `settled()` is now a correlated NOT EXISTS. The visual
+  repair sweep runs every 30 minutes instead of 5; clustering is queued only
+  when the loose or total face counts changed since the last request.
+- Drive folder listing stops at the first page that proves the folder is
+  over the cap (it paged a 20,000-image folder to count it).
+
+**Server — the twelve items from September.** All twelve were still open;
+none of the fourteen commits since had touched them. Eleven are fixed:
+`/people` covers; name and tag suggestions (an unordered LIMIT before the
+ranking); similar-asset de-duplication; `/api/docs` and `/api/openapi.json`
+are refused from the internet; the TOTP start/confirm/disable endpoints
+share the login rate limiter (a stolen cookie could guess six-digit codes at
+full speed); the `readonly` role is enforced at the one place every route
+passes through (51 write routes accepted it; self-service under `/auth/`
+stays open); `index_visual_batch` deleted; sky uploads apply the recipe's
+name rule (a sky could be added and never chosen); `reorder` refuses
+repeated ids and renumbers 0..n-1; 16-bit *greyscale* TIFF/PNG scale instead
+of clipping to white (`media/pixels.py`); Drive listing paging. The twelfth
+— 369 BRAW clips without a duration — needs the decoder build, below.
+
+**Panels** — [docs/panels.md](panels.md) "2026-10-14 — review" has the
+detail. Server: name matches rank before visual hits and offline files are
+left out (Lightroom's path diagnostic was showing another photograph's
+paths); `hit_ms` and `matched` on results; `GET /panel/me`; the grab race.
+Premiere 0.4.0: thumbnails fetched once, timeouts, the real reason when a
+direct import fails, profiles listed once per workstation, the XML named
+after the search, the token's scopes on the connection line, manifest
+version matching the build. Lightroom 0.7.0: Search adds one photograph at a
+time and files the results in a collection, a failed grab reports the
+server's reason, the paths diagnostic matches the filename exactly, listing
+captions are written to Lightroom, a 60 s search timeout for the model's
+first load, Test connection names the token. `copy_panel.py` removed; the
+token committed in `docs/testing/2026-07-31-panel-first-run.md` (revoked
+the day it was made, never used) redacted.
+
+**Web**
+- The shell keeps the known session and alerts across page mounts, so a
+  navigation no longer blanks the page and re-asks `/auth/me`; alerts
+  refresh once a minute while the tab is visible.
+- Browse keeps every filter, the sort and the page in the URL: Back returns
+  to the page you left, and the Libraries page's `?library=` link works. A
+  failed request is shown as one, not as "No assets match".
+- Copy buttons work over plain HTTP (the recommended LAN and tailnet access):
+  a fallback copier, and the token/secret/path buttons say whether it worked.
+- The editor saves before Previous/Next/back and warns on close with unsaved
+  changes; "Apply to whole listing" asks first, with the count.
+- Security: one action at a time (double clicks submitted codes twice);
+  switching to a public mode asks first. Revoking a token and deleting a
+  slideshow ask first.
+- A session that expires returns to the page it expired on after sign-in.
+- `color-scheme: dark` and `accent-color` (native selects, sliders and
+  checkboxes rendered in light UA chrome); the Autocomplete list had an
+  undefined background token and floated transparent; prose links are
+  visible; the face-review "down to here" control is visible on touch
+  screens and selection carries `aria-pressed`; pager buttons are labelled.
+- Processing and System stop polling while hidden and clear a stale error;
+  pages set the tab title; Search runs once per query instead of twice;
+  Storage no longer says "Nothing mounted yet" while loading; Enter creates
+  the empty listing the dropdown promises; a Showcase picture that failed to
+  load no longer sticks for every later pick.
+
+### Checked and dismissed
+- The per-task engine refactor (measured above).
+- The new 16-bit TIFF frame grabs: Pillow opens 16-bit *RGB* TIFF as 8-bit
+  RGB, so only single-channel 16-bit files were ever clipped.
+- Three tests fail on this Windows machine and not on the VM
+  (`test_compare`, `test_slideshow_pipeline`, `test_training_pairs`): path
+  separators in the tests, not the code.
+
+### Found, not yet fixed
+- Server: auto-edit decodes each photograph two to three times a run;
+  `suggest_for_tag` loads all 38k frame embeddings into Python per tag edit;
+  face clustering is pure-Python O(faces × clusters); `detect_faces` rebuilds
+  each person's prototype array per face; no trigram index for filename
+  search; the scanner rewrites `last_verified_at` on every unchanged asset
+  each scan; `search_folders` still scans 20,000 paths; slideshow theme
+  vectors are re-encoded per propose.
+- Web: the shell still mounts per page (a route-group layout would carry
+  the session once); request failures still read as "nothing yet" on Tags,
+  Libraries, Places, People, Duplicates and Slideshows; listing detail does
+  not fit a phone and reordering is drag-only; Showcase's number fields
+  cannot be cleared; 2FA enrolment shows the secret but never a QR code; a
+  place view is capped at 200 with no "of N"; Autocomplete's duplicated ids
+  and missing `aria-activedescendant`; PlaceMap stacks a zoom control per
+  re-cluster; several inline-padded buttons are under 24 px on touch; the
+  listing "Add photos" panel is blank while a folder loads; the editor
+  re-fetches the whole listing on every Prev/Next.
+- Panels: transcript hits as Premiere markers (`fcp7.Marker` is waiting);
+  a bin per search; downloading the proxy when no profile applies; "Reveal
+  in Explorer"; thumbnails and per-place sub-collections in Lightroom's
+  Search; `io.open` on a non-ASCII folder name on Windows; a `null` inside a
+  JSON array makes a hole in the decoder; the Lua SDK stub harness was never
+  committed.
+
+### Needs the operator
+1. `manage.sh prune` — 54.6 GB reclaimable — and the weekly schedule the
+   September entry asked for.
+2. Backups still live only on the data disk.
+3. Premiere: with the panel connected, narrow `manifest.json`'s `domains`
+   to the server and run one import; `importFiles` has still never executed.
+4. BRAW durations: add a frame-count flag to the locally built
+   `braw-decode` (`infrastructure/braw/build.sh` already patches it), set
+   `duration_s` in `probe_braw`, re-probe the 369 clips.
+
+### Next up (replaces the 2026-09-24 list)
+1. Push alerts for share-down, backup-stale and disk-full — two outages now.
+2. The operator items above.
+3. Listing delivery to Drive; draft listings from new shoot folders.
+4. Postgres in CI and a browser smoke test per page (the web findings above
+   were all invisible to `tsc` and ESLint).
+5. The "found, not yet fixed" lists, web first — the route-group layout
+   fixes the most at once.
+
 ## Where things stand — 2026-09-24 (system review)
 
 **The NAS was unmounted for 39 days and nothing said so.** On Aug 16 the VM
