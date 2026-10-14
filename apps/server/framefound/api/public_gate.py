@@ -23,6 +23,7 @@ from framefound.errors import error_response
 log = structlog.get_logger()
 
 ALWAYS_ALLOWED = ("/healthz", "/readyz")
+DOCS_PATHS = ("/api/docs", "/api/openapi.json")
 # The gate reads a database row; cache it briefly so a hot path does not add a
 # query per request. A few seconds of staleness is acceptable for a control
 # whose purpose is "stop this within a minute", not "within a millisecond".
@@ -60,4 +61,9 @@ class PublicAccessGate(BaseHTTPMiddleware):
         if origin == "internet" and not await self._public_allowed():
             log.warning("public_gate.blocked", path=request.url.path)
             return error_response(403, "Remote access is turned off for this server")
+        if origin == "internet" and request.url.path in DOCS_PATHS:
+            # FastAPI's documentation routes carry no authentication, so with
+            # public access on they listed every endpoint to anyone who
+            # found the host. They are for the operator, on the local network.
+            return error_response(403, "The API documentation is available on the local network")
         return await call_next(request)

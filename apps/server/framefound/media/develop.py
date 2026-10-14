@@ -27,7 +27,9 @@ from PIL import Image
 _LUMA = (0.2126, 0.7152, 0.0722)
 
 
-def open_for_render(path: Path, already_normalized: bool = False) -> Image.Image:
+def open_for_render(
+    path: Path, already_normalized: bool = False, max_edge: int | None = None
+) -> Image.Image:
     """The pixels every render path starts from: upright and in sRGB.
 
     One function because the paths used to disagree. Export flattened
@@ -39,14 +41,28 @@ def open_for_render(path: Path, already_normalized: bool = False) -> Image.Image
 
     `already_normalized` is for object-removal results, which were made
     upright and sRGB when their chain started; doing either again is wrong.
+
+    `max_edge` asks for a preview no longer than that on its long side. The
+    JPEG decoder then produces a quarter of the pixels directly, and the
+    profile transform — per-pixel and scale-free, the module docstring's own
+    argument — runs on the small image instead of a 45 MP one.
     Returns a loaded RGB copy, independent of the file.
     """
     from PIL import ImageCms, ImageOps
 
+    from framefound.media.pixels import to_rgb8
+
     with Image.open(path) as img:
+        if max_edge is not None:
+            img.draft("RGB", (max_edge, max_edge))
         if already_normalized:
-            return img.convert("RGB")
+            image = to_rgb8(img)
+            if max_edge is not None:
+                image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+            return image
         image = ImageOps.exif_transpose(img) or img
+        if max_edge is not None:
+            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         icc = image.info.get("icc_profile")
         if icc:
             # A malformed profile is the camera's problem; the photograph
@@ -60,7 +76,7 @@ def open_for_render(path: Path, already_normalized: bool = False) -> Image.Image
                 )
                 if converted is not None:
                     image = converted
-        return image.convert("RGB")
+        return to_rgb8(image)
 
 
 # Slider ranges, matched by the API's validation and the UI's slider bounds.
@@ -100,7 +116,10 @@ RECIPE_FIELDS = {
 # stored recipe can never be a path traversal.
 SKY_FIELDS = {"feather": (0.0, 0.2), "shift": (-0.5, 0.5), "relight": (0.0, 1.0)}
 SKY_DEFAULTS = {"feather": 0.02, "shift": 0.0, "relight": 0.4}
-_SKY_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,118}$")
+# The one rule for a sky's name, shared with the upload endpoint so a sky
+# that can be added can also be chosen.
+SKY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,118}$")
+_SKY_NAME_OK = SKY_NAME_RE
 
 
 def clean_recipe(raw: dict[str, Any]) -> dict[str, Any]:

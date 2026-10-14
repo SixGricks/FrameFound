@@ -167,35 +167,64 @@ async def list_people(
         ).all()
     }
 
-    out: list[PersonOut] = []
-    for person in people:
-        cover = await _cover_for(db, person)
-        out.append(
-            PersonOut(
-                id=person.id,
-                name=person.name or UNNAMED_LABEL,
-                slug=person.slug,
-                named=bool(person.name),
-                confirmed_count=counts.get((person.id, "confirmed"), 0),
-                pending_count=counts.get((person.id, "detected"), 0),
-                cover=cover,
-            )
+    covers = await _cover_faces(db, people)
+    return [
+        PersonOut(
+            id=person.id,
+            name=person.name or UNNAMED_LABEL,
+            slug=person.slug,
+            named=bool(person.name),
+            confirmed_count=counts.get((person.id, "confirmed"), 0),
+            pending_count=counts.get((person.id, "detected"), 0),
+            cover=covers.get(person.id),
         )
-    return out
+        for person in people
+    ]
+
+
+async def _cover_faces(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, FaceOut]:
+    """One representative face per person, for a whole page at once.
+
+    The cover the operator chose comes first (`_covers`), while it is still
+    theirs. Otherwise a confirmed face over an unreviewed guess, the
+    detector's most confident first — a cover taken from a guess would make
+    the card assert something nobody agreed to. This was one query per
+    person: a page of a hundred cards cost a hundred round trips, and the
+    chosen cover was honoured only by the name typeahead (review, 2026-09/10).
+    """
+    covers = await _covers(db, people)
+    missing = [p.id for p in people if p.id not in covers]
+    if not missing:
+        return covers
+    rank = (
+        func.row_number()
+        .over(
+            partition_by=Face.person_id,
+            order_by=(Face.source != "confirmed", Face.detection_score.desc()),
+        )
+        .label("rank")
+    )
+    ranked = (
+        select(Face.id.label("face_id"), rank)
+        .where(Face.person_id.in_(missing), Face.source != "rejected")
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(Face, Asset)
+            .join(ranked, ranked.c.face_id == Face.id)
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(ranked.c.rank == 1)
+        )
+    ).all()
+    for face, asset in rows:
+        if face.person_id is not None:
+            covers[face.person_id] = _face_out(face, asset)
+    return covers
 
 
 async def _cover_for(db: DbDep, person: Person) -> FaceOut | None:
-    """A representative face. Prefers a confirmed one — a cover taken from an
-    unreviewed guess would make the card assert something nobody agreed to."""
-    stmt = (
-        select(Face, Asset)
-        .join(Asset, Asset.id == Face.asset_id)
-        .where(Face.person_id == person.id)
-        .order_by(Face.source != "confirmed", Face.detection_score.desc())
-        .limit(1)
-    )
-    row = (await db.execute(stmt)).first()
-    return _face_out(row[0], row[1]) if row else None
+    return (await _cover_faces(db, [person])).get(person.id)
 
 
 class NameSuggestion(BaseModel):
@@ -238,7 +267,9 @@ async def suggest_names(
     stmt = select(Person).where(Person.name != "", func.lower(Person.name).contains(term))
     if exclude is not None:
         stmt = stmt.where(Person.id != exclude)
-    people = (await db.execute(stmt.limit(limit * 4))).scalars().all()
+    # Every match, ranked below. A LIMIT without an ORDER BY kept an
+    # arbitrary subset, so the exact match could be cut before ranking saw it.
+    people = (await db.execute(stmt)).scalars().all()
     if not people:
         return []
 

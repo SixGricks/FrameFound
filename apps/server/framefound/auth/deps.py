@@ -22,6 +22,13 @@ def client_ip(request: Request) -> str | None:
     return resolve_client_ip(request, get_settings().trusted_proxies)
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# What a read-only account may still change: its own sign-in. Signing out,
+# revoking its sessions, its password and second factor, its panel tokens
+# (which can never do more than the account itself).
+_SELF_SERVICE_PREFIX = "/api/v1/auth/"
+
+
 async def get_current_user(request: Request, db: DbDep, settings: SettingsDep) -> User:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -29,7 +36,17 @@ async def get_current_user(request: Request, db: DbDep, settings: SettingsDep) -
     user = await service.resolve_session(db, token, settings)
     if user is None:
         raise HTTPException(401, "Session expired or invalid")
-    await db.commit()  # persist the sliding-expiry update
+    if db.info.pop(service.SESSION_TOUCHED, False):
+        await db.commit()  # persist the sliding-expiry update, when there was one
+    # The `readonly` role existed in the vocabulary and in the create-user
+    # form, and nothing enforced it: 51 write routes accepted it (review,
+    # 2026-10). Enforced here, once, rather than on every handler.
+    if (
+        user.role == "readonly"
+        and request.method not in _SAFE_METHODS
+        and not request.url.path.startswith(_SELF_SERVICE_PREFIX)
+    ):
+        raise HTTPException(403, "This account is read-only")
     return user
 
 

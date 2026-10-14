@@ -146,12 +146,15 @@ async def suggest_tags(
     if not term:
         return []
 
+    # Every match, then ranked here. A LIMIT without an ORDER BY kept an
+    # arbitrary subset, so an exact match could be cut before ranking saw
+    # it; the tag table is small enough to rank whole.
     tags = (
         (
             await db.execute(
-                select(Tag)
-                .where(func.lower(Tag.name).contains(term) | Tag.slug.contains(slugify(term)))
-                .limit(limit * 4)
+                select(Tag).where(
+                    func.lower(Tag.name).contains(term) | Tag.slug.contains(slugify(term))
+                )
             )
         )
         .scalars()

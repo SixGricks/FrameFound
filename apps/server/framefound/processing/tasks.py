@@ -727,61 +727,6 @@ def infer_locations(library_id: str) -> None:
 
 
 @celery_app.task(
-    name="framefound.index_visual_batch",
-    queue="vision",
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_kwargs={"max_retries": 1},
-)
-def index_visual_batch(asset_ids: list[str]) -> None:
-    """Sample frames and embed them for many assets in one engine.
-
-    Per-task setup (engine, pool, job row) costs ~3 s, which is noise beside a
-    proxy transcode but dominates when the real work is a thumbnail lookup and
-    a 288 ms embed. Batching amortises it across the group and keeps the
-    library-wide index within about an hour instead of a working day.
-    """
-
-    async def run() -> None:
-        engine = create_async_engine(get_settings().db_url)
-        try:
-            factory = async_sessionmaker(engine, expire_on_commit=False)
-            async with factory() as db:
-                job = Job(task_name="index_visual_batch")
-                db.add(job)
-                await db.commit()
-                done = 0
-                for raw_id in asset_ids:
-                    try:
-                        asset = await db.get(Asset, uuid.UUID(raw_id))
-                        if asset is None:
-                            continue
-                        library = await db.get(Library, asset.library_id)
-                        if library is None:
-                            continue
-                        path = safe_join(Path(library.root_path), asset.relative_path)
-                        if not path.is_file():
-                            asset.availability = "missing"
-                            continue
-                        await _sample_frames(db, asset, library, path)
-                        await _embed_frames(db, asset, library, path)
-                        done += 1
-                    except Exception:
-                        # One bad asset must not sink the batch.
-                        await db.rollback()
-                        log.warning("visual_batch.asset_failed", asset_id=raw_id)
-                job.status = "succeeded"
-                job.finished_at = datetime.now(UTC)
-                db.add(job)
-                await db.commit()
-                log.info("visual_batch.done", requested=len(asset_ids), indexed=done)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-@celery_app.task(
     name="framefound.transcribe_asset",
     queue="transcribe",
     autoretry_for=(Exception,),
@@ -908,12 +853,20 @@ def detect_faces(asset_id: str) -> None:
                     .scalars()
                     .all()
                 )
+                # Two columns, not the rows: this set is rebuilt for every
+                # asset with faces, and it grows with every review session.
                 rejected = {
-                    (str(f.person_id), _round_key(f.embedding))
-                    for f in (await db.execute(select(Face).where(Face.source == "rejected")))
-                    .scalars()
-                    .all()
-                    if f.person_id and f.embedding
+                    (str(person_id), _round_key(embedding))
+                    for person_id, embedding in (
+                        await db.execute(
+                            select(Face.person_id, Face.embedding).where(
+                                Face.source == "rejected",
+                                Face.person_id.is_not(None),
+                                Face.embedding.is_not(None),
+                            )
+                        )
+                    ).all()
+                    if embedding
                 }
 
                 matched = 0

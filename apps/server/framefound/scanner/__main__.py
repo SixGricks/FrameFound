@@ -60,6 +60,12 @@ VISUALS_BATCH = 100
 MAX_VISUAL_ATTEMPTS = 4
 # The ordinary pipeline gets this long before an asset counts as stranded.
 VISUALS_GRACE = timedelta(hours=1)
+# The visual repair sweep scans the whole assets table three times and
+# probes frames and derivatives per candidate. Every five minutes it was the
+# largest single consumer of the database (187 million index probes in ten
+# weeks, production 2026-10) for a race that VISUALS_GRACE already keeps an
+# hour away; half an hour loses nothing.
+VISUALS_SWEEP_EVERY_S = 1800.0
 # How soon a library whose last scan failed is checked for having come back.
 RECOVERY_RETRY = timedelta(minutes=5)
 
@@ -315,7 +321,7 @@ async def _start_observer_async(
         starting.discard(library_id)
 
 
-async def _cluster_new_faces(db: AsyncSession) -> None:
+async def _cluster_new_faces(db: AsyncSession, memo: dict[str, Any] | None = None) -> None:
     """Group faces nobody has been assigned to yet.
 
     On the maintenance tick rather than per-asset: clustering is only
@@ -328,11 +334,20 @@ async def _cluster_new_faces(db: AsyncSession) -> None:
     clustering never ran and 25 detected faces sat unassigned with the People
     page empty. Clustering enqueues one cheap task that only touches faces
     with no person, so running it while other work is in flight costs nothing.
+
+    `memo` (the loop's, kept between ticks) remembers the loose and total
+    face counts the last request saw. The same counts mean nothing has been
+    detected or reviewed since, and the faces that would not cluster then
+    will not cluster now: production queued this 268 times a day for the
+    same 828 singletons (2026-10-13).
     """
     loose = (
         await db.execute(select(func.count()).select_from(Face).where(Face.person_id.is_(None)))
     ).scalar_one()
     if loose < MIN_FACES_TO_CLUSTER:
+        return
+    total = (await db.execute(select(func.count()).select_from(Face))).scalar_one()
+    if memo is not None and memo.get("clustering_seen") == (loose, total):
         return
     try:
         from framefound.processing.tasks import cluster_unassigned_faces
@@ -341,6 +356,8 @@ async def _cluster_new_faces(db: AsyncSession) -> None:
     except Exception:
         log.warning("scanner.clustering_unavailable")
         return
+    if memo is not None:
+        memo["clustering_seen"] = (loose, total)
     log.info("scanner.face_clustering_queued", unassigned=loose)
 
 
@@ -462,17 +479,23 @@ async def _requeue_missing_visuals(db: AsyncSession) -> None:
 
     def settled(task: str) -> Any:
         """Assets this stage should leave alone: tried too often, or tried
-        so recently that the job may still be in flight."""
+        so recently that the job may still be in flight.
+
+        Correlated NOT EXISTS rather than NOT IN over a union of every job
+        row for the task: an index probe per candidate (ix_jobs_task_asset,
+        migration 0024) instead of scanning and hashing a table that gains a
+        row per task run and is never pruned.
+        """
         exhausted = (
             select(Job.asset_id)
-            .where(Job.task_name == task, Job.asset_id.is_not(None))
+            .where(Job.task_name == task, Job.asset_id == Asset.id)
             .group_by(Job.asset_id)
             .having(func.count() >= MAX_VISUAL_ATTEMPTS)
         )
-        recent = select(Job.asset_id).where(
-            Job.task_name == task, Job.started_at > cutoff, Job.asset_id.is_not(None)
+        recent = select(Job.id).where(
+            Job.task_name == task, Job.asset_id == Asset.id, Job.started_at > cutoff
         )
-        return Asset.id.not_in(exhausted.union(recent))
+        return ~exhausted.exists() & ~recent.exists()
 
     eligible = (
         Asset.library_id.in_(reachable),
@@ -603,6 +626,8 @@ async def main() -> None:
     # start a second one for the same share on the next pass.
     starting: set[uuid.UUID] = set()
     last_requeue = 0.0
+    last_visuals = 0.0
+    memo: dict[str, Any] = {}
 
     try:
         async with factory() as db:
@@ -650,12 +675,14 @@ async def main() -> None:
                 if time.time() - last_requeue > 300:
                     await _requeue_stuck_assets(db, enqueue)
                     await _requeue_missing_transcripts(db)
-                    await _requeue_missing_visuals(db)
-                    await _cluster_new_faces(db)
+                    await _cluster_new_faces(db, memo)
                     await _reap_orphaned_jobs(db)
                     await _refresh_statistics(db)
                     await _collect_training_pairs(db)
                     last_requeue = time.time()
+                if time.time() - last_visuals > VISUALS_SWEEP_EVERY_S:
+                    await _requeue_missing_visuals(db)
+                    last_visuals = time.time()
         except Exception:
             log.error("scanner.loop_error", exc_info=True)
         await asyncio.sleep(POLL_SECONDS)

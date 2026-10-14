@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 
 from framefound.auth.deps import CurrentUser, DbDep
 from framefound.db.models import Asset, AssetTag, Tag, Transcript, TranscriptSegment
@@ -79,6 +79,25 @@ class SearchResponse(BaseModel):
     tag_hits: list[TagHit] = []
 
 
+# How many nearest frames to ask the index for per result wanted. Several
+# frames of one clip sit next to each other in CLIP space, and a library
+# filter is applied after the index has answered.
+NEIGHBOUR_FRAMES = 8
+
+
+async def _widen_ann_search(db: DbDep, candidates: int) -> None:
+    """Let the HNSW index return enough rows for the filters that follow.
+
+    pgvector's index yields at most `hnsw.ef_search` rows — 40 by default —
+    *before* any WHERE is applied. A search limited to a library holding a
+    fifth of the frames therefore came back with eight hits for a limit of
+    25, and no limit above 40 could ever be met. SET LOCAL lasts for this
+    transaction only. Postgres-only; the SQLite path ranks in Python.
+    """
+    ef_search = max(100, min(1000, int(candidates)))
+    await db.execute(text(f"SET LOCAL hnsw.ef_search = {ef_search}"))  # noqa: S608
+
+
 async def _visual_search(
     db: DbDep, query: str, library_id: uuid.UUID | None, limit: int
 ) -> tuple[list[VisualHit], bool]:
@@ -91,12 +110,11 @@ async def _visual_search(
     from framefound.ai.embeddings import EmbeddingUnavailable, get_embedding_provider
     from framefound.db.models import Frame
 
+    # "Is anything indexed" — one row, not a count over every frame.
     indexed = (
-        await db.execute(
-            select(func.count()).select_from(Frame).where(Frame.embedding.is_not(None))
-        )
-    ).scalar_one()
-    if not indexed:
+        await db.execute(select(Frame.id).where(Frame.embedding.is_not(None)).limit(1))
+    ).first()
+    if indexed is None:
         return [], False
 
     try:
@@ -105,6 +123,7 @@ async def _visual_search(
         return [], False
 
     if db.get_bind().dialect.name == "postgresql":
+        await _widen_ann_search(db, limit * NEIGHBOUR_FRAMES)
         stmt = (
             select(Frame, Asset, Frame.embedding.cosine_distance(vector).label("distance"))
             .join(Asset, Asset.id == Frame.asset_id)
@@ -267,48 +286,69 @@ async def similar_assets(
     if reference is None:
         raise HTTPException(404, "This item has not been visually indexed yet")
 
-    stmt = (
-        select(Frame, Asset)
-        .join(Asset, Asset.id == Frame.asset_id)
-        .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
-    )
+    # One hit per asset: twenty frames of the same clip is not "similar
+    # media". The de-duplication happens *before* the limit — done after it,
+    # a clip whose frames crowded the top left "more like this" with four
+    # results for a limit of twelve.
+    scored: list[tuple[int, Asset, float]] = []
     if db.get_bind().dialect.name == "postgresql":
+        await _widen_ann_search(db, limit * NEIGHBOUR_FRAMES)
         distance = Frame.embedding.cosine_distance(reference.embedding).label("distance")
+        nearest = (
+            select(Frame.asset_id, Frame.ts_ms, distance)
+            .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
+            .order_by("distance")
+            .limit(limit * NEIGHBOUR_FRAMES)
+            .subquery()
+        )
+        # The best frame of each asset among the nearest (DISTINCT ON).
+        best = (
+            select(nearest.c.asset_id, nearest.c.ts_ms, nearest.c.distance)
+            .distinct(nearest.c.asset_id)
+            .order_by(nearest.c.asset_id, nearest.c.distance)
+            .subquery()
+        )
         rows = (
             await db.execute(
-                select(Frame, Asset, distance)
-                .join(Asset, Asset.id == Frame.asset_id)
-                .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
-                .order_by("distance")
+                select(best.c.ts_ms, Asset, best.c.distance)
+                .join(Asset, Asset.id == best.c.asset_id)
+                .order_by(best.c.distance)
                 .limit(limit)
             )
         ).all()
-        scored = [(f, a, 1.0 - float(d)) for f, a, d in rows]
+        scored = [(int(ts_ms), asset, 1.0 - float(d)) for ts_ms, asset, d in rows]
     else:
-        candidates = (await db.execute(stmt)).all()
-        scored = sorted(
+        candidates = (
+            await db.execute(
+                select(Frame, Asset)
+                .join(Asset, Asset.id == Frame.asset_id)
+                .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
+            )
+        ).all()
+        ranked = sorted(
             (
                 (frame, asset, _dot(reference.embedding, frame.embedding))
                 for frame, asset in candidates
             ),
             key=lambda row: -row[2],
-        )[:limit]
-
-    # One hit per asset: twenty frames of the same clip is not "similar media".
-    seen: set[uuid.UUID] = set()
-    results: list[VisualHit] = []
-    for frame, asset, similarity in scored:
-        if asset.id in seen:
-            continue
-        seen.add(asset.id)
-        results.append(
-            VisualHit(
-                asset_id=asset.id,
-                filename=asset.filename,
-                library_id=asset.library_id,
-                media_type=asset.media_type,
-                ts_ms=frame.ts_ms,
-                similarity=round(similarity, 4),
-            )
         )
-    return results
+        seen: set[uuid.UUID] = set()
+        for frame, asset, similarity in ranked:
+            if asset.id in seen:
+                continue
+            seen.add(asset.id)
+            scored.append((frame.ts_ms, asset, similarity))
+            if len(scored) == limit:
+                break
+
+    return [
+        VisualHit(
+            asset_id=asset.id,
+            filename=asset.filename,
+            library_id=asset.library_id,
+            media_type=asset.media_type,
+            ts_ms=ts_ms,
+            similarity=round(similarity, 4),
+        )
+        for ts_ms, asset, similarity in scored
+    ]

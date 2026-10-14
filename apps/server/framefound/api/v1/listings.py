@@ -13,6 +13,7 @@ then explicit reorder wins and nothing shuffles it afterwards.
 """
 
 import asyncio
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -20,14 +21,22 @@ from typing import Any, Literal
 import structlog
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 
 from framefound.ai import rooms as rooms_lib
 from framefound.ai.embeddings import EmbeddingUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, AssetEdit, AuditLog, Frame, Listing, ListingItem
+from framefound.db.models import (
+    Asset,
+    AssetEdit,
+    AuditLog,
+    Derivative,
+    Frame,
+    Listing,
+    ListingItem,
+)
 from framefound.media import photo_index
 from framefound.media.export_state import listing_fingerprint
 
@@ -120,6 +129,14 @@ class SetRoomRequest(BaseModel):
 
 class ReorderRequest(BaseModel):
     asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_ITEMS)
+
+    @field_validator("asset_ids")
+    @classmethod
+    def _distinct(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        # A repeated id kept its last index and left a hole in the order.
+        if len(set(value)) != len(value):
+            raise ValueError("asset_ids must not repeat")
+        return value
 
 
 class ExportRequest(BaseModel):
@@ -411,15 +428,39 @@ async def folder_assets(
 ) -> list[FolderAssetOut]:
     """Every image directly inside one folder — no recursion into
     subfolders, because "MLS/" and "RAW/" siblings are different deliveries
-    of the same shoot and mixing them would double every photograph."""
-    stmt = select(Asset).where(Asset.library_id == library_id, Asset.media_type == "image")
-    rows = (await db.execute(stmt.limit(20_000))).scalars().all()
-    picked = [a for a in rows if _dirname(a.relative_path) == path]
-    picked.sort(key=lambda a: a.filename)
+    of the same shoot and mixing them would double every photograph.
+
+    The folder is a prefix match in SQL: `folder/%` but not `folder/%/%`.
+    This used to load every image row of the library — 20,000 of them, every
+    column — to keep the seventy in one folder, and silently lost any folder
+    past the 20,000th row.
+    """
+    in_folder: tuple[Any, ...]
+    if path:
+        prefix = _like_escape(path) + "/"
+        in_folder = (
+            Asset.relative_path.like(prefix + "%", escape="\\"),
+            Asset.relative_path.not_like(prefix + "%/%", escape="\\"),
+        )
+    else:
+        in_folder = (Asset.relative_path.not_like("%/%"),)
+    rows = (
+        await db.execute(
+            select(Asset.id, Asset.filename, Asset.media_type)
+            .where(Asset.library_id == library_id, Asset.media_type == "image", *in_folder)
+            .order_by(Asset.filename)
+            .limit(limit)
+        )
+    ).all()
     return [
-        FolderAssetOut(asset_id=a.id, filename=a.filename, media_type=a.media_type)
-        for a in picked[:limit]
+        FolderAssetOut(asset_id=asset_id, filename=filename, media_type=media_type)
+        for asset_id, filename, media_type in rows
     ]
+
+
+def _like_escape(value: str) -> str:
+    """A literal for LIKE: its own wildcards escaped with a backslash."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @router.post("", response_model=ListingDetail, status_code=201)
@@ -650,14 +691,15 @@ async def reorder(
         .scalars()
         .all()
     )
-    explicit = {asset_id: index for index, asset_id in enumerate(body.asset_ids)}
-    tail = len(explicit)
+    # Positions are always 0..n-1: an id that is not in the listing is
+    # ignored rather than left to occupy a slot, and the rest keep their
+    # order after the ones that were named.
+    present = {item.asset_id for item in items}
+    named = [asset_id for asset_id in body.asset_ids if asset_id in present]
+    order = named + [item.asset_id for item in items if item.asset_id not in set(named)]
+    position = {asset_id: index for index, asset_id in enumerate(order)}
     for item in items:
-        if item.asset_id not in explicit:
-            explicit[item.asset_id] = tail
-            tail += 1
-    for item in items:
-        item.position = explicit[item.asset_id]
+        item.position = position[item.asset_id]
     await db.commit()
     return await _detail(db, listing, classified=True)
 
@@ -821,7 +863,9 @@ class RemovalSuggestion(BaseModel):
 
 
 @router.post("/{listing_id}/curate", response_model=list[RemovalSuggestion])
-async def curate(listing_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list[RemovalSuggestion]:
+async def curate(
+    listing_id: uuid.UUID, _user: CurrentUser, db: DbDep, settings: SettingsDep
+) -> list[RemovalSuggestion]:
     """Which photographs this listing can afford to lose.
 
     Near-duplicate groups keep their sharpest frame; markedly soft frames
@@ -858,12 +902,37 @@ async def curate(listing_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list[R
     ).all()
     embeddings: dict[uuid.UUID, list[float] | None] = {aid: emb for aid, emb in embedding_rows}
 
-    def measure(path: PathLib) -> float:
+    # Sharpness is judged against the listing's own median, so the local
+    # 512 px thumbnail serves as well as the original — which is 8–15 MB
+    # over the share, seventy-five times, one after another: the better part
+    # of a minute to measure softness at 384 px. The original is the fallback.
+    thumbnails = {
+        asset_id: settings.data_dir / relative_path
+        for asset_id, relative_path in (
+            await db.execute(
+                select(Derivative.asset_id, Derivative.relative_path).where(
+                    Derivative.asset_id.in_([a.id for _i, a, _l in rows]),
+                    Derivative.kind == "thumbnail",
+                    Derivative.status == "ready",
+                )
+            )
+        ).all()
+    }
+
+    def sharpness_of(path: PathLib) -> float:
         with Image.open(path) as img:
+            img.draft("RGB", (768, 768))  # a camera JPEG decodes small directly
             image = ImageOps.exif_transpose(img) or img
             small = image.convert("RGB")
             small.thumbnail((384, 384), Image.Resampling.BILINEAR)
             return curate_lib.sharpness(small)
+
+    def measure(asset_id: uuid.UUID, original: PathLib) -> float:
+        thumbnail = thumbnails.get(asset_id)
+        if thumbnail is not None and thumbnail.is_file():
+            with contextlib.suppress(OSError):
+                return sharpness_of(thumbnail)
+        return sharpness_of(original)
 
     items = []
     names = {}
@@ -871,7 +940,7 @@ async def curate(listing_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list[R
         names[str(asset.id)] = asset.filename
         try:
             path = safe_join(PathLib(library.root_path), asset.relative_path)
-            sharp = await asyncio.to_thread(measure, path)
+            sharp = await asyncio.to_thread(measure, asset.id, path)
         except (PathValidationError, OSError):
             continue
         items.append(

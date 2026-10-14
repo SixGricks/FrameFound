@@ -190,22 +190,28 @@ class GdriveClient:
                     out.write(chunk)
         partial.replace(destination)
 
-    def list_images(self, folder_id: str) -> list[dict[str, Any]]:
-        """Every image directly in the folder: id, name, thumbnailLink."""
+    def list_images(self, folder_id: str, max_files: int | None = None) -> list[dict[str, Any]]:
+        """Every image directly in the folder: id, name, thumbnailLink.
+
+        With `max_files`, stops as soon as the folder is known to hold more
+        than that — the caller is going to refuse it, so paging through a
+        20,000-image folder to count it was twenty requests for a "no".
+        """
         files: list[dict[str, Any]] = []
         token: str | None = None
+        page_size = 1000 if max_files is None else min(1000, max_files + 1)
         while True:
             params = {
                 "q": f"'{folder_id}' in parents and trashed=false and mimeType contains 'image/'",
                 "fields": "nextPageToken,files(id,name,thumbnailLink)",
-                "pageSize": 1000,
+                "pageSize": page_size,
             }
             if token:
                 params["pageToken"] = token
             data = self._request("GET", f"{API}/files", params=params).json()
             files.extend(data.get("files", []))
             token = data.get("nextPageToken")
-            if not token:
+            if not token or (max_files is not None and len(files) > max_files):
                 return files
 
     def find_file(self, folder_id: str, name: str) -> dict[str, Any] | None:

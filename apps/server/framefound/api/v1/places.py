@@ -6,6 +6,7 @@ whole located set is small enough that recomputing is cheaper than keeping a
 cache honest.
 """
 
+import asyncio
 import uuid
 from datetime import datetime
 
@@ -96,7 +97,9 @@ async def list_places(
         )
         for row in rows
     ]
-    clustered = places_lib.cluster(located, radius_km)[:limit]
+    # Pure-Python haversine over every located asset × every place found so
+    # far: seconds on a drone-heavy catalogue, and it ran on the event loop.
+    clustered = (await asyncio.to_thread(places_lib.cluster, located, radius_km))[:limit]
 
     # One query for every candidate cover rather than one per place: the
     # cover is only there to give the card a picture, not to be exact.

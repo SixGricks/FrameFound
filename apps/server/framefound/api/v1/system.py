@@ -1,9 +1,12 @@
 """System status endpoints (authenticated)."""
 
+import asyncio
 import shutil
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 from fastapi import APIRouter
@@ -21,6 +24,16 @@ router = APIRouter(prefix="/system", tags=["system"])
 # The backup service writes one archive a day; a day and a half without a
 # new one means it has stopped.
 BACKUP_STALE_HOURS = 36
+
+# The alerts banner asks for volumes on every page. Free space and
+# reachability do not change by the second, so one answer is reused for a
+# while; a share that disappears is still reported within this long.
+VOLUMES_CACHE_S = 30.0
+PROBE_TIMEOUT_S = 10.0
+# Keyed by the exact set of targets so a library added or renamed, or a
+# count that changed, is probed afresh rather than answered from memory.
+_VolumesKey = tuple[tuple[str, Path, int | None], ...]
+_VOLUMES_CACHE: dict[_VolumesKey, tuple[float, list["VolumeStatus"]]] = {}
 
 # Order is the pipeline order, so the dashboard reads as a flow rather than
 # an alphabetical list.  must be here or the slowest stage in the
@@ -179,15 +192,30 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     for library in libraries:
         targets.append((library.name, Path(library.root_path), int(counts.get(library.id, 0))))
 
+    cache_key = tuple(targets)
+    cached = _VOLUMES_CACHE.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < VOLUMES_CACHE_S:
+        return cached[1]
+
+    # Off the event loop, and all at once. Each probe is a directory read and
+    # a statvfs on a network share; on a share that has hung they block for
+    # the SMB timeout, and on 2026-10-12 one of them held the whole API for
+    # 59 seconds (api.event_loop_blocked, this file) because the alerts
+    # banner asks on every page. A probe that does not answer in time is
+    # reported as unreachable rather than waited for.
+    async def probe(path: Path, known: int | None) -> tuple[str | None, Any]:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_probe_volume, path, known), PROBE_TIMEOUT_S
+            )
+        except TimeoutError:
+            return f"This location did not answer within {PROBE_TIMEOUT_S:.0f} seconds.", None
+
+    probes = await asyncio.gather(*(probe(path, known) for _label, path, known in targets))
+
     seen: set[str] = set()
     out: list[VolumeStatus] = []
-    for label, path, known in targets:
-        reason = unreachable_reason(path, known) if known is not None else None
-        if reason is None:
-            try:
-                usage = shutil.disk_usage(path)
-            except OSError:
-                reason = "This location cannot be read."
+    for (label, path, _known), (reason, usage) in zip(targets, probes, strict=True):
         if reason is not None:
             out.append(
                 VolumeStatus(
@@ -240,7 +268,20 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
                 detail=detail,
             )
         )
+    _VOLUMES_CACHE.clear()
+    _VOLUMES_CACHE[cache_key] = (time.monotonic(), out)
     return out
+
+
+def _probe_volume(path: Path, known: int | None) -> tuple[str | None, Any]:
+    """Reachability, then free space — in a worker thread (see `_volumes`)."""
+    reason = unreachable_reason(path, known) if known is not None else None
+    if reason is not None:
+        return reason, None
+    try:
+        return None, shutil.disk_usage(path)
+    except OSError:
+        return "This location cannot be read.", None
 
 
 class Alert(BaseModel):

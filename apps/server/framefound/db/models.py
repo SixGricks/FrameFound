@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     String,
     Text,
     UniqueConstraint,
@@ -213,8 +214,10 @@ class Asset(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
     availability: Mapped[str] = mapped_column(String(20), default="online")
     processing_status: Mapped[str] = mapped_column(String(30), default="pending")
+    # Indexed: Browse's default order is newest first, a top-N over the
+    # whole table on every page without it (migration 0024).
     first_indexed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.now(), index=True
     )
     last_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None, index=True
@@ -273,6 +276,13 @@ class Job(Base):
     Live queue depths come from the broker, not this table."""
 
     __tablename__ = "jobs"
+    # The maintenance sweeps ask "has this task run for this asset, and
+    # when" for every candidate; one row per attempt, never pruned, so the
+    # single-column indexes alone meant a scan of the task's rows each time.
+    __table_args__ = (
+        Index("ix_jobs_task_asset", "task_name", "asset_id"),
+        Index("ix_jobs_task_started", "task_name", "started_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     task_name: Mapped[str] = mapped_column(String(100), index=True)

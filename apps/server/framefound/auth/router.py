@@ -197,12 +197,35 @@ class RecoveryCodes(BaseModel):
     recovery_codes: list[str]
 
 
+def _totp_limiter_key(user: User) -> str:
+    return f"totp:{user.id}"
+
+
+def _throttle(key: str) -> None:
+    """The login limiter, for the second-factor endpoints too.
+
+    These need a session, so the exposure is a stolen cookie guessing a
+    six-digit code (confirm) or a password (start, disable) — unthrottled,
+    a million codes took an afternoon. Same buckets, same wait.
+    """
+    wait = login_limiter.retry_after(key)
+    if wait > 0:
+        raise HTTPException(
+            429,
+            "Too many failed attempts. Try again shortly.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
+
+
 @router.post("/totp/start", response_model=TotpEnrolment)
 async def totp_start(
     body: TotpStart, db: DbDep, user: CurrentUser, settings: SettingsDep
 ) -> TotpEnrolment:
     """Issue a pending secret. 2FA is not active until /totp/confirm."""
+    key = _totp_limiter_key(user)
+    _throttle(key)
     if not verify_password(user.password_hash, body.password):
+        login_limiter.record_failure(key)
         raise HTTPException(403, "Password is incorrect")
     if user.totp_secret:
         raise HTTPException(409, "Two-factor authentication is already enabled")
@@ -222,8 +245,12 @@ async def totp_confirm(
     """Activate 2FA once the authenticator proves it works."""
     if not user.totp_pending_secret:
         raise HTTPException(409, "Start two-factor setup first")
+    key = _totp_limiter_key(user)
+    _throttle(key)
     if not totp.verify(unseal(user.totp_pending_secret), body.code):
+        login_limiter.record_failure(key)
         raise HTTPException(400, "That code is not valid. Check your authenticator app.")
+    login_limiter.record_success(key)
 
     codes = totp.new_recovery_codes()
     user.totp_secret = user.totp_pending_secret
@@ -239,10 +266,15 @@ async def totp_confirm(
 async def totp_disable(body: TotpDisable, request: Request, db: DbDep, user: CurrentUser) -> None:
     if not user.totp_secret:
         raise HTTPException(409, "Two-factor authentication is not enabled")
+    key = _totp_limiter_key(user)
+    _throttle(key)
     if not verify_password(user.password_hash, body.password):
+        login_limiter.record_failure(key)
         raise HTTPException(403, "Password is incorrect")
     if not _second_factor_ok(user, body.code):
+        login_limiter.record_failure(key)
         raise HTTPException(400, "That code is not valid")
+    login_limiter.record_success(key)
     user.totp_secret = None
     user.totp_pending_secret = None
     user.totp_recovery_hashes = []

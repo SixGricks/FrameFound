@@ -13,7 +13,7 @@ import asyncio
 import re
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query
@@ -115,11 +115,29 @@ class ShowcaseListingRequest(BaseModel):
     picks: list[ShowcasePickIn] = Field(min_length=1, max_length=600)
 
 
+# A prompt's vector is a function of the model: forty prompts at ~35 ms each
+# on this CPU were 1.4 s of every search before ranking began, for the same
+# forty answers. Keyed by provider instance so a swapped provider (tests)
+# never answers from another's vectors.
+_text_vectors: dict[tuple[int, str], list[float]] = {}
+_TEXT_VECTORS_MAX = 4096
+
+
+def _text_vector(provider: Any, text: str) -> list[float]:
+    key = (id(provider), text)
+    vector = _text_vectors.get(key)
+    if vector is None:
+        if len(_text_vectors) >= _TEXT_VECTORS_MAX:
+            _text_vectors.clear()
+        vector = _text_vectors[key] = provider.embed_text(text).vector
+    return vector
+
+
 def _prompt_vectors(subject: str, avoid: str, kind: str) -> dict[str, list[list[float]]]:
     provider = get_embedding_provider()
 
     def encode(texts: list[str]) -> list[list[float]]:
-        return [provider.embed_text(t).vector for t in texts if t.strip()]
+        return [_text_vector(provider, t) for t in texts if t.strip()]
 
     finish_pos, finish_neg = showcase_lib.finish_prompts(subject)
     focus_pos, focus_neg = showcase_lib.focus_prompts(kind, subject)
@@ -212,7 +230,7 @@ async def _video_frames(db: DbDep, library_ids: list[uuid.UUID]) -> list[showcas
             filename=row.filename,
             width=row.width or 0,
             height=row.height or 0,
-            embedding=list(row.embedding),
+            embedding=row.embedding,
             gps=(row.gps_lat, row.gps_lon) if row.gps_lat is not None else None,
             captured_at=row.captured_at.isoformat() if row.captured_at else None,
             thumbnail=row.frame_path,
@@ -244,18 +262,24 @@ async def search_showcase(
         .join(Frame, Frame.asset_id == Asset.id)
         .where(Asset.media_type == "image", Frame.embedding.is_not(None))
     )
+    # The same scope, joined, for the face counts and thumbnails. These were
+    # `IN (<every id>)` lists — 21,000 bind parameters each, and asyncpg
+    # refuses more than 32,767, so Showcase would have stopped working
+    # outright once the catalogue passed that many embedded photographs.
+    scope = [Asset.media_type == "image"]
     if body.library_ids:
         stmt = stmt.where(Asset.library_id.in_(body.library_ids))
+        scope.append(Asset.library_id.in_(body.library_ids))
     rows = (await db.execute(stmt)).all()
     if not rows:
         raise HTTPException(status_code=404, detail="No catalogued photographs to choose from")
-    ids = [row.id for row in rows]
     faces: dict[uuid.UUID, int] = {
         asset_id: int(n)
         for asset_id, n in (
             await db.execute(
                 select(Face.asset_id, func.count())
-                .where(Face.asset_id.in_(ids))
+                .join(Asset, Asset.id == Face.asset_id)
+                .where(*scope)
                 .group_by(Face.asset_id)
             )
         ).all()
@@ -264,9 +288,9 @@ async def search_showcase(
         asset_id: path
         for asset_id, path in (
             await db.execute(
-                select(Derivative.asset_id, Derivative.relative_path).where(
-                    Derivative.asset_id.in_(ids), Derivative.kind == "thumbnail"
-                )
+                select(Derivative.asset_id, Derivative.relative_path)
+                .join(Asset, Asset.id == Derivative.asset_id)
+                .where(Derivative.kind == "thumbnail", *scope)
             )
         ).all()
     }
@@ -277,7 +301,7 @@ async def search_showcase(
             filename=row.filename,
             width=row.width or 0,
             height=row.height or 0,
-            embedding=list(row.embedding),
+            embedding=row.embedding,
             gps=(row.gps_lat, row.gps_lon) if row.gps_lat is not None else None,
             faces=int(faces.get(row.id, 0)),
             captured_at=row.captured_at.isoformat() if row.captured_at else None,

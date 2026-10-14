@@ -43,7 +43,7 @@ class SkyIn(BaseModel):
     """A sky replacement: which sky from the operator's library, and how it
     sits. Name characters are restricted so a recipe can never traverse."""
 
-    name: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
+    name: str = Field(min_length=1, max_length=119, pattern=r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
     feather: float = Field(default=0.02, ge=0.0, le=0.2)
     shift: float = Field(default=0.0, ge=-0.5, le=0.5)
     relight: float = Field(default=0.4, ge=0.0, le=1.0)
@@ -101,7 +101,9 @@ async def _original_path(db: DbDep, asset: Asset) -> Path:
         path = safe_join(Path(library.root_path), asset.relative_path)
     except PathValidationError as err:
         raise HTTPException(status_code=400, detail="Path escapes the library root") from err
-    if not path.is_file():
+    # A stat on a network share, off the event loop: on a share that has hung
+    # it blocks for the SMB timeout, and every other request with it.
+    if not await asyncio.to_thread(path.is_file):
         raise HTTPException(status_code=404, detail="Original file is not reachable")
     return path
 
@@ -132,9 +134,17 @@ def _skies_dir(settings: Settings) -> Path:
 
 
 def _sky_path(settings: Settings, name: str) -> Path:
-    # The pattern in SkyIn already refuses separators; belt and braces here.
-    if "/" in name or "\\" in name or ".." in name:
-        raise HTTPException(status_code=400, detail="Not a sky name")
+    # The same rule a recipe applies (develop.SKY_NAME_RE). Uploads used to
+    # check only for separators, so `sky#1.jpg` or `été.jpg` could be added
+    # and listed but never chosen: the recipe refused the name.
+    if not develop_lib.SKY_NAME_RE.match(name) or ".." in name:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Not a sky name: use letters, digits, spaces, dots, dashes and underscores "
+                "(up to 119 characters), starting with a letter or digit"
+            ),
+        )
     return _skies_dir(settings) / name
 
 
@@ -212,6 +222,30 @@ _mask_cache: "OrderedDict[tuple[uuid.UUID, int, int, int], Any]" = OrderedDict()
 _MASK_CACHE_MAX = 8
 
 
+# The pixels the preview starts from — upright, sRGB, PREVIEW_EDGE long —
+# depend only on the original (or its object-removed version), and a slider
+# drag asks for a render every 250 ms. Decoding a 45 MP original from the
+# share and colour-managing it at full size for every notch was most of the
+# wait between moving a slider and seeing it (review, 2026-10). Eight entries
+# is about 40 MB; the same key invalidates the mask cache above.
+_base_cache: "OrderedDict[tuple[uuid.UUID, int], Any]" = OrderedDict()
+_BASE_CACHE_MAX = 8
+
+
+def _cached_base(asset_id: uuid.UUID, base_version: int, path: Path, is_inpaint: bool) -> Any:
+    """The preview-sized base image, decoded once per photograph per session.
+    Returns a copy: the render paths modify what they are given."""
+    key = (asset_id, base_version)
+    if key in _base_cache:
+        _base_cache.move_to_end(key)
+        return _base_cache[key].copy()
+    image = develop_lib.open_for_render(path, already_normalized=is_inpaint, max_edge=PREVIEW_EDGE)
+    _base_cache[key] = image
+    while len(_base_cache) > _BASE_CACHE_MAX:
+        _base_cache.popitem(last=False)
+    return image.copy()
+
+
 def _cached_mask(asset_id: uuid.UUID, image: Any, base_version: int = 0) -> Any:
     key = (asset_id, base_version, image.size[0], image.size[1])
     if key in _mask_cache:
@@ -245,11 +279,9 @@ async def sky_info(
 
     def measure() -> float:
         import numpy as np
-        from PIL import Image
 
-        # Same pixels as the preview: the two share one mask cache.
-        image = develop_lib.open_for_render(path, already_normalized=is_inpaint)
-        image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+        # Same pixels as the preview: the two share one base and one mask cache.
+        image = _cached_base(asset_id, base_version, path, is_inpaint)
         return float(np.mean(_cached_mask(asset_id, image, base_version)))
 
     try:
@@ -495,12 +527,10 @@ async def preview(  # type: ignore[no-untyped-def]
             return None
 
     def render() -> bytes:
-        from PIL import Image
-
         # The same loader the export uses, so the preview carries the same
-        # colour management — see develop.open_for_render.
-        image = develop_lib.open_for_render(path, already_normalized=is_inpaint)
-        image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+        # colour management — see develop.open_for_render — decoded once per
+        # photograph and kept for the slider drag.
+        image = _cached_base(asset_id, base_version, path, is_inpaint)
         image = develop_lib.render(
             image, body.model_dump(), load_sky=sky_loader(settings), mask_for=mask_for
         )

@@ -14,6 +14,10 @@ from framefound.config import Settings
 from framefound.db.models import ROLES, AppSetting, AuditLog, AuthSession, User
 
 SETUP_CONSUMED_KEY = "setup_token_consumed"
+# How far the idle expiry must have drifted before a request writes it back,
+# and the session.info flag that tells the request it did.
+SESSION_TOUCH_GRANULARITY = timedelta(seconds=60)
+SESSION_TOUCHED = "auth_session_touched"
 
 
 def _now() -> datetime:
@@ -91,7 +95,18 @@ async def resolve_session(db: AsyncSession, token: str, settings: Settings) -> U
         absolute = absolute.replace(tzinfo=UTC)
     if now >= expires_at or now >= absolute:
         return None
-    auth_session.expires_at = min(now + timedelta(minutes=settings.session_idle_minutes), absolute)
+    # Slide the idle expiry forward — but write it only when it would move by
+    # more than a minute. Writing on every call meant an UPDATE and a commit
+    # on this one row for every authenticated request: fifty thumbnails on a
+    # Browse page, each queued on the row lock and each an fsync, for an
+    # expiry that moved by milliseconds.
+    renewed = min(now + timedelta(minutes=settings.session_idle_minutes), absolute)
+    if renewed - expires_at >= SESSION_TOUCH_GRANULARITY:
+        auth_session.expires_at = renewed
+        # The caller commits only when told to. `db.dirty` cannot tell it:
+        # the user lookup below autoflushes the change, and a flushed change
+        # is no longer "dirty" — just uncommitted, and lost with the session.
+        db.info[SESSION_TOUCHED] = True
     user = await db.get(User, auth_session.user_id)
     if user is None or user.disabled:
         return None

@@ -36,6 +36,8 @@ def _encode_webp(src: Path, dst: Path, max_edge: int) -> tuple[int, int]:
     """Pillow path. Safe only when the source fits in memory."""
     from PIL import Image, ImageOps
 
+    from framefound.media.pixels import to_rgb8
+
     with Image.open(src) as opened:
         # For JPEG this decodes at a reduced size directly — a large saving on
         # 8000-pixel camera originals. A no-op for formats that can't do it.
@@ -43,7 +45,7 @@ def _encode_webp(src: Path, dst: Path, max_edge: int) -> tuple[int, int]:
         img: Image.Image = ImageOps.exif_transpose(opened) or opened
         img.thumbnail((max_edge, max_edge))
         if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGB")
+            img = to_rgb8(img)
         img.save(dst, "WEBP", quality=82, method=4)
         return img.width, img.height
 

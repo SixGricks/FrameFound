@@ -10,6 +10,8 @@ data volume, resolved through the DB (no client-supplied paths).
 """
 
 import uuid
+from email.utils import formatdate
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -41,7 +43,8 @@ async def _authorize(
 ) -> None:
     token = request.cookies.get(SESSION_COOKIE)
     if token and await auth_service.resolve_session(db, token, settings) is not None:
-        await db.commit()
+        if db.info.pop(auth_service.SESSION_TOUCHED, False):
+            await db.commit()
         return
     exp = request.query_params.get("exp")
     sig = request.query_params.get("sig")
@@ -66,17 +69,19 @@ async def serve_frame(
     from framefound.db.models import Frame
 
     await _authorize(request, db, settings, asset_id, "frame")
-    frame = (
-        await db.execute(select(Frame).where(Frame.asset_id == asset_id, Frame.ts_ms == ts))
+    # Only the path: the full row carries the frame's 512-float embedding,
+    # parsed from text for every strip image and never looked at.
+    relative_path = (
+        await db.execute(
+            select(Frame.relative_path).where(Frame.asset_id == asset_id, Frame.ts_ms == ts)
+        )
     ).scalar_one_or_none()
-    if frame is None:
+    if relative_path is None:
         raise HTTPException(404, "No frame at that timestamp")
-    path = settings.data_dir / frame.relative_path
+    path = settings.data_dir / relative_path
     if not path.is_file():
         raise HTTPException(404, "Frame image is missing; it can be regenerated")
-    response = range_file_response(request, path, "image/jpeg")
-    response.headers["Cache-Control"] = "private, max-age=3600"
-    return response
+    return _cacheable(request, path, "image/jpeg")
 
 
 @router.get("/{asset_id}/{kind}")
@@ -104,6 +109,24 @@ async def serve_derivative(
     if not path.is_file():
         raise HTTPException(404, "Media file is missing; it can be regenerated")
     content_type = _CONTENT_TYPES.get(derivative.media_format, "application/octet-stream")
+    return _cacheable(request, path, content_type)
+
+
+# A day: thumbnails change only when regenerated, and a regenerated file has
+# a new size or mtime, so the validator below changes with it.
+CACHE_CONTROL = "private, max-age=86400"
+
+
+def _cacheable(request: Request, path: Path, content_type: str) -> Response:
+    """Serve a derivative with validators, answering 304 when the browser
+    already has it. Without them every thumbnail was re-downloaded in full
+    once the hour's max-age ran out — a Browse page of fifty tiles, again."""
+    st = path.stat()
+    etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": CACHE_CONTROL})
     response = range_file_response(request, path, content_type)
-    response.headers["Cache-Control"] = "private, max-age=3600"
+    response.headers["ETag"] = etag
+    response.headers["Last-Modified"] = formatdate(st.st_mtime, usegmt=True)
+    response.headers["Cache-Control"] = CACHE_CONTROL
     return response

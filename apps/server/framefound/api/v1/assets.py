@@ -1,5 +1,6 @@
 """Asset browsing endpoints + signed media URLs + admin reprocessing."""
 
+import math
 import uuid
 from datetime import datetime
 from typing import Any
@@ -197,8 +198,18 @@ async def assets_near(
     if library_id is not None:
         query = query.where(Asset.library_id == library_id)
 
+    # Nearest first, in SQL: a planar approximation of the distance is
+    # monotonic with the real one at these radii. The query used to take the
+    # first limit×4 rows of the box in whatever order the planner returned
+    # them and sort those, so on a shoot with hundreds of frames in one field
+    # "closest" was neither complete nor stable between calls.
+    cos_lat = math.cos(math.radians(lat))
+    dlat = Asset.gps_lat - lat
+    dlon = (Asset.gps_lon - lon) * cos_lat
+    query = query.order_by(dlat * dlat + dlon * dlon).limit(limit * 2)
+
     scored = []
-    for asset in (await db.execute(query.limit(limit * 4))).scalars():
+    for asset in (await db.execute(query)).scalars():
         distance = haversine_km(lat, lon, asset.gps_lat or 0.0, asset.gps_lon or 0.0)
         if distance <= radius_km:
             scored.append((distance, asset))
@@ -304,19 +315,23 @@ async def get_scenes(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list
     """Sampled frames for the timeline strip (scene changes flagged)."""
     from framefound.db.models import Frame
 
+    # Three columns, not the row: a long clip has up to 240 frames, each
+    # carrying a 512-float embedding the strip never looks at.
     frames = (
-        (await db.execute(select(Frame).where(Frame.asset_id == asset_id).order_by(Frame.ts_ms)))
-        .scalars()
-        .all()
-    )
+        await db.execute(
+            select(Frame.ts_ms, Frame.is_scene_change, Frame.scene_number)
+            .where(Frame.asset_id == asset_id)
+            .order_by(Frame.ts_ms)
+        )
+    ).all()
     return [
         FrameOut(
-            ts_ms=f.ts_ms,
-            is_scene_change=f.is_scene_change,
-            scene_number=f.scene_number,
-            url=f"/api/v1/media/{asset_id}/frame?ts={f.ts_ms}",
+            ts_ms=ts_ms,
+            is_scene_change=is_scene_change,
+            scene_number=scene_number,
+            url=f"/api/v1/media/{asset_id}/frame?ts={ts_ms}",
         )
-        for f in frames
+        for ts_ms, is_scene_change, scene_number in frames
     ]
 
 

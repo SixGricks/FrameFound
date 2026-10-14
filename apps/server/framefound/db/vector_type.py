@@ -56,4 +56,9 @@ class Embedding(TypeDecorator[list[float]]):
     def process_result_value(self, value: Any, dialect: Dialect) -> list[float] | None:
         if value is None:
             return None
-        return list(value)
+        # pgvector hands back a float32 ndarray. `list()` of one is 512 numpy
+        # scalar objects; `.tolist()` is 512 plain floats, several times
+        # faster and a third of the memory — Showcase reads twenty thousand
+        # of these per search.
+        tolist = getattr(value, "tolist", None)
+        return tolist() if callable(tolist) else list(value)

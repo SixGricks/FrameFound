@@ -225,7 +225,7 @@ async def organize_preview(body: FolderIn, _user: CurrentUser, db: DbDep) -> Pre
     client = _client(config)
     try:
         folder_name = await asyncio.to_thread(client.folder_name, folder_id)
-        files = await asyncio.to_thread(client.list_images, folder_id)
+        files = await asyncio.to_thread(client.list_images, folder_id, MAX_FILES)
         if len(files) > MAX_FILES:
             raise HTTPException(400, f"That folder has more than {MAX_FILES} images")
 

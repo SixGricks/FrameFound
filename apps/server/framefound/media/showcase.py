@@ -184,6 +184,22 @@ _PLACE_NOISE = re.compile(r"[^a-z0-9]+")
 _STATE_SUFFIX = re.compile(r"\s+(nj|pa|ny|de|md|va|ct)$", re.IGNORECASE)
 SAME_PLACE_KM = 2.0
 NEAR_DUPLICATE = 0.94
+
+
+def _near_any(vector: Any, offered: list[Any]) -> bool:
+    """Is `vector` a near-duplicate of anything already offered?
+
+    One matrix product, not a Python loop of scalar dots: by the third
+    batch `offered` starts with every photograph of the earlier batches,
+    and every candidate of every place was tested against each in turn.
+    """
+    if not offered:
+        return False
+    import numpy as np
+
+    return bool(float((np.asarray(offered) @ vector).max()) >= NEAR_DUPLICATE)
+
+
 MAX_ASPECT = 1.85
 FINISH_FLOOR_PERCENTILE = 75.0
 # Video frames: a 4K grab is 8.3 MP, enough for a calendar page though
@@ -691,7 +707,7 @@ def rank(
             if distinct and pick.score < OPTION_FLOOR:
                 break  # best first, so everything after is weaker still
             vector = np.asarray(pick.photo.embedding)
-            if any(float(vector @ other) >= NEAR_DUPLICATE for other in offered):
+            if _near_any(vector, offered):
                 continue
             if pick.photo.video_id and pick.photo.video_id in videos_offered:
                 continue  # one frame a video: a flight is one photograph, not eight
@@ -722,10 +738,7 @@ def rank(
                     for p in shortlists[key]
                     if p.tags.get("source") == "ground"
                     and p.score >= OPTION_FLOOR
-                    and not any(
-                        float(np.asarray(p.photo.embedding) @ other) >= NEAR_DUPLICATE
-                        for other in offered
-                    )
+                    and not _near_any(np.asarray(p.photo.embedding), offered)
                 ),
                 None,
             )

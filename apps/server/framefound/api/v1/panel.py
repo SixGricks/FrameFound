@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -74,6 +74,11 @@ class PanelAsset(BaseModel):
     # Always available regardless of mapping: stream it from the server.
     proxy_url: str
     thumbnail_url: str
+    # For a visual hit on a video, the frame that matched — so the panel can
+    # land on the moment rather than the file. Null for a filename match.
+    hit_ms: int | None = None
+    # How this result was found: "name" (filename or folder) or "visual".
+    matched: str = "name"
 
 
 class PanelSearchResponse(BaseModel):
@@ -113,6 +118,52 @@ def _translate(server_path: str, root: str, mapped_prefix: str) -> str:
     if windows:
         relative = relative.replace("/", "\\")
     return mapped_prefix.rstrip("/\\") + separator + relative
+
+
+class PanelIdentity(BaseModel):
+    # "token" for a panel token, "session" for a signed-in browser.
+    kind: str
+    name: str
+    scopes: list[str]
+    user_email: str
+    server_version: str
+
+
+@router.get("/me", response_model=PanelIdentity)
+async def panel_me(request: Request, user: PanelPrincipal, db: DbDep) -> PanelIdentity:
+    """Who the panel is connected as, and what it may do.
+
+    Until this existed a token without the `export` scope found out at the
+    moment a frame grab or an XML failed — reported by Lightroom as "could
+    not add" and by Premiere as "import unavailable". A connection test can
+    now say "connected as Edit bay: read, export" and name what is missing.
+    """
+    from framefound import __version__
+    from framefound.auth import panel_tokens
+    from framefound.auth.deps import bearer_token
+
+    token = bearer_token(request)
+    if token is not None:
+        record = await panel_tokens.resolve_record(db, token)
+        if record is None:  # revoked between the dependency and here
+            raise HTTPException(status_code=401, detail="That panel token is not valid")
+        scopes = sorted(s.strip() for s in record.scopes.split(",") if s.strip())
+        return PanelIdentity(
+            kind="token",
+            name=record.name or record.prefix,
+            scopes=scopes,
+            user_email=user.email,
+            server_version=__version__,
+        )
+    # A browser session is the operator: scopes exist to make a token weaker
+    # than the person who issued it, not to limit that person.
+    return PanelIdentity(
+        kind="session",
+        name="browser session",
+        scopes=["export", "read"],
+        user_email=user.email,
+        server_version=__version__,
+    )
 
 
 @router.get("/profiles", response_model=list[PathProfile])
@@ -163,28 +214,51 @@ async def panel_search(
 
     term = q.strip()
     ordered: list[uuid.UUID] = []
+    # The matching frame for each visual hit, and how each result was found.
+    hit_ms: dict[uuid.UUID, int] = {}
+    matched: dict[uuid.UUID, str] = {}
+    # A file the share no longer has is not a result: Premiere would be
+    # handed a path that does not exist and fail into the XML fallback.
+    online = Asset.availability == "online"
 
     if term:
-        # Visual hits first — "the wide of the barn" is what a panel is for.
-        # Any failure in the embedding path is logged and stepped over: an
-        # install with no embeddings yet must still be able to find A007_C012.
-        try:
-            hits, _ = await _visual_search(db, term, None, limit)
-            ordered = [hit.asset_id for hit in hits]
-        except Exception as exc:  # noqa: BLE001 - embeddings unavailable, model missing, ...
-            log.info("panel.visual_search_unavailable", error=str(exc)[:200])
-
+        # Name matches first. An editor typing `A007_C012` or a filename
+        # means that file; with embeddings present, CLIP's nearest frames to
+        # the *string* used to come first and the exact match fell past the
+        # limit — Lightroom's path diagnostic showed a different photograph.
         name_query = select(Asset.id).where(
-            Asset.filename.ilike(f"%{term}%") | Asset.relative_path.ilike(f"%{term}%")
+            Asset.filename.ilike(f"%{term}%") | Asset.relative_path.ilike(f"%{term}%"), online
         )
         if media_type:
             name_query = name_query.where(Asset.media_type == media_type)
-        by_name = (await db.execute(name_query.limit(limit))).scalars().all()
-        seen = set(ordered)
-        ordered += [aid for aid in by_name if aid not in seen]
+        by_name = (await db.execute(name_query.order_by(Asset.filename).limit(limit))).scalars()
+        for asset_id in by_name:
+            if asset_id not in matched:
+                ordered.append(asset_id)
+                matched[asset_id] = "name"
+
+        # Then visual hits — "the wide of the barn" is what a panel is for.
+        # Any failure in the embedding path is logged and stepped over: an
+        # install with no embeddings yet must still be able to find A007_C012.
+        if len(ordered) < limit:
+            try:
+                hits, _ = await _visual_search(db, term, None, limit)
+            except Exception as exc:  # noqa: BLE001 - embeddings unavailable, model missing, ...
+                hits = []
+                log.info("panel.visual_search_unavailable", error=str(exc)[:200])
+            for hit in hits:
+                if media_type and hit.media_type != media_type:
+                    continue
+                if hit.asset_id in matched:
+                    continue  # the first (strongest) frame of a clip ranks it
+                ordered.append(hit.asset_id)
+                matched[hit.asset_id] = "visual"
+                hit_ms[hit.asset_id] = hit.ts_ms
 
     if ordered:
-        found = (await db.execute(select(Asset).where(Asset.id.in_(ordered)))).scalars().all()
+        found = (
+            (await db.execute(select(Asset).where(Asset.id.in_(ordered), online))).scalars().all()
+        )
         rank = {aid: i for i, aid in enumerate(ordered)}
         results = sorted(found, key=lambda a: rank.get(a.id, len(ordered)))
     elif term:
@@ -192,7 +266,7 @@ async def panel_search(
     else:
         # No query: the most recent material, which is what an editor opening
         # the panel mid-shoot actually wants.
-        recent = select(Asset).order_by(Asset.captured_at.desc().nullslast())
+        recent = select(Asset).where(online).order_by(Asset.captured_at.desc().nullslast())
         if media_type:
             recent = recent.where(Asset.media_type == media_type)
         results = list((await db.execute(recent.limit(limit))).scalars().all())
@@ -217,14 +291,16 @@ async def panel_search(
             path=_translate_for(asset, profiles),
             proxy_url=_media_url(asset.id, "proxy"),
             thumbnail_url=_media_url(asset.id, "thumbnail"),
+            hit_ms=hit_ms.get(asset.id) if asset.media_type == "video" else None,
+            matched=matched.get(asset.id, "name"),
         )
         for asset in results[:limit]
     ]
 
     if not profiles:
         note = (
-            "No path profile selected, so clips will be linked from the server "
-            "rather than your local mount."
+            "No path profile selected, so these results carry no local path. Pick "
+            "this machine's profile to import them."
         )
     else:
         unmapped = sum(1 for e in entries if e.path is None)
@@ -383,7 +459,10 @@ async def frame_grab(
     grab = get_settings().data_dir / "grabs" / str(asset_id) / f"{frame_ms}.{GRAB_EXT}"
     if not grab.is_file():
         source = Path(library.root_path) / asset.relative_path
-        partial = grab.with_suffix(f".part.{GRAB_EXT}")
+        # A name of its own per request: two imports asking for the same
+        # frame at once (a listing opened on two machines) each write their
+        # own partial, and the first to finish is the one kept.
+        partial = grab.with_name(f"{frame_ms}.{uuid.uuid4().hex}.part.{GRAB_EXT}")
         partial.parent.mkdir(parents=True, exist_ok=True)
         try:
             await asyncio.to_thread(extract_still, source, partial, frame_ms / 1000)
@@ -393,7 +472,10 @@ async def frame_grab(
             raise HTTPException(
                 status_code=502, detail=f"Could not grab that frame: {err}"
             ) from err
-        partial.replace(grab)
+        if grab.is_file():
+            partial.unlink(missing_ok=True)
+        else:
+            partial.replace(grab)
         log.info("panel.grabbed", asset_id=str(asset_id), frame_ms=frame_ms)
     return FileResponse(grab, media_type="image/tiff")
 
