@@ -110,13 +110,21 @@ local function plan(listing, preferRaw, report, copyTo, grabTo)
       table.insert(entries, {
         grab = item.grab_url,
         name = item.filename,
+        caption = item.caption,
         folder = grabFolder,
-        copy = LrPathUtils.child(grabFolder, stem .. "." .. (item.grab_ext or "jpg")),
+        -- A grab is a TIFF (the server says so; "tif" is for a server that
+        -- predates the field).
+        copy = LrPathUtils.child(grabFolder, stem .. "." .. (item.grab_ext or "tif")),
       })
     elseif path then
-      local entry = { path = path, raw = isRaw, name = item.filename }
+      local entry = { path = path, raw = isRaw, name = item.filename, caption = item.caption }
       if folder then
-        local ext = string.lower(LrPathUtils.extension(path) or "jpg")
+        -- `extension` is "" (not nil) for a file with none, so test for both.
+        local ext = LrPathUtils.extension(path)
+        if ext == nil or ext == "" then
+          ext = "jpg"
+        end
+        ext = string.lower(ext)
         local stem = item.copy_name
         if stem == nil or stem == "" then
           stem = string.format("%02d-", n) .. LrPathUtils.removeExtension(item.filename or "photo")
@@ -202,7 +210,11 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
             report.grabbed = report.grabbed + 1
           end
         else
-          table.insert(report.failed, entry.name or entry.path)
+          -- Say why. A grab refused for want of the export scope, or a
+          -- server that could not read the clip, used to come out as
+          -- "Lightroom could not add", which it had not been asked to.
+          local why = (not ok) and (" — " .. tostring(copied)) or ""
+          table.insert(report.failed, (entry.name or entry.path) .. why)
           entry = nil
         end
       end
@@ -243,6 +255,22 @@ local function importOne(catalog, set, name, entries, report, progress, before, 
         table.insert(photos, photo)
         if entry.raw then
           report.raws = report.raws + 1
+        end
+        -- The listing's caption ("LedgeRock — Fall · Drone · July 2023")
+        -- travels with the photograph into Lightroom's own exports and
+        -- print captions. A caption the photograph already has is kept.
+        if entry.caption and entry.caption ~= "" then
+          local wrote = LrTasks.pcall(function()
+            local current = photo:getFormattedMetadata("caption")
+            if current == nil or current == "" then
+              photo:setRawMetadata("caption", entry.caption)
+              return true
+            end
+            return false
+          end)
+          if wrote then
+            report.captioned = (report.captioned or 0) + 1
+          end
         end
       end
       if not copying then
@@ -300,8 +328,11 @@ local function summary(report, collections, chosen, stopped)
   if report.reused > 0 then
     table.insert(lines, "Already in this catalogue, so reused: " .. report.reused .. ".")
   end
+  if (report.captioned or 0) > 0 then
+    table.insert(lines, "Captions from the listing written to " .. report.captioned .. ".")
+  end
   if #report.failed > 0 then
-    table.insert(lines, "Lightroom could not add: " .. namedList(report.failed))
+    table.insert(lines, "Could not be added: " .. namedList(report.failed))
   end
   if #report.unreachable > 0 then
     table.insert(lines, "Not found on this machine: " .. #report.unreachable .. ". First: "
@@ -349,7 +380,12 @@ LrTasks.startAsyncTask(function()
     -- libraries (W:, X:, Y:), and the server lists one row for each.
     local profileItems, prefixes, order = {}, {}, {}
     local okProfiles, profiles = LrTasks.pcall(Client.profiles)
-    if okProfiles then
+    if not okProfiles then
+      -- A failed request is not "no profiles"; say what actually happened.
+      LrDialogs.message("FrameFound", tostring(profiles), "critical")
+      return
+    end
+    do
       for _, profile in ipairs(profiles) do
         local name = profile.profile_name
         if prefixes[name] == nil then

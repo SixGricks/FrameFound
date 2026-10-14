@@ -1,5 +1,5 @@
 /*
- * FrameFound panel for Premiere Pro (UXP). panel build 0.3.0
+ * FrameFound panel for Premiere Pro (UXP). panel build 0.4.0
  *
  * The panel's whole job: search the catalogue, and put the clips the editor
  * picked into the open project at paths their machine can actually open. That
@@ -8,8 +8,9 @@
  * not translate produces a project full of offline media.
  *
  * Written against UXP's restricted capability set on purpose (ADR-0019). No
- * Node, no filesystem beyond what the manifest asks for, and one declared
- * network host. Nothing here can reach the operator's disk on its own.
+ * Node, no filesystem beyond what the manifest asks for, and only the network
+ * hosts the manifest declares. Nothing here can reach the operator's disk on
+ * its own.
  *
  * Two API surfaces are used and they are handled differently:
  *   - `premierepro`  — the UXP DOM API. Availability varies by version, so
@@ -18,13 +19,27 @@
  *                      the rest of the API.
  */
 
+const BUILD = "0.4.0";
+// A hung server used to leave "Searching…" on screen for good.
+const API_TIMEOUT_MS = 20000;
+const THUMBNAIL_TIMEOUT_MS = 10000;
+// The server's cap; the default of 24 left a third of the results unseen.
+const MAX_RESULTS = 60;
+
 const state = {
   server: "",
   token: "",
   profile: "",
   results: [],
   selected: new Set(),
+  identity: null, // /panel/me: who the token is and what it may do
+  connected: false,
 };
+
+// Thumbnails for the current results, by asset id. Every re-render used to
+// fetch all of them again — selecting one of 24 results was 24 downloads —
+// and never revoked the object URLs it made.
+const thumbnails = new Map();
 
 const $ = (id) => document.getElementById(id);
 
@@ -45,26 +60,67 @@ function load() {
   $("token").value = state.token;
 }
 
+function normaliseServer(value) {
+  // The address of the server, not of its API: a pasted ".../api/v1" would
+  // otherwise become ".../api/v1/api/v1/...".
+  return value
+    .trim()
+    .replace(/\/api\/v1\/?$/i, "")
+    .replace(/\/+$/, "");
+}
+
 function save() {
-  state.server = $("server").value.trim().replace(/\/$/, "");
+  state.server = normaliseServer($("server").value);
   state.token = $("token").value.trim();
-  localStorage.setItem("ff.server", state.server);
-  localStorage.setItem("ff.token", state.token);
+  $("server").value = state.server;
+  try {
+    localStorage.setItem("ff.server", state.server);
+    localStorage.setItem("ff.token", state.token);
+  } catch (e) {
+    /* storage unavailable: the settings last until the panel is unloaded */
+  }
+}
+
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    /* see save() */
+  }
 }
 
 // --- api ------------------------------------------------------------------
 
+async function fetchWithTimeout(url, options, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error(`No answer from ${state.server} within ${Math.round(ms / 1000)} s.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function api(path, options = {}) {
   if (!state.server) throw new Error("No server address set");
   if (!state.token) throw new Error("No panel token set");
-  const response = await fetch(state.server + "/api/v1" + path, {
-    ...options,
-    headers: {
-      Authorization: "Bearer " + state.token,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
+  const response = await fetchWithTimeout(
+    state.server + "/api/v1" + path,
+    {
+      ...options,
+      headers: {
+        Authorization: "Bearer " + state.token,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
     },
-  });
+    API_TIMEOUT_MS
+  );
   if (!response.ok) {
     // Read the body so the server's detail string reaches the status line.
     // The server returns JSON like {"detail": "..."} on errors, but falls back
@@ -75,7 +131,7 @@ async function api(path, options = {}) {
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
-          detail = parsed.detail || parsed.message || raw;
+          detail = parsed.detail || (parsed.error && parsed.error.message) || parsed.message || raw;
         } catch {
           detail = raw;
         }
@@ -84,39 +140,30 @@ async function api(path, options = {}) {
       /* network read failed — detail stays empty */
     }
     const suffix = detail ? ` — ${detail}` : "";
-    if (response.status === 401) {
-      throw new Error(`401 Unauthorized${suffix}`);
-    }
-    if (response.status === 403) {
-      throw new Error(`403 Forbidden${suffix}`);
-    }
-    throw new Error(`HTTP ${response.status}${suffix}`);
+    const error = new Error(`HTTP ${response.status}${suffix}`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
 
 /*
- * UXP refuses any host not declared in the manifest, and the message it throws
- * ("Permission denied to the url ... Manifest entry not found") is the same
- * whether the host is genuinely absent or was declared and then discarded.
- *
- * Premiere 26.3.0 rejected `http://192.168.1.193:8080` while that exact string
- * was in the manifest, which leaves two candidates: UXP matches origins
- * without the port, or it drops plain-HTTP entries at parse time because it
- * requires TLS. The manifest now declares both port and port-less forms of
- * each, so if this still fails the answer is the second one — and switching
- * the server field to https:// will change the error to a TLS complaint
- * rather than a permissions one. That difference is the diagnosis.
+ * UXP refuses any host the manifest's network permission does not cover, and
+ * the message it throws ("Permission denied to the url ... Manifest entry not
+ * found") is the same whether the host is absent from the list or the whole
+ * permission block is not in effect. The shipped manifest allows every host;
+ * see docs/panels.md for the investigation and how to narrow it.
  */
-function explainNetworkError(err, url) {
+function explainNetworkError(err) {
   const text = String(err && err.message ? err.message : err);
   if (!/Manifest entry not found|Permission denied/i.test(text)) return text;
   return (
     text +
-    " — UXP blocked this host. Try the same address over https:// : if the " +
-    "error changes to a certificate or TLS failure, UXP is refusing plain " +
-    "HTTP and the server needs a certificate this machine trusts. If it stays " +
-    "a permissions error, the host is not matching a manifest entry."
+    " — UXP blocked this host. The panel's manifest.json must allow this server " +
+    "(scheme, host and port exactly, or \"domains\": \"all\"), and after any " +
+    "manifest change the panel must be Unloaded and Loaded again in the UXP " +
+    "Developer Tool — Reload does not re-read it. If the panel shows an older " +
+    `build than ${BUILD} below, it is stale.`
   );
 }
 
@@ -126,27 +173,84 @@ function status(message, isError = false) {
   el.className = isError ? "err" : "muted";
 }
 
-// --- searching ------------------------------------------------------------
+// --- connecting -----------------------------------------------------------
+
+function canExport() {
+  return !state.identity || state.identity.scopes.includes("export");
+}
+
+async function connect() {
+  await loadProfiles();
+  // Who we are, and what the token may do. A server from before 2026-10 has
+  // no /panel/me: that is a connection, not a failure.
+  state.identity = null;
+  try {
+    state.identity = await api("/panel/me");
+  } catch (err) {
+    if (!(err && err.status === 404)) throw err;
+  }
+  state.connected = true;
+  if (state.identity) {
+    let line = `Connected as ${state.identity.name} (${state.identity.scopes.join(", ")}), FrameFound ${state.identity.server_version}.`;
+    if (!canExport()) {
+      line += " This token cannot write an XML bin: it has no export scope.";
+    }
+    status(line);
+  } else {
+    status("Connected.");
+  }
+}
 
 async function loadProfiles() {
   const select = $("profile");
   select.innerHTML = "";
   const none = document.createElement("option");
   none.value = "";
-  none.textContent = "No path profile (stream from server)";
+  none.textContent = "No path profile (search only)";
   select.appendChild(none);
 
+  // One entry per profile name. The server lists one row per library the
+  // profile covers, so a workstation with W:, X: and Y: appeared three times.
   const profiles = await api("/panel/profiles");
+  const prefixes = new Map();
   for (const profile of profiles) {
+    if (!prefixes.has(profile.profile_name)) prefixes.set(profile.profile_name, []);
+    prefixes.get(profile.profile_name).push(profile.mapped_prefix);
+  }
+  for (const [name, mapped] of prefixes) {
     const option = document.createElement("option");
-    option.value = profile.profile_name;
-    option.textContent = `${profile.profile_name} — ${profile.mapped_prefix}`;
+    option.value = name;
+    option.textContent = `${name} — ${mapped.join("  ")}`;
     select.appendChild(option);
   }
   select.value = state.profile;
+  if (select.value !== state.profile) {
+    // The saved profile was renamed or removed. Showing "no profile" while
+    // still sending the old name produced paths of null for every result.
+    state.profile = "";
+    select.value = "";
+    remember("ff.profile", "");
+  }
+}
+
+// --- searching ------------------------------------------------------------
+
+function forgetThumbnails() {
+  for (const url of thumbnails.values()) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      /* already gone */
+    }
+  }
+  thumbnails.clear();
 }
 
 async function search() {
+  if (!state.connected) {
+    status("Not connected. Open Settings below.", true);
+    return;
+  }
   const q = $("q").value.trim();
   status("Searching…");
   try {
@@ -154,15 +258,24 @@ async function search() {
       q,
       profile: state.profile,
       media_type: $("type").value,
+      limit: String(MAX_RESULTS),
     });
     const data = await api("/panel/search?" + params.toString());
+    forgetThumbnails();
     state.results = data.results;
     state.selected.clear();
     render();
     status(`${data.results.length} found. ${data.note}`);
   } catch (err) {
-    status(err.message, true);
+    status(explainNetworkError(err), true);
   }
+}
+
+function clockTime(ms) {
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = String(total % 60).padStart(2, "0");
+  return `${m}:${s}`;
 }
 
 function render() {
@@ -216,7 +329,7 @@ function render() {
 
     const img = document.createElement("img");
     // Thumbnails ride the same bearer token, so they are fetched rather than
-    // set as a src the panel cannot authenticate.
+    // set as a src the panel cannot authenticate — once per result.
     thumbnail(hit).then((url) => {
       if (url) img.src = url;
     });
@@ -233,7 +346,15 @@ function render() {
     const bits = [hit.media_type];
     if (hit.duration_s) bits.push(Math.round(hit.duration_s) + "s");
     if (hit.width && hit.height) bits.push(hit.width + "×" + hit.height);
+    if (hit.captured_at) bits.push(hit.captured_at.slice(0, 10));
     sub.textContent = bits.join(" · ");
+    if (hit.matched === "visual") {
+      // Found by what it looks like, not by its name — and for a clip, where.
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = hit.hit_ms != null ? `looks like it @ ${clockTime(hit.hit_ms)}` : "looks like it";
+      sub.appendChild(badge);
+    }
     if (!hit.path) {
       const warn = document.createElement("span");
       warn.className = "offline";
@@ -272,13 +393,18 @@ function render() {
 }
 
 async function thumbnail(hit) {
+  if (thumbnails.has(hit.asset_id)) return thumbnails.get(hit.asset_id);
   try {
-    const response = await fetch(state.server + hit.thumbnail_url, {
-      headers: { Authorization: "Bearer " + state.token },
-    });
+    const response = await fetchWithTimeout(
+      state.server + hit.thumbnail_url,
+      { headers: { Authorization: "Bearer " + state.token } },
+      THUMBNAIL_TIMEOUT_MS
+    );
     if (!response.ok) return null;
     const blob = await response.blob();
-    return URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
+    thumbnails.set(hit.asset_id, url);
+    return url;
   } catch (e) {
     return null;
   }
@@ -294,6 +420,10 @@ async function thumbnail(hit) {
  * The fallback is not a consolation prize: it is the path ADR-0019 chose to
  * ship first, it works on every NLE rather than only current Premiere, and it
  * is what makes the panel useful on a version whose API does not cooperate.
+ *
+ * Results carry `proxy_url`, a server-streamed URL. Premiere's import and
+ * proxy-attach calls take local paths, not URLs, so clips without a local
+ * path cannot be imported — the panel says so instead of promising to stream.
  */
 async function importSelected() {
   const chosen = state.results.filter((r) => state.selected.has(r.asset_id));
@@ -304,11 +434,16 @@ async function importSelected() {
   const withoutPath = chosen.filter((r) => !r.path);
 
   if (withPath.length === 0) {
-    status("None of those have a local path. Pick a path profile first.", true);
+    status(
+      "None of those have a local path on this machine. Pick this machine's path " +
+        "profile above (or add one in FrameFound under Libraries) and search again.",
+      true
+    );
     return;
   }
 
   status(`Importing ${withPath.length}…`);
+  let reason = "";
   try {
     const ppro = require("premierepro");
     const project = await ppro.Project.getActiveProject();
@@ -317,60 +452,43 @@ async function importSelected() {
       return;
     }
     const root = await project.getRootItem();
-
-    // --- Proxy-first import strategy ----------------------------------------
-    //
-    // FrameFound's search results carry `proxy_url`, which is a *server-streamed*
-    // URL (e.g. /api/v1/media/{id}/proxy). Premiere's attachProxy() and
-    // setProxyEnabled() require a local filesystem path, not a URL, so the
-    // server-side proxy cannot be attached this way.
-    //
-    // The current schema has no `proxy_path` field (a workstation-mapped path
-    // to a locally accessible proxy file). Until the server exposes one —
-    // either by mounting the data volume on the edit bay and adding the field
-    // to PanelAsset, or by allowing the panel to download the proxy to a temp
-    // location — we import the originals directly.
-    //
-    // When `proxy_path` becomes available, the proxy-first flow would be:
-    //
-    //   const proxyPaths = withPath.filter(r => r.proxy_path).map(r => r.proxy_path);
-    //   const directPaths = withPath.filter(r => !r.proxy_path).map(r => r.path);
-    //
-    //   if (proxyPaths.length > 0) {
-    //     await project.importFiles(proxyPaths, true, root, false);
-    //     // Walk the project tree and attach originals as offline sources
-    //     const items = await root.getItems();
-    //     for (const hit of withPath.filter(r => r.proxy_path)) {
-    //       const item = items.find(i => {
-    //         try { return i.getMediaPath() === hit.proxy_path; } catch { return false; }
-    //       });
-    //       if (item) {
-    //         // 1 = OverrideMediaType.Video; use 2 for audio-only clips
-    //         await item.attachProxy(hit.proxy_path, 1);
-    //         await item.setProxyEnabled(true);
-    //       }
-    //     }
-    //   }
-    //   if (directPaths.length > 0) {
-    //     await project.importFiles(directPaths, true, root, false);
-    //   }
-
-    // For now: import originals directly for all clips that have a local path.
     const paths = withPath.map((r) => r.path);
     // importFiles(paths, suppressWarnings, targetBin, asNumberedStills)
-    await project.importFiles(paths, true, root, false);
+    const accepted = await project.importFiles(paths, true, root, false);
+    if (accepted === false) {
+      throw new Error("Premiere declined the import (importFiles returned false)");
+    }
 
     let msg = `Imported ${paths.length} clip${paths.length === 1 ? "" : "s"}.`;
     if (withoutPath.length > 0) {
-      msg += ` ${withoutPath.length} skipped (no local path — check path profile).`;
+      msg += ` ${withoutPath.length} skipped (no local path — check the path profile).`;
     }
     status(msg);
+    return;
   } catch (err) {
     // Any version whose UXP API does not cooperate lands here, and so does a
-    // panel running outside Premiere entirely.
-    status("Direct import unavailable — writing an XML instead…");
-    await exportXml(chosen);
+    // missing file and a panel running outside Premiere entirely. The reason
+    // used to be swallowed; it is the one thing worth reading.
+    reason = String(err && err.message ? err.message : err);
+    console.error("FrameFound: direct import failed", err);
   }
+  if (!canExport()) {
+    status(
+      `Direct import did not work (${reason}), and this token cannot write an XML ` +
+        "bin instead: it has no export scope. Create a token with export ticked.",
+      true
+    );
+    return;
+  }
+  status(`Direct import did not work (${reason}). Writing an XML to import by hand…`);
+  await exportXml(chosen);
+}
+
+function exportName() {
+  // Named after the search, so two exports in a row do not offer to
+  // overwrite each other. Characters a Windows filename cannot hold go.
+  const q = $("q").value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-");
+  return (q ? `FrameFound - ${q}` : "FrameFound selection").slice(0, 100);
 }
 
 async function exportXml(chosen) {
@@ -380,7 +498,7 @@ async function exportXml(chosen) {
       body: JSON.stringify({
         asset_ids: chosen.map((c) => c.asset_id),
         profile: state.profile,
-        sequence_name: "FrameFound selection",
+        sequence_name: exportName(),
       }),
     });
     const fs = require("uxp").storage.localFileSystem;
@@ -390,45 +508,59 @@ async function exportXml(chosen) {
       return;
     }
     await file.write(data.xml);
-    status(`Wrote ${data.filename}. Import it with File → Import.`);
+    status(
+      `Wrote ${data.filename} (${data.clips} clip${data.clips === 1 ? "" : "s"}). ` +
+        "In Premiere: File → Import, choose it, and the clips arrive in a bin."
+    );
   } catch (err) {
-    status("Could not export: " + err.message, true);
+    status("Could not export: " + explainNetworkError(err), true);
   }
 }
 
 // --- wiring ---------------------------------------------------------------
 
+function showSettings(show) {
+  $("settings").style.display = show ? "flex" : "none";
+}
+
 $("go").addEventListener("click", search);
 $("q").addEventListener("keydown", (e) => {
   if (e.key === "Enter") search();
 });
-$("type").addEventListener("change", search);
+$("type").addEventListener("change", () => {
+  if (state.connected) search();
+});
 $("profile").addEventListener("change", () => {
   state.profile = $("profile").value;
-  localStorage.setItem("ff.profile", state.profile);
+  remember("ff.profile", state.profile);
   if (state.results.length) search();
 });
 $("import").addEventListener("click", importSelected);
+$("toggle-settings").addEventListener("click", () => {
+  showSettings($("settings").style.display === "none");
+});
 $("save").addEventListener("click", async () => {
   save();
   try {
-    await loadProfiles();
-    $("settings").open = false;
-    status("Connected.");
+    await connect();
+    showSettings(false);
     await search();
   } catch (err) {
-    status(explainNetworkError(err, state.server), true);
+    state.connected = false;
+    status(explainNetworkError(err), true);
   }
 });
 
+$("build").textContent = `panel build ${BUILD}`;
 load();
 if (state.server && state.token) {
-  loadProfiles()
-    .then(() => {
-      status("Connected.");
-      return search();
-    })
-    .catch((err) => status(err.message, true));
+  showSettings(false);
+  connect()
+    .then(() => search())
+    .catch((err) => {
+      state.connected = false;
+      status(explainNetworkError(err), true);
+    });
 } else {
-  $("settings").open = true;
+  showSettings(true);
 }

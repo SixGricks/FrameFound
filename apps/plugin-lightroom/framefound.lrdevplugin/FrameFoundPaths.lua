@@ -33,18 +33,31 @@ LrTasks.startAsyncTask(function()
   -- LrTasks.pcall: plain pcall is a C-call boundary, and Lua 5.1 cannot yield
   -- across one, which is what turns a legal LrHttp call into "Yielding is not
   -- allowed within a C or metamethod call".
+  -- Any kind of file: a selected video has paths too.
   local ok, results = LrTasks.pcall(function()
-    return Client.search(filename, "", "image", 10)
+    return Client.search(filename, "", "", 60)
   end)
   if not ok then
     LrDialogs.message("FrameFound", tostring(results), "critical")
     return
   end
 
-  if #results == 0 then
+  -- Only an entry with this very name. A search also returns what *looks*
+  -- like the query — on a catalogue with embeddings, the nearest frames to
+  -- the string "DJI_0323.JPG" — and taking the first result showed a
+  -- different photograph's paths under this one's name.
+  local matches = {}
+  for _, hit in ipairs(results) do
+    if hit.filename and string.lower(hit.filename) == string.lower(filename) then
+      table.insert(matches, hit)
+    end
+  end
+
+  if #matches == 0 then
     LrDialogs.message(
       "FrameFound",
-      filename .. " is not in the FrameFound catalogue, or has not been scanned yet.",
+      filename .. " is not in the FrameFound catalogue, or has not been scanned yet."
+        .. (#results > 0 and ("\n\n(" .. #results .. " similar-looking results were found, none with this name.)") or ""),
       "info"
     )
     return
@@ -52,15 +65,15 @@ LrTasks.startAsyncTask(function()
 
   local lines = { "Lightroom sees this photograph at:", "  " .. (localPath or "(unknown)"), "" }
 
-  if #results > 1 then
+  if #matches > 1 then
     table.insert(
       lines,
-      #results .. " catalogue entries share that filename — showing the first."
+      #matches .. " catalogue entries share that filename — showing the first."
     )
     table.insert(lines, "")
   end
 
-  local hit = results[1]
+  local hit = matches[1]
   local ok2, detail = LrTasks.pcall(function()
     return Client.getJson("/panel/assets/" .. hit.asset_id .. "/paths")
   end)

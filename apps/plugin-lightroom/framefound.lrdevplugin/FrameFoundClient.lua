@@ -1,8 +1,8 @@
 --[[
   Talking to FrameFound from Lightroom.
 
-  Kept in one file so the two menu items share exactly one idea of what the API
-  is and how it authenticates. LrHttp is synchronous and must not be called on
+  Kept in one file so the three menu items share exactly one idea of what the
+  API is and how it authenticates. LrHttp is synchronous and must not be called on
   the main task, so every caller wraps this in LrTasks.startAsyncTask — a
   mistake that manifests as Lightroom freezing rather than as an error, which
   is why it is said here as well as at each call site.
@@ -21,6 +21,9 @@ local Json = require "FrameFoundJson"
 local FrameFoundClient = {}
 
 local TIMEOUT = 20
+-- A search can be the first use of the text model after the server restarted,
+-- and loading it on a CPU without AVX takes longer than a request should.
+local SEARCH_TIMEOUT = 60
 
 function FrameFoundClient.prefs()
   return LrPrefs.prefsForPlugin()
@@ -61,9 +64,46 @@ function FrameFoundClient.encode(value)
   )
 end
 
+--- What an HTTP failure means, in words the person at the keyboard can act on.
+--  Shared by every call, downloads included: a grab refused for a token
+--  without the export scope used to be reported as "Lightroom could not add".
+local function explainStatus(status, token, what)
+  if status == 401 then
+    -- Show what was actually sent. A token is 47 characters pasted by hand,
+    -- and "rejected" reads as "revoked" when the real cause is a dropped
+    -- character or a trailing newline. Both ends and the length: a matching
+    -- prefix alone proves nothing — the first failure of this kind had the
+    -- right prefix and the right length and was still wrong, transcribed by
+    -- eye from a screen, where 0/O, l/I/1 and -/_ do not survive.
+    local head = token:sub(1, 10)
+    local tail = token:sub(-4)
+    return "FrameFound rejected this token.\n\n"
+      .. "Sent: "
+      .. head
+      .. "…"
+      .. tail
+      .. "  ("
+      .. tostring(#token)
+      .. " characters; a valid one is 47)\n\n"
+      .. "Most likely it was typed or read by eye rather than pasted — "
+      .. "0/O, l/I/1 and -/_ all look alike in a token. Use the Copy button "
+      .. "on Security → Panel tokens, or create a fresh one and paste it. "
+      .. "A matching prefix is not proof: check the length and the last "
+      .. "four characters too."
+  elseif status == 403 then
+    return "This panel token does not have permission for "
+      .. (what or "that")
+      .. ". Video frame grabs and XML bins need the \"export\" scope: tick it when "
+      .. "creating the token under Security → Panel tokens."
+  elseif status == 404 then
+    return "FrameFound has no " .. (what or "such thing") .. " (404)."
+  end
+  return "FrameFound returned an error (" .. tostring(status) .. ") for " .. (what or "that") .. "."
+end
+
 --- GET a panel endpoint. Must be called inside LrTasks.startAsyncTask.
-function FrameFoundClient.get(path)
-  local prefs = FrameFoundClient.prefs()
+--  `timeout` is seconds; the default suits anything but a search.
+function FrameFoundClient.get(path, timeout)
   if not FrameFoundClient.configured() then
     LrErrors.throwUserError(
       "FrameFound is not set up yet. Open File → Plug-in Manager, "
@@ -78,48 +118,22 @@ function FrameFoundClient.get(path)
     { field = "Accept", value = "application/json" },
   }
 
-  local body, responseHeaders = LrHttp.get(server .. "/api/v1" .. path, headers, TIMEOUT)
+  local body, responseHeaders = LrHttp.get(server .. "/api/v1" .. path, headers, timeout or TIMEOUT)
 
   if body == nil then
     local reason = responseHeaders and responseHeaders.error and responseHeaders.error.name
+    local hint = ""
+    if reason and tostring(reason):lower():find("timeout", 1, true) then
+      hint = " The server may be loading its search model after a restart; try again in a minute."
+    end
     LrErrors.throwUserError(
-      "Could not reach FrameFound at " .. server .. (reason and (" (" .. reason .. ")") or "")
+      "Could not reach FrameFound at " .. server .. (reason and (" (" .. reason .. ")") or "") .. hint
     )
   end
 
   local status = responseHeaders and responseHeaders.status
-  if status == 401 then
-    -- Show what was actually sent. A token is 43 characters pasted by hand,
-    -- and "rejected" reads as "revoked" when the real cause is a dropped
-    -- character or a trailing newline. The prefix shown here is the same one
-    -- listed on the Security page, so the two can simply be compared — which
-    -- turns a guess into a two-second check.
-    -- Show both ends and the length. A matching prefix alone proves nothing:
-    -- the first failure of this kind had the right prefix and the right
-    -- length, and was still wrong — the token had been transcribed by eye
-    -- from a screen, and 0/O, l/I/1 and -/_ do not survive that. Showing the
-    -- tail as well is what makes a mid-string error visible.
-    local head = token:sub(1, 10)
-    local tail = token:sub(-4)
-    LrErrors.throwUserError(
-      "FrameFound rejected this token.\n\n"
-        .. "Sent: "
-        .. head
-        .. "…"
-        .. tail
-        .. "  ("
-        .. tostring(#token)
-        .. " characters; a valid one is 47)\n\n"
-        .. "Most likely it was typed or read by eye rather than pasted — "
-        .. "0/O, l/I/1 and -/_ all look alike in a token. Use the Copy button "
-        .. "on Security → Panel tokens, or create a fresh one and paste it. "
-        .. "A matching prefix is not proof: check the length and the last "
-        .. "four characters too."
-    )
-  elseif status == 403 then
-    LrErrors.throwUserError("This panel token does not have permission for that.")
-  elseif status ~= nil and status >= 400 then
-    LrErrors.throwUserError("FrameFound returned an error (" .. tostring(status) .. ").")
+  if status ~= nil and status >= 400 then
+    LrErrors.throwUserError(explainStatus(status, token, path))
   end
 
   return body
@@ -130,16 +144,18 @@ function FrameFoundClient.getJson(path)
   return Json.decode(FrameFoundClient.get(path))
 end
 
+--- Search. `mediaType` "" means any kind; nil keeps the photographs-only
+--  default the dialogs want.
 function FrameFoundClient.search(query, profile, mediaType, limit)
   local path = "/panel/search?q="
     .. FrameFoundClient.encode(query)
     .. "&profile="
     .. FrameFoundClient.encode(profile)
     .. "&media_type="
-    .. FrameFoundClient.encode(mediaType or "image")
+    .. FrameFoundClient.encode(mediaType == nil and "image" or mediaType)
     .. "&limit="
     .. tostring(limit or 24)
-  local data = FrameFoundClient.getJson(path)
+  local data = Json.decode(FrameFoundClient.get(path, SEARCH_TIMEOUT))
   return data.results or {}, data
 end
 
@@ -147,20 +163,40 @@ function FrameFoundClient.profiles()
   return FrameFoundClient.getJson("/panel/profiles")
 end
 
+--- Who this token is, and what it may do: { kind, name, scopes, user_email,
+--  server_version }. A server from before 2026-10 has no such endpoint and
+--  answers 404, which callers treat as "unknown", not as a failure.
+function FrameFoundClient.identity()
+  return FrameFoundClient.getJson("/panel/me")
+end
+
+function FrameFoundClient.hasScope(identity, scope)
+  for _, s in ipairs((identity and identity.scopes) or {}) do
+    if s == scope then
+      return true
+    end
+  end
+  return false
+end
+
 --- Download a panel endpoint's file (a full-size frame grab) to a path.
 --  Grabbing a 4K frame from a video on the NAS takes the server a few
 --  seconds the first time, hence the long timeout. Returns true, or throws
---  a user error. Inside LrTasks.startAsyncTask only.
+--  a user error that says why. Inside LrTasks.startAsyncTask only.
 function FrameFoundClient.download(path, destination)
+  local token = FrameFoundClient.token()
   local headers = {
-    { field = "Authorization", value = "Bearer " .. FrameFoundClient.token() },
+    { field = "Authorization", value = "Bearer " .. token },
   }
   local body, response = LrHttp.get(FrameFoundClient.server() .. "/api/v1" .. path, headers, 180)
   local status = response and response.status
-  if body == nil or status == nil or status >= 400 then
+  if body == nil or status == nil then
+    local reason = response and response.error and response.error.name
     LrErrors.throwUserError(
-      "FrameFound could not provide " .. path .. " (" .. tostring(status or "no response") .. ")"
+      "Could not download " .. path .. " from FrameFound" .. (reason and (" (" .. reason .. ")") or "")
     )
+  elseif status >= 400 then
+    LrErrors.throwUserError(explainStatus(status, token, "the frame grab " .. path))
   end
   local file = io.open(destination, "wb")
   if file == nil then

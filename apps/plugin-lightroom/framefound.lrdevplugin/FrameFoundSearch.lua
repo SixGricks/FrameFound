@@ -25,9 +25,24 @@ local LrView        = import "LrView"
 
 local Client = require "FrameFoundClient"
 
-local function addToCatalogue(results)
+-- Collections land under this set, beside the listing imports.
+local SET_NAME = "FrameFound"
+
+local function findPhoto(catalog, path)
+  local ok, photo = LrTasks.pcall(function()
+    return catalog:findPhotoByPath(path)
+  end)
+  if ok then
+    return photo
+  end
+  return nil
+end
+
+local function addToCatalogue(results, query)
   local catalog = LrApplication.activeCatalog()
-  local added, missing, skipped = 0, 0, 0
+  local added, reused, missing, skipped = 0, 0, 0, 0
+  local failed = {}
+  local photos = {}
 
   catalog:withWriteAccessDo("Add from FrameFound", function()
     for _, hit in ipairs(results) do
@@ -41,15 +56,55 @@ local function addToCatalogue(results)
         -- that is not mounted, or a profile pointing at the wrong letter.
         missing = missing + 1
       else
-        local photo = catalog:addPhoto(path)
+        -- One photograph at a time, each on its own: a file Lightroom refuses
+        -- (a format it cannot read) or one already in the catalogue used to
+        -- throw inside this block and abort the whole batch.
+        local photo = findPhoto(catalog, path)
         if photo then
-          added = added + 1
+          reused = reused + 1
+        else
+          local ok, result = LrTasks.pcall(function()
+            return catalog:addPhoto(path)
+          end)
+          if ok and result then
+            photo = result
+            added = added + 1
+          else
+            table.insert(failed, LrPathUtils.leafName(path) .. ((not ok) and (" — " .. tostring(result)) or ""))
+          end
+        end
+        if photo then
+          table.insert(photos, photo)
         end
       end
     end
-  end, { timeout = 30 })
+  end, { timeout = 60 })
+
+  -- Everything found, in one collection, shown: sixty photographs added by
+  -- reference are otherwise scattered through the folder tree with nothing
+  -- to say which ones just arrived.
+  local collectionName = "Search: " .. tostring(query or "")
+  if #photos > 0 then
+    LrTasks.pcall(function()
+      local collection
+      catalog:withWriteAccessDo("FrameFound collection", function()
+        local set = catalog:createCollectionSet(SET_NAME, nil, true)
+        collection = catalog:createCollection(collectionName, set, true)
+        collection:addPhotos(photos)
+      end, { timeout = 30 })
+      if collection then
+        catalog:setActiveSources({ collection })
+      end
+    end)
+  end
 
   local message = added .. " added to the catalogue."
+  if reused > 0 then
+    message = message .. " " .. reused .. " were already in it."
+  end
+  if #photos > 0 then
+    message = message .. "\n\nAll of them are in Collections › " .. SET_NAME .. " › " .. collectionName .. "."
+  end
   if missing > 0 then
     message = message
       .. "\n\n"
@@ -62,6 +117,9 @@ local function addToCatalogue(results)
       .. "\n\n"
       .. skipped
       .. " had no local path — choose a path profile and search again."
+  end
+  if #failed > 0 then
+    message = message .. "\n\nLightroom could not add: " .. table.concat(failed, "; ")
   end
   LrDialogs.message("FrameFound", message, "info")
 end
@@ -94,13 +152,26 @@ LrTasks.startAsyncTask(function()
     local ok, profiles = LrTasks.pcall(function()
       return Client.profiles()
     end)
-    if ok then
-      for _, profile in ipairs(profiles) do
-        table.insert(profileItems, {
-          title = profile.profile_name .. " — " .. (profile.mapped_prefix or ""),
-          value = profile.profile_name,
-        })
+    if not ok then
+      LrDialogs.message("FrameFound", tostring(profiles), "critical")
+      return
+    end
+    -- One entry per profile name: a workstation's profile covers several
+    -- libraries (W:, X:, Y:) and the server lists one row for each.
+    local prefixes, order = {}, {}
+    for _, profile in ipairs(profiles) do
+      local name = profile.profile_name
+      if prefixes[name] == nil then
+        prefixes[name] = {}
+        table.insert(order, name)
       end
+      table.insert(prefixes[name], profile.mapped_prefix or "?")
+    end
+    for _, name in ipairs(order) do
+      table.insert(profileItems, {
+        title = name .. " — " .. table.concat(prefixes[name], "  "),
+        value = name,
+      })
     end
 
     local contents = factory:column({
@@ -127,7 +198,7 @@ LrTasks.startAsyncTask(function()
 
     prefs.profile = props.profile
 
-    local searched, results = LrTasks.pcall(function()
+    local searched, results, response = LrTasks.pcall(function()
       return Client.search(props.query, props.profile, "image", 60)
     end)
     if not searched then
@@ -135,9 +206,17 @@ LrTasks.startAsyncTask(function()
       LrDialogs.message("FrameFound", tostring(results), "critical")
       return
     end
+    local note = (response and response.note) or ""
 
     if #results == 0 then
-      LrDialogs.message("FrameFound", "Nothing matched that search.", "info")
+      LrDialogs.message(
+        "FrameFound",
+        "Nothing matched \"" .. props.query .. "\".\n\n"
+          .. "A filename or folder name finds the file itself; a description "
+          .. "(\"red barn at sunset\") needs the photographs to have been indexed for "
+          .. "visual search, which the Processing page shows.",
+        "info"
+      )
       return
     end
 
@@ -196,7 +275,7 @@ LrTasks.startAsyncTask(function()
       else
         -- No profile match — name the file anyway so the user knows what
         -- FrameFound found, even though it cannot be imported right now.
-        leaf      = hit.original_filename or hit.filename or "(unknown filename)"
+        leaf      = hit.filename or "(unknown filename)"
         pathLabel = "No local path — choose a path profile and search again."
         pathColor = LrColor(0.55, 0.38, 0.00)
       end
@@ -238,6 +317,13 @@ LrTasks.startAsyncTask(function()
           .. (numResults == 1 and "" or "s")
           .. " found — check the ones you want to add:",
       }),
+      -- The server's own account of the paths: which profile they are for,
+      -- and how many fall in a library this machine has no profile for.
+      factory:static_text({
+        title      = note,
+        text_color = LrColor(0.50, 0.50, 0.50),
+        width_in_chars = 70,
+      }),
       -- Master toggle sits above the separator so it is always visible even
       -- when the list is long enough to scroll.
       factory:row({
@@ -278,7 +364,7 @@ LrTasks.startAsyncTask(function()
       if #selected == 0 then
         LrDialogs.message("FrameFound", "Nothing selected.", "info")
       else
-        addToCatalogue(selected)
+        addToCatalogue(selected, props.query)
       end
     end
   end)

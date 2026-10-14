@@ -36,8 +36,11 @@ Created in **Security → Panel tokens**. One per machine.
 
 - **Shown once.** Only a SHA-256 hash is stored, so a database leak exposes no
   working credential and there is no endpoint that can redisplay it.
-- **Read-only by default.** `export` — permission to produce a bin the host
-  application will act on — is a separate opt-in.
+- **Read-only by default.** `export` — permission to have the server produce
+  a new full-size file: an FCP7 bin for Premiere, or a video frame grab for
+  a Lightroom listing — is a separate opt-in. Searching, direct import and
+  adding files where they are need only `read`. `GET /panel/me` says which
+  scopes a token has; both clients show it on their connection test.
 - **No scope grants a write** to the library or the catalogue. That is the
   promise the short scope vocabulary exists to keep readable.
 - **Revocable**, listed with its prefix and when it was last used, next to
@@ -63,9 +66,13 @@ older versions use the FCP7 XML export from the web UI instead).
 3. **Load** it. The panel appears under **Window → Extensions → FrameFound**.
 4. Open **Settings** in the panel, enter the server address and the token.
 
-Before loading, edit `manifest.json` so `requiredPermissions.network.domains`
-lists *your* server. UXP refuses undeclared hosts, and the failure looks like a
-network error rather than a permissions one:
+The shipped `manifest.json` allows every network host
+(`"domains": "all"`) — a diagnostic left in place after the permission
+failure investigated below, and fine for a developer-loaded panel on the
+operator's own machine. Once the panel connects, narrow it to *your* server,
+scheme and port exactly; UXP refuses undeclared hosts, and the failure looks
+like a network error rather than a permissions one. After any manifest change,
+**Unload and Load** the panel in UDT — Reload does not re-read the manifest:
 
 ```json
 "domains": ["http://framefound.local:8080"]
@@ -332,11 +339,50 @@ routinely carries a trailing newline.
 ## What has not been tested
 
 The token layer, the path translation and the panel API are covered by tests
-and verified against the live deployment. Both clients have now been loaded in
-their host applications (see above), but **neither has completed a round trip**:
-Lightroom's fix is written and syntax-checked against Lua 5.1 but not yet re-run
-in Lightroom, and Premiere never got past the network permission to reach
-`importFiles`.
+and verified against the live deployment. Both clients have been loaded in
+their host applications (see above). **Lightroom has completed round trips**:
+the listing import ran in Lightroom Classic on 2026-09-26 (the `scrolled_view`
+fix came out of that run) and the GELCO calendar batches, including 44 video
+frame grabs, went through it on 2026-09-28. **Premiere has not**: it never got
+past the network permission to reach `importFiles`, so the direct import and
+its XML fallback remain untested in the host.
+
+### 2026-10-14 — review
+
+Both clients and the panel API were reviewed against each other (the
+contract table, bugs and gaps are in the roadmap entry of that date). What
+changed:
+
+- **Server.** Name matches rank before visual hits and offline files are
+  left out — with embeddings present, CLIP's nearest frames to the *string*
+  `DJI_0323.JPG` came first and the exact match fell past the limit, so
+  Lightroom's path diagnostic showed another photograph's paths. A visual
+  hit on a video now carries `hit_ms` and every result says how it
+  `matched`. `GET /panel/me` reports the token's name, scopes and the server
+  version. Two concurrent grabs of one frame no longer race on one partial
+  file.
+- **Premiere 0.4.0.** Thumbnails are fetched once per result (every click
+  re-downloaded all of them); requests time out instead of hanging; a failed
+  direct import says why before offering the XML; profiles are listed once
+  per workstation and a stale saved profile is dropped; the XML is named
+  after the search; the connection line names the token and its scopes, and
+  a token without `export` is told it cannot write a bin before it tries.
+  The manifest version now matches the build.
+- **Lightroom 0.7.0.** Search adds photographs one at a time (one refused
+  file aborted the batch), reuses what is already catalogued and puts the
+  results in *Collections › FrameFound › Search: <query>*; a failed grab
+  reports the server's reason (a token without `export`, usually) instead
+  of "Lightroom could not add"; the paths diagnostic takes the entry with
+  this very filename; listing captions are written to photographs that have
+  none; a search gives the model 60 s to load; Test connection names the
+  token, its scopes and the server.
+- `copy_panel.py` (a second installer with a hard-coded path) is gone;
+  `apps/adobe-panel/README.md` points here.
+
+Still not in the repository: the Lua SDK stub harness the listing import was
+exercised against — the files were never committed, so that verification
+cannot be reproduced from a checkout. CI checks only that every `.lua` file
+compiles under Lua 5.1 by hand (`luac -p`), done on the VM for this change.
 
 **Import FrameFound listings** (2026-09-26) is exercised outside Lightroom:
 every plugin file compiles under Lua 5.1, and the menu item runs against stubs

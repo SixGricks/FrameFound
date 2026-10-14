@@ -24,7 +24,7 @@
 
 **Result: PASS**
 
-Token `ffp_geuoEiLraq04Ao-94cOEe6B8ECgwDLtUTfhJVLRRjkI` generated from FrameFound server admin panel. Token is `ffp_`-prefixed bearer token; SHA-256 hash stored server-side; shown only once at creation.
+Token `ffp_geuoEi… (token redacted; it was revoked the same day)` generated from FrameFound server admin panel. Token is `ffp_`-prefixed bearer token; SHA-256 hash stored server-side; shown only once at creation.
 
 ---
 
@@ -86,7 +86,7 @@ This was harmless; Premiere launched anyway. The actual fix was the Preferences 
 
 **Result: FAIL — BUG**
 
-Entered server URL `http://192.168.1.193:8080` and token `ffp_geuoEiLraq04Ao-94cOEe6B8ECgwDLtUTfhJVLRRjkI` in the panel's settings form. Clicked Save.
+Entered server URL `http://192.168.1.193:8080` and token `ffp_geuoEi… (token redacted; it was revoked the same day)` in the panel's settings form. Clicked Save.
 
 **Exact error:**
 

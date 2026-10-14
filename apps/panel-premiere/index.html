@@ -36,6 +36,7 @@
       .hit .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .hit .sub { color: #9a9a9a; font-size: 10px; }
       .offline { color: #ffb74d; }
+      .badge { color: #7cc4ff; margin-left: 6px; }
       .select-bar {
         display: flex; align-items: center; gap: 8px; padding: 2px 0 4px 0;
       }
@@ -55,8 +56,7 @@
       }
       button.primary { background: #2680eb; border-color: #2680eb; }
       button:disabled { opacity: 0.5; cursor: default; }
-      details summary { cursor: pointer; color: #9a9a9a; }
-      .settings { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+      .settings { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid #3a3a3a; }
     </style>
   </head>
   <body>
@@ -79,30 +79,33 @@
       <!-- Build stamp. A UXP panel can be reloaded without its manifest being
            re-read, so "I already applied that fix" and "the running panel has
            the fix" are different claims. This makes the second one checkable
-           at a glance instead of inferred. -->
+           at a glance instead of inferred. main.js fills it in, so the two
+           cannot disagree. -->
       <div id="status" class="muted">Not connected. Open Settings below.</div>
-      <div class="muted" style="font-size: 10px">panel build 0.3.0</div>
+      <div id="build" class="muted" style="font-size: 10px"></div>
       <div id="results"></div>
 
       <div class="row">
         <button id="import" disabled>Import selected</button>
-        <span id="count" class="muted"></span>
+        <span id="count" class="grow muted"></span>
+        <button id="toggle-settings" title="Server address and token">Settings</button>
       </div>
 
-      <details id="settings">
-        <summary>Settings</summary>
-        <div class="settings">
-          <input id="server" placeholder="http://framefound.local:8080" />
-          <input id="token" type="password" placeholder="Panel token (ffp_…)" />
-          <div class="row">
-            <button id="save" class="grow">Save and connect</button>
-          </div>
-          <div class="muted">
-            Create a token in FrameFound under Security → Panel tokens. It is
-            shown once. Revoke it there if this machine is lost.
-          </div>
+      <!-- A plain block and a button rather than <details>: UXP renders a
+           subset of HTML, and a disclosure element it does not know is
+           simply always open. -->
+      <div id="settings" class="settings" style="display: none">
+        <input id="server" placeholder="http://framefound.local:8080" />
+        <input id="token" type="password" placeholder="Panel token (ffp_…)" />
+        <div class="row">
+          <button id="save" class="grow">Save and connect</button>
         </div>
-      </details>
+        <div class="muted">
+          Create a token in FrameFound under Security → Panel tokens. It is
+          shown once. Revoke it there if this machine is lost. Writing an XML
+          bin needs the token's export scope; searching and importing do not.
+        </div>
+      </div>
     </div>
     <script src="main.js"></script>
   </body>

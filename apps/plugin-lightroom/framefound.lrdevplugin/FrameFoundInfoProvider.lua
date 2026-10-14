@@ -66,15 +66,35 @@ function provider.sectionsForTopOfDialog(factory, _properties)
               local ok, result = LrTasks.pcall(function()
                 return Client.profiles()
               end)
-              if ok then
-                LrDialogs.message(
-                  "FrameFound",
-                  "Connected. " .. #result .. " path profile(s) available.",
-                  "info"
-                )
-              else
+              if not ok then
                 LrDialogs.message("FrameFound", tostring(result), "critical")
+                return
               end
+              -- Who the token is and what it may do. An older server has no
+              -- /panel/me; that is not a failed connection.
+              local known, identity = LrTasks.pcall(function()
+                return Client.identity()
+              end)
+              local lines = {}
+              if known and identity and identity.name then
+                table.insert(lines, "Connected as \"" .. identity.name .. "\" ("
+                  .. table.concat(identity.scopes or {}, ", ") .. ") — FrameFound "
+                  .. tostring(identity.server_version or "?") .. ".")
+                if not Client.hasScope(identity, "export") then
+                  table.insert(lines, "This token has no \"export\" scope, so a listing's video "
+                    .. "frames cannot be grabbed. Create a token with export ticked for that.")
+                end
+              else
+                table.insert(lines, "Connected.")
+              end
+              if #result == 0 then
+                table.insert(lines, "No path profiles yet. Searching works, but nothing can be "
+                  .. "added to Lightroom until FrameFound knows where this machine sees each "
+                  .. "share: open Libraries in FrameFound and add a path profile per library.")
+              else
+                table.insert(lines, #result .. " path profile(s) available.")
+              end
+              LrDialogs.message("FrameFound", table.concat(lines, "\n\n"), "info")
             end)
           end,
         }),
