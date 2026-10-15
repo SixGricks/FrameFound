@@ -45,3 +45,6 @@ desktop.ini
 .vscode/
 *.swp
 backups/
+
+# Local dev-server launch config for the Claude Code browser pane (machine-specific paths).
+.claude/launch.json

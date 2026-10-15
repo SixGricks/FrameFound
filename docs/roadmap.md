@@ -3,6 +3,50 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-10-15 — UI sweep, by eye this time
+
+Yesterday's web findings came from reading code. This pass ran the app
+locally — the API on SQLite, Next's dev server proxying it, a seeded
+catalogue of three libraries, 66 generated assets, faces, tags and two
+listings (`infrastructure/scripts/seed_dev.py`; the recipe is in
+CONTRIBUTING.md) — and walked every page at 1280 px and at 375 px in the
+desktop app's browser pane, clicking the flows that write: a slider in the
+editor (preview renders), Add photos, the Showcase search (the "no visual
+search on this server" card), the tag review round, the Manage menu.
+
+What it found and fixed:
+- **Listing detail on a phone was unusable**: the 250 px sticky rail sat
+  beside a grid crushed to one 130 px column, labels and buttons cut off.
+  The rail now drops below the photographs under 900 px (classes instead
+  of inline styles). Gallery order was drag-only, so impossible on a phone:
+  each photo has **← →** buttons (always on touch, on hover or keyboard
+  focus otherwise) that reorder through the same call as a drag.
+- Between about 900 and 1100 px the signed-in address wrapped onto three
+  lines beside a nav that had already scrolled *Listings* and *Showcase*
+  out of sight; the address is hidden at that width and the phone nav
+  fades at its right edge to say it scrolls.
+- The alert banner's paragraph took a third of a phone's screen on every
+  page; on phones only the title and *Details →* show.
+- On touch, the face-review "down to here" control covered the match
+  percentage; it now sits under the tile, and the "shift-click for a
+  range" hint is hidden where there is no shift.
+- "1 groups waiting for a name"; a thumbnail's date wrapping mid-value;
+  Showcase's number fields could not be cleared (a cleared field now sends
+  the default).
+
+Seen and left: the nav row on a phone still scrolls rather than wraps
+(wrapping costs a third row); the Edit/Remove/←/→ row is tight at 375 px;
+the Libraries page prints a long root path as one unbroken line; Processing
+and System on a machine without a queue say "queue unreachable" per card,
+which is correct and loud. Not reachable locally: Showcase results, the
+AI edit run, Drive, remote-access modes — those need the real server.
+
+One thing worth knowing about the sweep itself: the pane was hidden while
+it ran, which freezes CSS animations, so every grid rendered at opacity 0
+(the tiles' `rise` animation never reached its end). Not an app bug — a
+visible window finishes it in 0.4 s — but it is why the screenshots were
+taken with animations disabled.
+
 ## Where things stand — 2026-10-14 (system review: performance, web, panels)
 
 Asked for: a systematic look at performance, the web UI and both Adobe

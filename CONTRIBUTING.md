@@ -26,6 +26,31 @@ npm run dev
 
 Full stack: `docker compose up -d --build`.
 
+### Looking at the UI with a seeded catalogue
+
+No Postgres, Redis or NAS needed: the API runs on SQLite and the Next dev
+server forwards `/api` to it.
+
+```bash
+# API on SQLite, in apps/server (media and data dirs can be anywhere)
+export FRAMEFOUND_DATABASE_URL=sqlite+aiosqlite:////tmp/ff-ui/ui.db
+export FRAMEFOUND_DATA_DIR=/tmp/ff-ui/data FRAMEFOUND_MEDIA_ROOT=/tmp/ff-ui/media
+export FRAMEFOUND_SECRET_KEY=$(openssl rand -hex 32) FRAMEFOUND_SETUP_TOKEN=dev-setup
+pip install -e ".[dev,db,media]"
+alembic upgrade head
+python ../../infrastructure/scripts/seed_dev.py /tmp/ff-ui   # 66 generated assets, faces, tags, 2 listings
+uvicorn framefound.main:app --port 8000
+
+# Web, in apps/web — .env.local is git-ignored
+echo FRAMEFOUND_API_PROXY=http://localhost:8000 > .env.local
+npm run dev
+```
+
+Create the first admin once with `POST /api/v1/auth/setup`
+(`{"setup_token": "dev-setup", "email": ..., "password": ...}`), then sign in
+at http://localhost:3000. Visual search, auto-edit and Drive need the real
+models and keys and stay off; everything else works on the seeded data.
+
 ## Standards
 
 - **Python**: type hints everywhere, `ruff` for lint+format, `mypy` clean, pytest for tests.

@@ -26,6 +26,12 @@ versioning: [Semantic Versioning](https://semver.org/).
 - Panels: see [docs/panels.md](docs/panels.md) ("2026-10-14 — review") —
   Premiere panel 0.4.0, Lightroom plugin 0.7.0, `GET /panel/me`, name
   matches before visual hits.
+- Web, 2026-10-15 sweep by eye: listing detail fits a phone (rail below the
+  grid) and photos reorder with ← → buttons as well as drag; the top bar
+  drops the address before the nav overflows; the alert banner is a title
+  on phones; face review on touch; plurals; clearable Showcase fields.
+  `FRAMEFOUND_API_PROXY` lets the Next dev server forward `/api` to a local
+  API, and `infrastructure/scripts/seed_dev.py` seeds a catalogue to look at.
 
 ### Added
 - Slideshow rendering: propose a themed selection, review it, render an MP4.
