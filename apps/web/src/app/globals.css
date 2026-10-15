@@ -1391,3 +1391,96 @@ small a {
     opacity: 1;
   }
 }
+
+/* ---- 2026-10-15 UI sweep --------------------------------------------- */
+
+/* Listing detail: the photo grid beside a sticky rail of listing-wide
+   controls. On a phone the rail used to sit at 250 px beside a crushed
+   grid; it now drops below the photographs. */
+.listing-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.listing-main {
+  flex: 1;
+  min-width: 0;
+}
+.listing-rail {
+  width: 250px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 12px;
+  display: grid;
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .listing-layout {
+    flex-wrap: wrap;
+  }
+  .listing-rail {
+    width: 100%;
+    position: static;
+  }
+}
+
+/* Reorder without a drag: shown on hover or keyboard focus, and always on
+   a touch screen, where HTML5 drag does not exist. */
+.tile-move {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.tile:hover .tile-move,
+.tile:focus-within .tile-move {
+  opacity: 1;
+}
+@media (pointer: coarse) {
+  .tile-move {
+    opacity: 1;
+  }
+}
+
+/* A thumbnail's resolution and date stay on their own lines. */
+.tile-sub {
+  flex-wrap: wrap;
+}
+.tile-sub span {
+  white-space: nowrap;
+}
+
+/* The signed-in address is the first thing to go when the bar gets tight:
+   between 900 and 1100 px it wrapped onto three lines beside a nav that
+   had already scrolled Listings and Showcase out of sight. */
+@media (max-width: 1100px) {
+  .topbar-end .mono {
+    display: none;
+  }
+}
+
+/* On a phone the nav scrolls sideways; the fade says so. */
+@media (max-width: 640px) {
+  .navlinks {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+  /* The alert bar's title and its link are the message; the paragraph took
+     a third of a phone's screen on every page. */
+  .alertbar span {
+    display: none;
+  }
+}
+
+/* Touch: the range control sits under the face rather than over it (it
+   hid the match percentage), and a shift-click hint means nothing. */
+@media (hover: none) {
+  .facepick-downto {
+    position: static;
+    margin-top: 4px;
+  }
+  .pointer-hint {
+    display: none;
+  }
+}

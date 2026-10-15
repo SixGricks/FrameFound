@@ -400,7 +400,7 @@ export default function PersonPage() {
           <div className="sectionhead">
             <h2>To review</h2>
             <span className="faint mono">
-              best match first · shift-click for a range
+              best match first<span className="pointer-hint"> · shift-click for a range</span>
               {person && person.pending_count > pending.length
                 ? ` · showing ${pending.length} of ${person.pending_count}`
                 : ""}

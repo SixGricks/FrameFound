@@ -71,7 +71,8 @@ export default function PeoplePage() {
         <h2>People</h2>
         {settings && (
           <span className="faint mono">
-            {settings.people_count} groups · {settings.faces_count} faces
+            {settings.people_count} {settings.people_count === 1 ? "group" : "groups"} ·{" "}
+            {settings.faces_count} {settings.faces_count === 1 ? "face" : "faces"}
             {pending > 0 && ` · ${pending} to review`}
           </span>
         )}
@@ -107,7 +108,9 @@ export default function PeoplePage() {
         <>
           <div className="sectionhead">
             <h2>Who is this?</h2>
-            <span className="faint mono">{unnamed.length} groups waiting for a name</span>
+            <span className="faint mono">
+              {unnamed.length} {unnamed.length === 1 ? "group" : "groups"} waiting for a name
+            </span>
           </div>
           <div className="grid">
             {unnamed.map((person) => (

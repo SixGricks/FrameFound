@@ -257,8 +257,14 @@ export default function ShowcasePage() {
     setBusy(true);
     setError(null);
     try {
+      // A cleared number field is NaN while it is being retyped; the request
+      // gets the default instead of refusing or inventing a value.
+      const whole = (value: number, low: number, high: number, fallback: number) =>
+        Number.isFinite(value) ? Math.min(high, Math.max(low, Math.round(value))) : fallback;
       const res = await api.showcase({
         ...form,
+        count: whole(form.count, 1, 60, DEFAULTS.count),
+        alternates: whole(form.alternates, 1, 20, DEFAULTS.alternates),
         library_ids: [...chosenLibraries],
         places: [...onlyPlaces],
         exclude_listing_ids: [...leaveOut],
@@ -476,8 +482,8 @@ export default function ShowcasePage() {
               min={1}
               max={60}
               style={{ marginLeft: 6, width: 70 }}
-              value={form.count}
-              onChange={(e) => setForm({ ...form, count: Number(e.target.value) || 14 })}
+              value={Number.isNaN(form.count) ? "" : form.count}
+              onChange={(e) => setForm({ ...form, count: e.target.valueAsNumber })}
             />
           </label>
           <label
@@ -492,13 +498,8 @@ export default function ShowcasePage() {
               min={1}
               max={20}
               style={{ marginLeft: 6, width: 60 }}
-              value={form.alternates}
-              onChange={(e) =>
-                setForm({
-                  ...form,
-                  alternates: Math.min(20, Math.max(1, Number(e.target.value) || 3)),
-                })
-              }
+              value={Number.isNaN(form.alternates) ? "" : form.alternates}
+              onChange={(e) => setForm({ ...form, alternates: e.target.valueAsNumber })}
             />
           </label>
           <select

@@ -243,15 +243,27 @@ export default function ListingPage() {
     setAdding(false);
   }
 
-  function drop(target: number) {
-    const from = dragFrom.current;
-    dragFrom.current = null;
-    if (from === null || from === target || !listing) return;
+  function reorder(from: number, target: number) {
+    if (from === target || !listing) return;
     const order = [...listing.items].sort((a, b) => a.position - b.position);
     const [moved] = order.splice(from, 1);
     if (!moved) return;
     order.splice(target, 0, moved);
     act(() => api.reorderListing(listingId, order.map((i) => i.asset_id)));
+  }
+
+  function drop(target: number) {
+    const from = dragFrom.current;
+    dragFrom.current = null;
+    if (from !== null) reorder(from, target);
+  }
+
+  // One step either way. Dragging is the fast way with a mouse; on a phone
+  // there is no drag, and the gallery order is the deliverable.
+  function nudge(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= items.length) return;
+    reorder(index, target);
   }
 
   async function runCuration() {
@@ -371,8 +383,8 @@ export default function ListingPage() {
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="listing-layout">
+        <div className="listing-main">
 
       {adding && (
         <div className="card">
@@ -721,6 +733,30 @@ export default function ListingPage() {
               >
                 Remove
               </button>
+              <span className="tile-move">
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: "0.7rem", padding: "2px 8px" }}
+                  disabled={busy || index === 0}
+                  aria-label="Move earlier"
+                  title="Move earlier in the gallery"
+                  onClick={() => nudge(index, -1)}
+                >
+                  ←
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: "0.7rem", padding: "2px 8px" }}
+                  disabled={busy || index === items.length - 1}
+                  aria-label="Move later"
+                  title="Move later in the gallery"
+                  onClick={() => nudge(index, 1)}
+                >
+                  →
+                </button>
+              </span>
             </div>
           </div>
         ))}
@@ -736,16 +772,7 @@ export default function ListingPage() {
 
         {/* Listing-wide controls live here, out of the photo flow: the grid
             is the work surface, the rail is what happens to the whole shoot. */}
-        <aside
-          style={{
-            width: 250,
-            flexShrink: 0,
-            position: "sticky",
-            top: 12,
-            display: "grid",
-            gap: 10,
-          }}
-        >
+        <aside className="listing-rail">
           <div className="card">
             <div className="mono" style={{ marginBottom: 6 }}>Auto-edit</div>
             <SkyPicker
