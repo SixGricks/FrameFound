@@ -44,6 +44,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from framefound.ai.spend import PRICES, price_of
 from framefound.config import get_settings
 from framefound.db.models import Asset, Library
 from framefound.media import compare, looks
@@ -57,15 +58,10 @@ DEFAULT_SKY = "blue-sky-scattered-clouds-302810758.jpg"
 PANEL_EDGE = 720  # each picture on a sheet
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 
-# $ per million tokens: input, output, 5-minute cache write, cache read.
-# From platform.claude.com/docs/en/about-claude/pricing, read 2026-09-25 —
-# a dated snapshot for the report; the token counts are the measurement.
-PRICES = {
-    "claude-sonnet-5": (2.0, 10.0, 2.50, 0.20),
-    "claude-opus-5-5": (4.0, 20.0, 5.0, 0.20),
-    "claude-fable-5-1": (10.0, 50.0, 12.50, 0.25),
-    "claude-haiku-4-5": (1.0, 5.0, 1.25, 0.10),
-}
+# The price table lives with the budget (ai/spend.py, imported above): the
+# report prices calls the same way the ledger does, so a bake-off's dollars
+# and the Security page's dollars cannot disagree.
+__all__ = ["PRICES", "price_of"]
 
 _EXTERIOR_WORDS = (
     "exterior", "aerial", "drone", "dji_", "yard", "barn", "elevation", "driveway", "lawn",
@@ -73,19 +69,6 @@ _EXTERIOR_WORDS = (
     "acreage", "parcel", "garden", "landscape", "frontage", "pool", "silo", "front-entry",
     "flagstone", "walkway",
 )  # fmt: skip
-
-
-def price_of(model: str, usage: dict[str, int]) -> float | None:
-    key = next((k for k in PRICES if model.startswith(k)), None)
-    if key is None:
-        return None
-    inp, out, write, read = PRICES[key]
-    return (
-        usage.get("input_tokens", 0) * inp
-        + usage.get("output_tokens", 0) * out
-        + usage.get("cache_creation_input_tokens", 0) * write
-        + usage.get("cache_read_input_tokens", 0) * read
-    ) / 1_000_000
 
 
 def is_exterior(pair: dict[str, Any]) -> bool:

@@ -32,6 +32,8 @@ scanner = ["watchdog>=4.0", "blake3>=0.4"]
 # stack installed.
 media = ["pillow>=10.4", "numpy>=1.26", "pmtiles>=3.4"]  # pmtiles: read basemap tiles server-side
 ai = ["faster-whisper>=1.0", "onnxruntime>=1.19"]
+# The MCP connector (framefound/mcp, docs/mcp.md). The API runs without it.
+mcp = ["mcp>=2.0"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -75,6 +77,7 @@ module = [
     "framefound.worker",
     "framefound.processing.tasks",
     "framefound.processing.tag_tasks",
+    "framefound.processing.tag_review_tasks",
 ]
 disallow_untyped_decorators = false
 
@@ -88,6 +91,7 @@ module = [
     "huggingface_hub", "tokenizers", "pgvector.*",
     "numpy", "numpy.*",
     "pmtiles", "pmtiles.*",
+    "mcp", "mcp.*",
 ]
 ignore_missing_imports = true
 

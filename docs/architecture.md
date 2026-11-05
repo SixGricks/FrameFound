@@ -22,7 +22,8 @@ Status: Milestone 0 draft. Decisions with lasting consequences are recorded as
 flowchart LR
     subgraph clients["Clients"]
         B["Browser (web UI)"]
-        PP["Premiere Pro panel (future)"]
+        PP["Premiere / Lightroom panels"]
+        CL["Claude (MCP connector, /api/mcp)"]
     end
 
     subgraph edge["Edge (only published ports)"]
@@ -52,6 +53,7 @@ flowchart LR
 
     B --> C
     PP -.-> C
+    CL -.->|"panel token"| C
     CT -.-> C
     C --> W
     C -->|"/api/*"| A

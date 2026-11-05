@@ -12,7 +12,8 @@ FrameFound watches your existing NAS or local folders, indexes photos, video, an
 - 📁 **Originals stay put** — read-only mounts, no import, no proprietary library
 - 🔐 **Local-first** — all AI runs on your hardware by default; nothing leaves your network
 - 🌐 **Secure remote access** — Tailscale, your own domain with automatic HTTPS, or Cloudflare Tunnel
-- 🎬 **Adobe Premiere Pro integration** (planned) — search, preview, and import from inside Premiere
+- 🎬 **Adobe Premiere Pro and Lightroom Classic panels** — search, preview, and import from inside the editor
+- 🤖 **Claude as a client** — an MCP connector: ask for media by tag, have Claude look at pictures and propose tags, under a monthly budget you set
 
 Built for photographers, videographers, churches, auction houses, real-estate media teams,
 drone operators, and small production companies.
@@ -56,7 +57,8 @@ GPU acceleration (NVIDIA): `docker compose -f docker-compose.yml -f docker-compo
 | [docs/remote-access.md](docs/remote-access.md) | Tailscale / DDNS / Cloudflare Tunnel design |
 | [docs/location.md](docs/location.md) | GPS, location inference, and places |
 | [docs/maps.md](docs/maps.md) | Optional Google Maps basemap and address lookup |
-| [docs/tagging.md](docs/tagging.md) | Tags that learn from your corrections |
+| [docs/tagging.md](docs/tagging.md) | Tags that learn from your corrections, and Claude's second opinion |
+| [docs/mcp.md](docs/mcp.md) | Connecting Claude Code / Claude Desktop (MCP) |
 | [docs/benchmarks.md](docs/benchmarks.md) | Measured performance and scaling limits |
 | [docs/roadmap.md](docs/roadmap.md) | Milestones and MVP backlog |
 | [docs/licensing.md](docs/licensing.md) | Dependency and model license inventory |

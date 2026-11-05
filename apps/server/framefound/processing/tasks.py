@@ -1789,7 +1789,20 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     for key, value in (usage or {}).items():
                         tokens[key] = tokens.get(key, 0) + int(value)
 
+                from framefound.ai import spend
+
                 for item_id, asset_id, filename, source in photos:
+                    if use_ai:
+                        # The monthly cap is checked before the call that
+                        # would cross it, from the ledger of what every
+                        # call so far actually cost.
+                        try:
+                            await spend.check_budget(
+                                db, config.monthly_budget_usd, spend.estimate_call(model)
+                            )
+                        except spend.BudgetExceeded as exc:
+                            stopped = str(exc)[:200]
+                            break
                     try:
                         if source is None:
                             raise PathValidationError("unresolvable source")
@@ -1800,6 +1813,14 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                                 recipe_picker.describe_photo, preview, api_key, model
                             )
                             count(described.get("usage"))
+                            await spend.record(
+                                db,
+                                purpose=spend.DESCRIBE,
+                                model=model,
+                                usage=described.get("usage"),
+                                asset_id=asset_id,
+                            )
+                            await db.commit()
                             await save_naming(item_id, described)
                             edited += 1
                             continue
@@ -1817,6 +1838,14 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                             )
                             recipe = dict(picked["recipe"])
                             count(picked.get("usage"))
+                            await spend.record(
+                                db,
+                                purpose=spend.RECIPE,
+                                model=model,
+                                usage=picked.get("usage"),
+                                asset_id=asset_id,
+                            )
+                            await db.commit()
                             naming = {
                                 "caption": picked.get("caption", ""),
                                 "slug": picked.get("slug", ""),

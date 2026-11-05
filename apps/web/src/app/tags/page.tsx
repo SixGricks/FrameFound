@@ -6,20 +6,41 @@
 // time, and every answer — yes or no — feeds straight back into the match. The
 // threshold and its reason are shown because an operator who sees a strange
 // suggestion deserves to know why it cleared the bar.
+//
+// Suggestions now come from three places — the CLIP learner, the Claude
+// reviewer on the server, and Claude through the MCP connector — and each tile
+// says which, because a second opinion is weighed differently from a match.
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
-import { api, type PendingSuggestion, type TagSummary } from "@/lib/api";
-import { shortDate } from "@/lib/format";
+import {
+  api,
+  type ClaudeReviewStatus,
+  type PendingSuggestion,
+  type TagSummary,
+} from "@/lib/api";
+import { relativeTime, shortDate } from "@/lib/format";
+
+const ORIGIN_LABEL: Record<string, string> = {
+  clip: "match",
+  claude: "Claude",
+  mcp: "Claude (chat)",
+};
+
+function money(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
 
 export default function TagsPage() {
   const [tags, setTags] = useState<TagSummary[] | null>(null);
   const [open, setOpen] = useState<TagSummary | null>(null);
   const [pending, setPending] = useState<PendingSuggestion[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [review, setReview] = useState<ClaudeReviewStatus | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -27,11 +48,25 @@ export default function TagsPage() {
     } catch {
       setTags([]);
     }
+    try {
+      setReview(await api.claudeReviewStatus());
+    } catch {
+      setReview(null);
+    }
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // A run in progress: refresh its numbers until it finishes.
+  useEffect(() => {
+    if (review?.last.state !== "running") return;
+    const timer = setInterval(() => {
+      api.claudeReviewStatus().then(setReview).catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [review?.last.state]);
 
   const openTag = useCallback(async (tag: TagSummary) => {
     setOpen(tag);
@@ -52,6 +87,23 @@ export default function TagsPage() {
     }
   }
 
+  async function startReview() {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await api.startClaudeReview({});
+      setNotice(result.message);
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not start the review");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const running = review?.last.state === "running";
+  const toReview = review ? Math.min(review.untagged, review.batch) : 0;
+
   return (
     <Shell>
       <div className="sectionhead" style={{ marginTop: 0 }}>
@@ -63,6 +115,62 @@ export default function TagsPage() {
           </span>
         )}
       </div>
+
+      {review && (
+        <div className="card">
+          <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 260 }}>
+              <strong>A second opinion from Claude</strong>
+              <p className="faint" style={{ margin: "4px 0 0", fontSize: "0.86rem" }}>
+                {review.configured ? (
+                  <>
+                    {review.untagged} picture{review.untagged === 1 ? "" : "s"} nobody has
+                    tagged · {money(review.spent_this_month_usd)} of {money(review.budget_usd)}{" "}
+                    used this month · {review.model}
+                    {review.auto ? " · runs nightly" : ""}
+                  </>
+                ) : (
+                  <>
+                    Add an Anthropic key under Security and Claude can look at untagged
+                    pictures and propose tags, under a monthly budget you set.
+                  </>
+                )}
+              </p>
+              {review.last.state !== "idle" && (
+                <p className="faint mono" style={{ margin: "6px 0 0", fontSize: "0.78rem" }}>
+                  last run {running ? "running" : review.last.state}
+                  {review.last.finished_at && !running
+                    ? ` ${relativeTime(review.last.finished_at)}`
+                    : ""}
+                  : {review.last.reviewed} reviewed, {review.last.suggested} suggestions
+                  {review.last.new_tags ? ` (${review.last.new_tags} new tags)` : ""},{" "}
+                  {money(review.last.spent_usd)}
+                  {review.last.message ? ` — ${review.last.message}` : ""}
+                </p>
+              )}
+              {notice && (
+                <p className="faint" style={{ margin: "6px 0 0", fontSize: "0.82rem" }}>
+                  {notice}
+                </p>
+              )}
+            </div>
+            {review.configured && (
+              <button
+                className="btn btn-primary"
+                disabled={busy || running || toReview === 0 || review.remaining_usd <= 0}
+                onClick={startReview}
+                title={
+                  review.remaining_usd <= 0
+                    ? "This month's budget is used up — raise it under Security"
+                    : undefined
+                }
+              >
+                {running ? "Reviewing…" : `Review ${toReview} with Claude`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {!tags ? (
         <div className="empty">Loading…</div>
@@ -165,6 +273,9 @@ export default function TagsPage() {
                   </Link>
                   <div className="tile-meta">
                     <div className="tile-name">{row.filename}</div>
+                    <div className="faint" style={{ fontSize: "0.74rem" }}>
+                      suggested by {ORIGIN_LABEL[row.origin] ?? row.origin}
+                    </div>
                     <div className="toolbar" style={{ margin: "8px 0 0", gap: 6 }}>
                       <button
                         className="btn btn-primary"

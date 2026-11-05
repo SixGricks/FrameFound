@@ -41,8 +41,11 @@ Created in **Security → Panel tokens**. One per machine.
   a Lightroom listing — is a separate opt-in. Searching, direct import and
   adding files where they are need only `read`. `GET /panel/me` says which
   scopes a token has; both clients show it on their connection test.
-- **No scope grants a write** to the library or the catalogue. That is the
-  promise the short scope vocabulary exists to keep readable.
+- **No scope grants a write** to the library. The one catalogue write any
+  scope grants is `tag` — queuing tag *suggestions* and recording your own
+  decisions through the Claude (MCP) connector, see [mcp.md](mcp.md) — and
+  the panels never ask for it. That is the promise the short scope
+  vocabulary exists to keep readable.
 - **Revocable**, listed with its prefix and when it was last used, next to
   browser sessions. A credential that cannot be revoked from the machine it
   grants access to is a leak with a delay on it.

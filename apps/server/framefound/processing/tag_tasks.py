@@ -228,6 +228,7 @@ def suggest_for_tag(tag_id: str) -> None:
                             tag_id=tag.id,
                             source="suggested",
                             confidence=round(score, 4),
+                            origin="clip",
                         )
                     )
                 await db.commit()

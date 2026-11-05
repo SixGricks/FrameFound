@@ -5,6 +5,7 @@ Run: uvicorn framefound.main:app
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI
@@ -20,12 +21,43 @@ from framefound.logging import configure_logging
 
 log = structlog.get_logger()
 
+# Where Claude connects: behind Caddy's existing /api/* route, the public
+# gate and whatever tailnet or domain the web UI is reached on (docs/mcp.md).
+MCP_PATH = "/api/mcp"
+# Stateless, plain-JSON answers: nothing to time out behind a proxy, and no
+# per-session state to lose on a container restart. DNS-rebinding
+# protection is off because this always sits behind Caddy with the Host
+# header the operator actually used, and the bearer token is the gate.
+_MCP_TRANSPORT: dict[str, Any] = {
+    "streamable_http_path": MCP_PATH,
+    "json_response": True,
+    "stateless_http": True,
+}
+
+
+def _mcp_server() -> Any:
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        from framefound.mcp.server import build_server
+    except ImportError:
+        log.warning("mcp.unavailable", hint="pip install 'framefound[mcp]' to enable the connector")
+        return None
+    _MCP_TRANSPORT["transport_security"] = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+    return build_server()
+
 
 def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
     if not settings.secret_key:
         log.warning("config.secret_key_missing", hint="set FRAMEFOUND_SECRET_KEY in .env")
+
+    # The MCP connector (framefound/mcp) is optional at install time: without
+    # the `mcp` extra the API runs exactly as before and says so once.
+    mcp_server = _mcp_server()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -34,7 +66,14 @@ def create_app() -> FastAPI:
         watchdog = LoopWatchdog()
         watchdog.start()
         try:
-            yield
+            if mcp_server is None:
+                yield
+            else:
+                # The transport's session manager has to be running for the
+                # mounted app to answer; a mounted app's own lifespan is
+                # never entered by the parent, so it is entered here.
+                async with mcp_server.session_manager.run():
+                    yield
         finally:
             watchdog.stop()
 
@@ -48,6 +87,17 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.add_middleware(PublicAccessGate)
     app.include_router(api_v1, prefix="/api/v1")
+    if mcp_server is not None:
+        from starlette.routing import Route
+
+        from framefound.mcp.auth import BearerGate
+
+        # A Route rather than a Mount: Starlette redirects a mount's bare path
+        # to a trailing slash, and an MCP client will not follow a 307 on a
+        # POST. The inner app routes on the same path, so nothing is
+        # rewritten on the way through.
+        gate = BearerGate(mcp_server.streamable_http_app(**_MCP_TRANSPORT))
+        app.router.routes.append(Route(MCP_PATH, gate, include_in_schema=False))
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

@@ -42,6 +42,28 @@ export interface RemoteAccess {
   on_tailnet_now: boolean;
 }
 
+export interface TailscaleState {
+  state:
+    | "not_installed"
+    | "needs_login"
+    | "needs_approval"
+    | "stopped"
+    | "starting"
+    | "connected"
+    | "unavailable";
+  login_url: string;
+  dns_name: string;
+  host_name: string;
+  tailnet: string;
+  ips: string[];
+  url: string;
+  short_url: string;
+  mcp_url: string;
+  admin_console: string;
+  download: string;
+  message: string;
+}
+
 export interface Library {
   id: string;
   name: string;
@@ -175,6 +197,37 @@ export interface PendingSuggestion {
   filename: string;
   media_type: MediaType;
   confidence: number | null;
+  /** Who suggested it: the CLIP learner, the Claude reviewer, or Claude via MCP. */
+  origin: "clip" | "claude" | "mcp";
+}
+
+export interface ClaudeReviewState {
+  state: "idle" | "queued" | "running" | "done" | "budget" | "failed" | string;
+  started_at: string;
+  finished_at: string;
+  requested: number;
+  reviewed: number;
+  suggested: number;
+  new_tags: number;
+  skipped: number;
+  failed: number;
+  spent_usd: number;
+  message: string;
+}
+
+export interface ClaudeReviewStatus {
+  configured: boolean;
+  model: string;
+  budget_usd: number;
+  spent_this_month_usd: number;
+  spent_on_review_usd: number;
+  remaining_usd: number;
+  auto: boolean;
+  batch: number;
+  /** Online pictures with a thumbnail and no tag of any kind. */
+  untagged: number;
+  pending_from_claude: number;
+  last: ClaudeReviewState;
 }
 
 export interface Mount {
@@ -254,7 +307,7 @@ export interface PathMapping extends PathMappingInput {
 export interface PanelToken {
   id: string;
   name: string;
-  host: "premiere" | "lightroom" | "other";
+  host: "premiere" | "lightroom" | "mcp" | "other";
   scopes: string[];
   prefix: string;
   created_at: string;
@@ -562,6 +615,9 @@ export interface ShowcaseRequest {
   exclude_listing_ids: string[];
   /** Rank video frames with the stills (full-size grabs on import). */
   include_video: boolean;
+  /** Only what was taken in this window, whole days inclusive (YYYY-MM-DD). */
+  captured_from?: string | null;
+  captured_to?: string | null;
 }
 
 export interface ShowcasePick {
@@ -689,6 +745,12 @@ export interface AiEditSettings {
   model: string;
   /** Shipped photos the installed learned look was made from; 0 = none. */
   look_examples: number;
+  /** The monthly ceiling on every Claude API call, and what the ledger says is spent. */
+  monthly_budget_usd: number;
+  spent_this_month_usd: number;
+  review_model: string;
+  review_auto: boolean;
+  review_batch: number;
 }
 
 export interface GdriveSettings {
@@ -891,6 +953,9 @@ export const api = {
     }),
 
   remoteAccess: () => request<RemoteAccess>("/remote-access"),
+  tailscale: () => request<TailscaleState>("/remote-access/tailscale"),
+  tailscaleLogin: () =>
+    request<TailscaleState>("/remote-access/tailscale/login", { method: "POST" }),
   updateRemoteAccess: (patch: Record<string, unknown>) =>
     request<RemoteAccess>("/remote-access", {
       method: "PUT",
@@ -973,6 +1038,13 @@ export const api = {
     request<PendingSuggestion[]>(`/tags/${tagId}/pending`),
   relearnTag: (tagId: string) =>
     request<{ status: string }>(`/tags/${tagId}/relearn`, { method: "POST" }),
+  claudeReviewStatus: () => request<ClaudeReviewStatus>("/tags/review/claude"),
+  startClaudeReview: (body: { asset_ids?: string[]; limit?: number; library_id?: string }) =>
+    request<{ queued: number; message: string }>("/tags/review/claude", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
 
   people: () => request<PersonSummary[]>("/people"),
   person: (id: string, limit = 600) =>
@@ -1115,9 +1187,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  showcasePlaces: (libraryIds: string[]) =>
+  showcasePlaces: (libraryIds: string[], from?: string | null, to?: string | null) =>
     request<ShowcasePlaceCount[]>(
-      `/showcase/places?${libraryIds.map((id) => `library_ids=${encodeURIComponent(id)}`).join("&")}`,
+      `/showcase/places?${[
+        ...libraryIds.map((id) => `library_ids=${encodeURIComponent(id)}`),
+        ...(from ? [`captured_from=${from}`] : []),
+        ...(to ? [`captured_to=${to}`] : []),
+      ].join("&")}`,
     ),
   /** A new listing by `target.name`, or add to `target.listing_id`; file
    *  numbers carry on from `continueFrom` (earlier batches). */
@@ -1209,7 +1285,15 @@ export const api = {
       },
     ),
   aiEditSettings: () => request<AiEditSettings>("/develop/settings/ai"),
-  updateAiEditSettings: (patch: { api_key?: string; enabled?: boolean; model?: string }) =>
+  updateAiEditSettings: (patch: {
+    api_key?: string;
+    enabled?: boolean;
+    model?: string;
+    monthly_budget_usd?: number;
+    review_model?: string;
+    review_auto?: boolean;
+    review_batch?: number;
+  }) =>
     request<AiEditSettings>("/develop/settings/ai", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

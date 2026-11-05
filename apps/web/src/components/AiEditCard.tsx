@@ -1,10 +1,14 @@
 "use client";
 
-// AI photo editing settings — the Anthropic key that powers the recipe-picker.
+// AI settings — the Anthropic key that powers the recipe-picker and the tag
+// reviewer, and the monthly ceiling on what either may spend.
 //
 // Same contract as the maps keys: sealed at rest, presence-only in the API,
-// and nothing leaves the machine until the operator presses the button on a
-// listing that says send. This card is where that trade is made explicit.
+// and nothing leaves the machine until the operator presses a button that
+// says send (or turns the nightly review on, which is the same decision made
+// once). This card is where that trade is made explicit, and where the bill
+// is capped: the budget is enforced from a ledger of what every call actually
+// cost, before the call that would cross it.
 
 import { useEffect, useState } from "react";
 
@@ -27,9 +31,24 @@ const MODELS = [
   },
 ];
 
+// The reviewer names what is in a thumbnail; it is not a tone judgement, and
+// the cheapest current model does it. Estimates from the price sheet at
+// ~1,800 input and 400 output tokens a picture (ai/spend.py).
+const REVIEW_MODELS = [
+  { id: "claude-haiku-5-5", label: "Haiku 5.5 — ≈ $0.0004/picture (recommended)" },
+  { id: "claude-sonnet-5-5", label: "Sonnet 5.5 — ≈ $0.008/picture" },
+  { id: "claude-opus-5-5", label: "Opus 5.5 — ≈ $0.015/picture" },
+];
+
+function money(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
 export default function AiEditCard() {
   const [settings, setSettings] = useState<AiEditSettings | null>(null);
   const [draft, setDraft] = useState("");
+  const [budgetDraft, setBudgetDraft] = useState<string | null>(null);
+  const [batchDraft, setBatchDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -37,13 +56,15 @@ export default function AiEditCard() {
     api.aiEditSettings().then(setSettings).catch(() => setSettings(null));
   }, []);
 
-  async function save(patch: { api_key?: string; enabled?: boolean; model?: string }) {
+  async function save(patch: Parameters<typeof api.updateAiEditSettings>[0]) {
     setBusy(true);
     setMessage(null);
     try {
       const updated = await api.updateAiEditSettings(patch);
       setSettings(updated);
       setDraft("");
+      setBudgetDraft(null);
+      setBatchDraft(null);
       setMessage(
         patch.api_key === ""
           ? "Key removed."
@@ -60,21 +81,27 @@ export default function AiEditCard() {
 
   if (!settings) return null;
 
+  const spent = settings.spent_this_month_usd;
+  const budget = settings.monthly_budget_usd;
+  const used = budget > 0 ? Math.min(1, spent / budget) : 1;
+  const budgetTone = used >= 1 ? "bad" : used >= 0.8 ? "warn" : "ok";
+
   return (
     <>
       <div className="sectionhead">
-        <h2>AI photo editing</h2>
+        <h2>AI photo editing and tag review</h2>
         <span className="faint mono">
           {settings.configured ? `key configured · ${settings.model}` : "not configured"}
         </span>
       </div>
       <div className="card">
         <p className="faint" style={{ marginTop: 0 }}>
-          Powers “AI auto-edit” on listings: a small preview of each photograph
-          goes to the Claude API, slider values come back, and the
-          full-resolution render happens on this machine. Photos leave only
-          when you press that button. The key is sealed at rest and never shown
-          again after saving.
+          Powers “AI auto-edit” on listings and “Review with Claude” on Tags: a
+          small preview of each photograph goes to the Claude API, slider values
+          or tag suggestions come back, and everything else happens on this
+          machine. Photos leave only when you press those buttons (or turn the
+          nightly review on). The key is sealed at rest and never shown again
+          after saving.
         </p>
         <div className="toolbar" style={{ marginTop: 8 }}>
           <input
@@ -114,7 +141,7 @@ export default function AiEditCard() {
         {settings.configured && (
           <div className="toolbar" style={{ marginTop: 8 }}>
             <label className="faint" htmlFor="ai-model" style={{ fontSize: "0.8rem" }}>
-              Model
+              Editing model
             </label>
             <select
               id="ai-model"
@@ -135,7 +162,7 @@ export default function AiEditCard() {
             </select>
           </div>
         )}
-        <p className="faint" style={{ fontSize: "0.8rem", marginBottom: 0 }}>
+        <p className="faint" style={{ fontSize: "0.8rem" }}>
           {settings.look_examples > 0
             ? `Learned look installed — ${settings.look_examples} shipped photos. Auto-edit takes ` +
               `its tone from how your most similar past photos were edited (locally, free); ` +
@@ -143,6 +170,115 @@ export default function AiEditCard() {
             : "No learned look installed — auto-edit takes its tone from the model, or the " +
               "preset without a key."}
         </p>
+
+        {/* ---- the cap ---- */}
+        <div className="sectionhead" style={{ marginTop: 14 }}>
+          <h3 style={{ margin: 0 }}>Monthly budget</h3>
+          <span className="pill" data-tone={budgetTone}>
+            {money(spent)} of {money(budget)} used
+          </span>
+        </div>
+        <p className="faint" style={{ fontSize: "0.82rem", marginTop: 4 }}>
+          The ceiling on everything FrameFound asks the Claude API this calendar
+          month — auto-edit, naming and the tag reviewer together. A run stops
+          <em> before</em> the call that would cross it and says so. Set it to 0
+          to pause all calls without removing the key.
+        </p>
+        <div className="toolbar">
+          <span className="faint" style={{ fontSize: "0.8rem" }}>
+            $
+          </span>
+          <input
+            className="input mono"
+            type="number"
+            min={0}
+            step={0.5}
+            style={{ width: 120 }}
+            value={budgetDraft ?? String(budget)}
+            disabled={busy}
+            onChange={(e) => setBudgetDraft(e.target.value)}
+            aria-label="Monthly AI budget in dollars"
+          />
+          <button
+            className="btn"
+            disabled={busy || budgetDraft === null || budgetDraft === String(budget)}
+            onClick={() => {
+              const value = Number(budgetDraft);
+              if (Number.isFinite(value) && value >= 0) save({ monthly_budget_usd: value });
+            }}
+          >
+            Save budget
+          </button>
+        </div>
+
+        {/* ---- the reviewer ---- */}
+        {settings.configured && (
+          <>
+            <div className="sectionhead" style={{ marginTop: 14 }}>
+              <h3 style={{ margin: 0 }}>Tag reviewer</h3>
+              <span className="faint mono">{settings.review_model}</span>
+            </div>
+            <p className="faint" style={{ fontSize: "0.82rem", marginTop: 4 }}>
+              Claude looks at the thumbnail of pictures nobody has tagged and
+              proposes tags from your vocabulary, plus new ones it is sure of.
+              They arrive as suggestions on the Tags page; your yes or no is what
+              trains the match. Run it from Tags, or let it run nightly.
+            </p>
+            <div className="toolbar">
+              <label className="faint" htmlFor="review-model" style={{ fontSize: "0.8rem" }}>
+                Model
+              </label>
+              <select
+                id="review-model"
+                className="select"
+                style={{ flex: 1, minWidth: 240 }}
+                value={settings.review_model}
+                disabled={busy}
+                onChange={(e) => save({ review_model: e.target.value })}
+              >
+                {!REVIEW_MODELS.some((m) => m.id === settings.review_model) && (
+                  <option value={settings.review_model}>{settings.review_model}</option>
+                )}
+                {REVIEW_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="toolbar" style={{ marginTop: 8 }}>
+              <label className="field" style={{ flexDirection: "row", gap: 8, margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.review_auto}
+                  disabled={busy}
+                  onChange={(e) => save({ review_auto: e.target.checked })}
+                />
+                <span>Review new untagged media every night</span>
+              </label>
+              <label className="faint" htmlFor="review-batch" style={{ fontSize: "0.8rem" }}>
+                pictures per run
+              </label>
+              <input
+                id="review-batch"
+                className="input mono"
+                type="number"
+                min={1}
+                max={500}
+                style={{ width: 90 }}
+                value={batchDraft ?? String(settings.review_batch)}
+                disabled={busy}
+                onChange={(e) => setBatchDraft(e.target.value)}
+                onBlur={() => {
+                  const value = Number(batchDraft);
+                  if (batchDraft !== null && Number.isInteger(value) && value >= 1) {
+                    save({ review_batch: value });
+                  }
+                }}
+              />
+            </div>
+          </>
+        )}
         {message && (
           <p className="faint mono" style={{ marginBottom: 0 }}>
             {message}

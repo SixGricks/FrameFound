@@ -4,7 +4,7 @@ One Python package, multiple entrypoints (see ADR-0001):
 
 | Entrypoint | Command | Role |
 |---|---|---|
-| API | `uvicorn framefound.main:app` | HTTP API + auth + media serving |
+| API | `uvicorn framefound.main:app` | HTTP API + auth + media serving + the Claude MCP connector at `/api/mcp` (needs the `mcp` extra) |
 | Worker | `celery -A framefound.worker worker -Q default,media` | metadata, thumbnails, proxies (TODO m1) |
 | AI worker | `celery -A framefound.worker worker -Q transcribe,vision` | transcription, embeddings (TODO m4/m5) |
 | Scanner | `python -m framefound.scanner` | watch + reconcile libraries (TODO m2) |

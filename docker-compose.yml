@@ -66,6 +66,11 @@ services:
       - framefound-models:/models                  # sky segmentation + CLIP text caches (develop editor)
       - ${FRAMEFOUND_MEDIA_ROOT:-/mnt/media}:/media:ro,rslave
       - ${FRAMEFOUND_CACHE_ROOT:-/mnt/cache}:/cache:rslave
+      # The host's Tailscale socket, so the Security page can show the
+      # tailnet address and offer a one-button sign-in (ddns/tailscale_local.py).
+      # The directory, not the socket: tailscaled recreates the socket when it
+      # restarts. Harmless on a host without Tailscale (an empty directory).
+      - ${FRAMEFOUND_TAILSCALE_SOCKET_DIR:-/var/run/tailscale}:/var/run/tailscale:ro
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }

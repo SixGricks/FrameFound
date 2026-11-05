@@ -485,6 +485,11 @@ class AssetTag(Base):
     tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), index=True)
     source: Mapped[str] = mapped_column(String(16), default="manual", index=True)
     confidence: Mapped[float | None] = mapped_column(default=None)
+    # Who proposed a suggestion: "clip" (the learner), "claude" (the API
+    # reviewer), "mcp" (Claude through the connector). Null on rows older
+    # than migration 0025, which were all the learner's. Informational —
+    # every suggestion is judged by the operator the same way.
+    origin: Mapped[str | None] = mapped_column(String(20), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), default=None
@@ -749,3 +754,35 @@ class AssetInpaint(Base):
     relative_path: Mapped[str | None] = mapped_column(String(1024), default=None)
     error: Mapped[str | None] = mapped_column(String(500), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AiUsage(Base):
+    """One call to the Claude API, with the token counts the API reported.
+
+    The ledger behind the monthly budget on the Security page (ai/spend.py).
+    Token counts are what the API said, not an estimate; `cost_usd` is those
+    counts priced from a dated table and is null for a model the table does
+    not know. A failed call has no usage and costs nothing, which is also
+    what the API bills.
+    """
+
+    __tablename__ = "ai_usage"
+    __table_args__ = (Index("ix_ai_usage_purpose_created", "purpose", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    # tag_review | recipe | describe
+    purpose: Mapped[str] = mapped_column(String(30))
+    model: Mapped[str] = mapped_column(String(100))
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(default=0)
+    cost_usd: Mapped[float | None] = mapped_column(Float, default=None)
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"), default=None
+    )
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(String(200), default="")

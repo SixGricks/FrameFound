@@ -630,6 +630,15 @@ class AiEditSettingsOut(BaseModel):
     # Shipped photographs the installed learned look was made from (0 = none):
     # when present, auto-edit takes its tone from it (media/looks.py).
     look_examples: int = 0
+    # The monthly ceiling on every Claude API call this install makes, and
+    # what the ledger says has been spent against it so far this month.
+    monthly_budget_usd: float = 5.0
+    spent_this_month_usd: float = 0.0
+    # The tag reviewer (docs/tagging.md): its model, whether it runs
+    # nightly on untagged media, and how many pictures per run.
+    review_model: str = ""
+    review_auto: bool = False
+    review_batch: int = 40
 
 
 class AiEditSettingsIn(BaseModel):
@@ -637,10 +646,14 @@ class AiEditSettingsIn(BaseModel):
     api_key: str | None = Field(default=None, max_length=300)
     enabled: bool | None = None
     model: str | None = Field(default=None, min_length=1, max_length=100)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, le=10_000)
+    review_model: str | None = Field(default=None, min_length=1, max_length=100)
+    review_auto: bool | None = None
+    review_batch: int | None = Field(default=None, ge=1, le=500)
 
 
-@router.get("/settings/ai", response_model=AiEditSettingsOut)
-async def ai_settings(_user: CurrentUser, db: DbDep, settings: SettingsDep) -> AiEditSettingsOut:
+async def _ai_settings_out(db: DbDep, settings: SettingsDep) -> AiEditSettingsOut:
+    from framefound.ai import spend
     from framefound.media import looks
     from framefound.media.maps_store import load_ai_edit_config
 
@@ -650,7 +663,17 @@ async def ai_settings(_user: CurrentUser, db: DbDep, settings: SettingsDep) -> A
         enabled=config.enabled,
         model=config.model,
         look_examples=looks.examples(settings.data_dir),
+        monthly_budget_usd=config.monthly_budget_usd,
+        spent_this_month_usd=round(await spend.spent_this_month(db), 4),
+        review_model=config.review_model or config.model,
+        review_auto=config.review_auto,
+        review_batch=config.review_batch,
     )
+
+
+@router.get("/settings/ai", response_model=AiEditSettingsOut)
+async def ai_settings(_user: CurrentUser, db: DbDep, settings: SettingsDep) -> AiEditSettingsOut:
+    return await _ai_settings_out(db, settings)
 
 
 @router.put("/settings/ai", response_model=AiEditSettingsOut, dependencies=[require_admin])
@@ -666,13 +689,19 @@ async def update_ai_settings(
         config.enabled = body.enabled
     if body.model is not None:
         config.model = body.model.strip()
+    if body.monthly_budget_usd is not None:
+        config.monthly_budget_usd = round(float(body.monthly_budget_usd), 4)
+    if body.review_model is not None:
+        config.review_model = body.review_model.strip()
+    if body.review_auto is not None:
+        config.review_auto = body.review_auto
+    if body.review_batch is not None:
+        config.review_batch = body.review_batch
     await save_ai_edit_config(db, config)
-    log.info("develop.ai_settings_updated", configured=bool(config.api_key_sealed))
-    from framefound.media import looks
-
-    return AiEditSettingsOut(
+    log.info(
+        "develop.ai_settings_updated",
         configured=bool(config.api_key_sealed),
-        enabled=config.enabled,
-        model=config.model,
-        look_examples=looks.examples(settings.data_dir),
+        budget_usd=config.monthly_budget_usd,
+        review_auto=config.review_auto,
     )
+    return await _ai_settings_out(db, settings)

@@ -15,21 +15,15 @@ import structlog
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from framefound.auth.deps import CurrentUser, DbDep
+from framefound.ai.tagging import slugify
+from framefound.auth.deps import CurrentUser, DbDep, require_admin
 from framefound.db.models import Asset, AssetTag, Library, Tag
 
 log = structlog.get_logger()
 
 router = APIRouter(prefix="/tags", tags=["tags"])
-
-# Slugs are for lookup and de-duplication; the display name keeps the
-# operator's own capitalisation and spacing.
-_SLUG_STRIP = re.compile(r"[^a-z0-9]+")
-
-
-def slugify(name: str) -> str:
-    return _SLUG_STRIP.sub("-", name.strip().lower()).strip("-")
 
 
 class TagOut(BaseModel):
@@ -66,6 +60,10 @@ class PendingSuggestion(BaseModel):
     filename: str
     media_type: str
     confidence: float | None
+    # Who suggested it: clip (the learner), claude (the API reviewer) or
+    # mcp (Claude through the connector). The operator judges them alike,
+    # but deserves to know which second opinion they are weighing.
+    origin: str = "clip"
 
 
 async def _counts(db: DbDep) -> tuple[dict[uuid.UUID, int], dict[uuid.UUID, int]]:
@@ -324,9 +322,145 @@ async def pending_for_tag(
             filename=asset.filename,
             media_type=asset.media_type,
             confidence=link.confidence,
+            origin=link.origin or "clip",
         )
         for link, asset in rows
     ]
+
+
+# --- a second opinion from Claude, under the budget -----------------------
+#
+# Declared before `/{tag_id}/relearn` so "review" is never parsed as a tag id.
+
+
+class ClaudeReviewState(BaseModel):
+    state: str
+    started_at: str
+    finished_at: str
+    requested: int
+    reviewed: int
+    suggested: int
+    new_tags: int
+    skipped: int
+    failed: int
+    spent_usd: float
+    message: str
+
+
+class ClaudeReviewStatus(BaseModel):
+    configured: bool
+    model: str
+    budget_usd: float
+    spent_this_month_usd: float
+    spent_on_review_usd: float
+    remaining_usd: float
+    auto: bool
+    batch: int
+    untagged: int
+    pending_from_claude: int
+    last: ClaudeReviewState
+
+
+class ClaudeReviewRequest(BaseModel):
+    asset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    # 0 = the configured batch size.
+    limit: int = Field(default=0, ge=0, le=500)
+    library_id: uuid.UUID | None = None
+
+
+async def queue_claude_review(
+    db: AsyncSession, asset_ids: list[uuid.UUID], limit: int, library_id: uuid.UUID | None = None
+) -> tuple[int, str]:
+    """Hand pictures to the reviewer. Refuses, with a reason, when there is
+    no key, no budget left, a run already going, or nothing to review —
+    each of which the caller (the page or Claude) should relay as it is.
+    Shared by the endpoint below and the MCP connector."""
+    from framefound.ai import spend, tag_review
+    from framefound.media.maps_store import load_ai_edit_config, load_review_state
+
+    config = await load_ai_edit_config(db)
+    if not config.ready:
+        raise ValueError("Reviewing with Claude needs an Anthropic key on the Security page")
+    spent = await spend.spent_this_month(db)
+    if spent >= config.monthly_budget_usd:
+        raise ValueError(
+            f"This month's AI budget is used up (${spent:.2f} of "
+            f"${config.monthly_budget_usd:.2f}); raise it on the Security page to continue"
+        )
+    state = await load_review_state(db)
+    if state.state == "running":
+        raise ValueError("A review is already running — it will finish on its own")
+
+    if asset_ids:
+        chosen = asset_ids[:500]
+    else:
+        chosen = await tag_review.pick_untagged(db, limit or config.review_batch, library_id)
+    if not chosen:
+        return (
+            0,
+            "Nothing to review: every picture with a thumbnail already has a tag or a suggestion",
+        )
+    try:
+        from framefound.processing.tag_review_tasks import review_tags_with_claude
+
+        review_tags_with_claude.delay([str(asset_id) for asset_id in chosen])
+    except Exception as err:  # queue down
+        raise ValueError("The processing queue is not available right now") from err
+    model = config.review_model or config.model
+    return len(chosen), (
+        f"{len(chosen)} picture{'' if len(chosen) == 1 else 's'} queued for {model}; "
+        f"${config.monthly_budget_usd - spent:.2f} of this month's budget remains"
+    )
+
+
+@router.get("/review/claude", response_model=ClaudeReviewStatus)
+async def claude_review_status(_user: CurrentUser, db: DbDep) -> ClaudeReviewStatus:
+    """Where the reviewer stands: key, budget and what is left of it, how
+    many pictures nobody has tagged, and what the last run did."""
+    from framefound.ai import spend, tag_review
+    from framefound.media.maps_store import load_ai_edit_config, load_review_state
+
+    config = await load_ai_edit_config(db)
+    spent = await spend.spent_this_month(db)
+    on_review = await spend.spent_this_month(db, spend.TAG_REVIEW)
+    pending = int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(AssetTag)
+                .where(AssetTag.source == "suggested", AssetTag.origin == "claude")
+            )
+        ).scalar_one()
+    )
+    state = await load_review_state(db)
+    return ClaudeReviewStatus(
+        configured=config.ready,
+        model=config.review_model or config.model,
+        budget_usd=config.monthly_budget_usd,
+        spent_this_month_usd=round(spent, 4),
+        spent_on_review_usd=round(on_review, 4),
+        remaining_usd=round(max(0.0, config.monthly_budget_usd - spent), 4),
+        auto=config.review_auto,
+        batch=config.review_batch,
+        untagged=await tag_review.count_untagged(db),
+        pending_from_claude=pending,
+        last=ClaudeReviewState(**state.__dict__),
+    )
+
+
+@router.post("/review/claude", status_code=202, dependencies=[require_admin])
+async def start_claude_review(
+    body: ClaudeReviewRequest, user: CurrentUser, db: DbDep
+) -> dict[str, int | str]:
+    """Send pictures to the Claude API for tag proposals, under the budget:
+    the given assets, or the newest untagged ones. Suggestions land in the
+    review queue marked "claude"; nothing is applied."""
+    try:
+        queued, message = await queue_claude_review(db, body.asset_ids, body.limit, body.library_id)
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from None
+    log.info("tag_review.queued", queued=queued, by=str(user.id))
+    return {"queued": queued, "message": message}
 
 
 @router.post("/{tag_id}/relearn", status_code=202)

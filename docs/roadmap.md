@@ -3,6 +3,115 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-05 — Claude as a client (MCP), tag review under a budget, Tailscale in one button, Security page rework, Showcase by date
+
+Asked for three things: an MCP so Claude can call in and ask for media by
+tag; Claude reviewing media and proposing tags so the tagging model keeps
+learning — through the connector and through the Anthropic API with a hard
+ceiling; and FrameFound reachable over Tailscale from outside the office.
+
+**What shipped** (ADR-0020, [docs/mcp.md](mcp.md)):
+
+- **The connector**, inside the API at `/api/mcp` — one more surface on the
+  one image, behind the same Caddy route, public-access gate and tailnet as
+  the web UI. Eleven tools: `overview`, `list_tags`, `find_media` (tags
+  all/any, type, library, capture dates), `search_media` (the same hybrid
+  search the browser runs: tags, visual, transcripts, names, merged and
+  ranked), `get_media`, `view_media` (the thumbnail itself, so Claude can
+  look), `review_queue`, `propose_tags`, `decide_tag`, `api_review_status`,
+  `start_api_review`. Every result carries a signed preview link built from
+  the address the caller used, valid twelve hours.
+- **Authentication is the panel token**, now with a *Claude (MCP connector)*
+  host and a `tag` scope. The scope promise grew by exactly one catalogue
+  write — suggestions and relayed decisions — and the test that guards the
+  vocabulary says so in words. A read-only account's token cannot tag. The
+  SDK's OAuth was not used: FrameFound already has a credential that is
+  listed and revoked on the Security page.
+- **Claude's tags are suggestions.** `propose_tags` writes `suggested` rows
+  marked `origin = "mcp"`; the learner's are `"clip"`, the API reviewer's
+  `"claude"`; the Tags page shows which. They become examples only on the
+  operator's yes — on the page, or in chat via `decide_tag`, which re-runs
+  the learner.
+- **The API reviewer**: "Review with Claude" on Tags, `start_api_review`
+  from the connector, or a nightly sweep (off by default) send the thumbnail
+  FrameFound already made — nothing is read from an original — for pictures
+  with a thumbnail and no tag or suggestion of any kind, newest first. The
+  tool is offered with a strict schema, not forced (current models 400 on a
+  forced `tool_choice`), the rules and vocabulary are cache-marked, and the
+  answer passes `tag_review.admit()` — the operator's decision point, with
+  conservative defaults (50% for a vocabulary match, 75% for a new word,
+  three words, six per picture).
+- **One ledger, one cap.** `ai_usage` records every call FrameFound makes to
+  the Claude API with the token counts the API reported — reviewer,
+  auto-edit, naming — priced from a dated table (now in `ai/spend.py`; the
+  bake-off tool imports it, so its dollars and the Security page's agree).
+  The **monthly budget** on the Security page (default $5) is checked before
+  each call and a run that would cross it stops and says so; auto-edit got
+  the same check. Zero pauses everything without removing the key. The
+  reviewer defaults to Haiku 5.5: about $0.0004 a picture, so the default
+  budget covers roughly ten thousand.
+- **Tailscale.** The code already detected tailnet arrivals and shipped a
+  sidecar; what was missing was the recipe and the connector's address. The
+  Security card now shows `…/api/mcp` once the tailnet address is learned,
+  and [remote-access.md](remote-access.md) has the three routes: Tailscale in
+  the VM (recommended; `tailscale serve` for a real certificate), the
+  Proxmox host as a subnet router (also reaches the NAS and the Proxmox
+  console; the app then sees a LAN address rather than a tailnet one), or
+  the sidecar with `COMPOSE_PROFILES=tailnet`.
+
+**Measured:** 47 new tests — the connector is exercised by a real MCP client
+over the real streamable-HTTP transport, in process, against the same SQLite
+app the API tests use (gate, scopes, every tool, the signed link opening
+without a session); the reviewer against a mocked API (request shape, answer
+cleaning, admission, a run that writes suggestions and the ledger, the cap
+stopping the second call, an account error stopping the run); the ledger's
+arithmetic. The local suite is green bar the three Windows-only path tests.
+
+**Also in this push** (asked the same day):
+
+- **Tailscale is installed on the VM** (1.104.5, `--hostname framefound`,
+  `--operator=framefound`), and the Security page signs it in with **one
+  button**. The api container mounts the host's `/var/run/tailscale`
+  read-only and talks to tailscaled's local API (`ddns/tailscale_local.py`):
+  status, addresses, and "give me a sign-in link". The button opens
+  Tailscale's sign-in page; the card turns green with the bookmarkable
+  addresses (`http://framefound:8080`, the full `.ts.net` one, and the MCP
+  address) once the server joins. Nothing in it can take the host *off* the
+  tailnet. A refusal names the fix (`tailscale set --operator=…`).
+- **The Security page, reworked for the owner rather than a sysadmin**: a
+  checkup at the top — one sentence per thing (outside access, internet
+  exposure, two-factor, devices and tokens, Claude spend), green or amber,
+  each with the button that fixes it — then a sticky jump bar to four
+  sections: *Access from away*, *Signing in*, *Devices & tokens*,
+  *Connected services*. Two-factor setup shows a **QR code** (and an
+  "open in the app" link on a phone) instead of a 32-character key; device
+  rows read "Chrome on Windows" instead of a user-agent string; the own-domain
+  and Cloudflare modes moved under *Advanced*, the kill switch did not.
+  `qrcode-generator` (MIT, no dependencies) is the web app's first runtime
+  dependency beyond Next and React.
+- **Showcase by capture date**: *Taken between* two dates (whole days,
+  inclusive; quick picks for last 30 days, this/last month, this/last year).
+  Photographs and video frames outside the window are never ranked, the
+  place list narrows to the courses actually shot in it, and an empty window
+  says so. Undated photographs are left out once a window is set.
+
+**Needs the operator:**
+
+1. Press **Sign in to Tailscale** on the Security page and sign in (the
+   server cannot sign itself into your account). Then install Tailscale on
+   the phone/laptop with the same account. Optional: MagicDNS + HTTPS
+   certificates in the admin console and `sudo tailscale serve --bg 8080`.
+2. Rebuild `~/citest`'s `ff-dev` image with the `mcp` extra, or the gate
+   needs the `pip install --user mcp` step (the connector tests skip without).
+3. On Security: the monthly budget; a *Claude (MCP connector)* token; paste
+   the printed `claude mcp add` command on the laptop.
+
+**Not done, by design:** claude.ai's browser connector needs a public URL and
+OAuth — a possible later step as Tailscale Funnel plus an OAuth layer over
+panel tokens. Video is reviewed from its poster frame only. The admission
+policy is a function to edit, not a setting on a page, until a second
+library shows what the knobs should be.
+
 ### 2026-10-15 — UI sweep, by eye this time
 
 Yesterday's web findings came from reading code. This pass ran the app
@@ -230,12 +339,16 @@ the day it was made, never used) redacted.
 
 ### Next up (replaces the 2026-09-24 list)
 1. Push alerts for share-down, backup-stale and disk-full — two outages now.
-2. The operator items above.
+2. The operator items above, and the 2026-11-05 ones (Tailscale on the VM,
+   the deploy, the `ff-dev` rebuild, a Claude token).
 3. Listing delivery to Drive; draft listings from new shoot folders.
 4. Postgres in CI and a browser smoke test per page (the web findings above
    were all invisible to `tsc` and ESLint).
 5. The "found, not yet fixed" lists, web first — the route-group layout
    fixes the most at once.
+6. claude.ai's browser connector: Tailscale Funnel plus an OAuth layer that
+   issues tokens bound to panel tokens — only if the laptop clients turn out
+   not to be enough.
 
 ## Where things stand — 2026-09-24 (system review)
 

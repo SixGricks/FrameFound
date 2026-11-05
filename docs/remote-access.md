@@ -21,23 +21,81 @@ Phone/Laptop ──(WireGuard, Tailscale)──► VM tailnet IP ──► Caddy
 
 ### Setting it up
 
-**On the host** (recommended — access survives the stack being down, which is
-exactly when you want to reach it):
+**On the VM that runs FrameFound** (recommended — access survives the stack
+being down, which is exactly when you want to reach it):
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
+sudo tailscale up --hostname framefound
 ```
 
-Install Tailscale on your phone or laptop, sign in with the same account, and
-open FrameFound at `http://framefound` (or whatever you named the host).
-
-**As a sidecar**, if installing on the host is awkward:
+Then let FrameFound sign it in for you from the Security page:
 
 ```bash
-# .env: TAILSCALE_AUTHKEY=tskey-auth-...
+sudo tailscale set --operator=$(id -un 1000)
+```
+
+Compose mounts `/var/run/tailscale` read-only into the api container, so the
+Security page shows whether the server is on the tailnet and offers a single
+**Sign in to Tailscale** button that opens the sign-in page. (The operator
+setting is what lets the app — uid 1000 in its container — ask for a sign-in
+link; status needs nothing.) Or, without the page: the first `tailscale up`
+prints a login link; open it on any device signed in
+to your Tailscale account. Then install Tailscale on your phone or laptop,
+sign in with the same account, and open `http://framefound:8080` (the name
+you gave the host; MagicDNS resolves it anywhere on the tailnet). The
+Security page records that address the first time you arrive on it and shows
+it with a Copy button from then on — the address shown is one that has
+actually worked.
+
+Optional, and worth it: **HTTPS with a real certificate, no port needed.**
+In the Tailscale admin console turn on *MagicDNS* and *HTTPS certificates*
+(DNS → HTTPS Certificates), then on the VM:
+
+```bash
+sudo tailscale serve --bg 8080
+```
+
+That publishes FrameFound to the tailnet only, as
+`https://framefound.<your-tailnet>.ts.net`, with a certificate browsers
+accept. The app still sees your tailnet address (`tailscale serve` forwards
+it, and Caddy passes it on), so the Security page keeps saying "you are on
+the tailnet". Reversible with `sudo tailscale serve reset`.
+
+**On the Proxmox host instead, as a subnet router**, when you also want the
+Proxmox console and the NAS from outside and would rather enrol one machine
+than three:
+
+```bash
+# on the Proxmox host, as root
+curl -fsSL https://tailscale.com/install.sh | sh
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-tailscale.conf
+sysctl -p /etc/sysctl.d/99-tailscale.conf
+tailscale up --hostname proxmox --advertise-routes=192.168.1.0/24   # your LAN
+```
+
+Approve the route in the admin console (Machines → proxmox → Edit route
+settings). From then on every LAN address — the FrameFound VM, the NAS, the
+Proxmox web UI — is reachable from any enrolled device by its ordinary IP.
+Two things to know: connections arrive at FrameFound from the router's LAN
+address rather than a tailnet one, so the Security page will say "your local
+network" and will not learn a tailnet address; and the Proxmox host is a
+machine you otherwise keep as plain as possible. Running Tailscale on the VM
+is the simpler of the two, and nothing stops you doing both.
+
+**As a sidecar**, if installing on either host is awkward:
+
+```bash
+# .env: TAILSCALE_AUTHKEY=tskey-auth-...   (and COMPOSE_PROFILES=tailnet to make it stick)
 docker compose --profile tailnet up -d
 ```
+
+**Claude from outside the office.** The MCP connector
+([mcp.md](mcp.md)) is served under the same address: give Claude Code or
+Claude Desktop `http://framefound:8080/api/mcp` (or the `https://….ts.net`
+one) and a panel token, and it can search and tag from wherever you are. The
+Security page's Tailscale card shows that address once the tailnet one is
+known.
 
 Userspace networking, so no `/dev/net/tun` or `NET_ADMIN` on the host. Slightly
 lower throughput, which does not matter for a UI.

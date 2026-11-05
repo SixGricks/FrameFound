@@ -12,7 +12,7 @@ listing, so a whole shortlist lands in Lightroom as one collection.
 import asyncio
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 
 import structlog
@@ -58,6 +58,11 @@ class ShowcaseRequest(BaseModel):
     # Rank video frames with the stills: a course filmed but not
     # photographed still gets its best views (full-size grabs on import).
     include_video: bool = False
+    # Only photographs taken in this window, whole days inclusive: "the
+    # courses we shot this October". Capture time is what the camera
+    # recorded; anything without one is left out once a window is set.
+    captured_from: date | None = None
+    captured_to: date | None = None
 
 
 class PickOut(BaseModel):
@@ -159,6 +164,24 @@ def _prompt_vectors(subject: str, avoid: str, kind: str) -> dict[str, list[list[
     return vectors
 
 
+def _window(captured_from: date | None, captured_to: date | None) -> list[Any]:
+    """SQL conditions for a capture-date window, whole days inclusive.
+
+    Days are UTC days: EXIF times arrive without a zone and are stored as
+    UTC, so an evening shoot stays on the day the camera said it was.
+    """
+    if captured_from and captured_to and captured_from > captured_to:
+        raise HTTPException(status_code=422, detail="The window ends before it starts")
+    conditions: list[Any] = []
+    if captured_from is not None:
+        start = datetime(captured_from.year, captured_from.month, captured_from.day, tzinfo=UTC)
+        conditions.append(Asset.captured_at >= start)
+    if captured_to is not None:
+        end = datetime(captured_to.year, captured_to.month, captured_to.day, tzinfo=UTC)
+        conditions.append(Asset.captured_at < end + timedelta(days=1))
+    return conditions
+
+
 def _place_key(label: str) -> str:
     return showcase_lib.place_of(f"{label}/x")[0]
 
@@ -168,6 +191,8 @@ async def list_places(
     _user: CurrentUser,
     db: DbDep,
     library_ids: Annotated[list[uuid.UUID] | None, Query()] = None,
+    captured_from: date | None = None,
+    captured_to: date | None = None,
 ) -> list[PlaceCount]:
     """The places a showcase can be limited to: top-level folders with
     photographs, merged by name ("Forest gate" / "Forest Gate NJ"), without
@@ -178,6 +203,9 @@ async def list_places(
     )
     if library_ids:
         stmt = stmt.where(Asset.library_id.in_(library_ids))
+    # With a window, only the places shot in it — so picking courses for
+    # "this October" lists the courses that were actually photographed.
+    stmt = stmt.where(*_window(captured_from, captured_to))
     folders: dict[str, int] = {}
     for (path,) in (await db.execute(stmt)).all():
         folder = path.split("/", 1)[0]
@@ -196,7 +224,9 @@ async def list_places(
 GRAB_EXTENSIONS = ("mp4", "mov", "m4v")
 
 
-async def _video_frames(db: DbDep, library_ids: list[uuid.UUID]) -> list[showcase_lib.Photo]:
+async def _video_frames(
+    db: DbDep, library_ids: list[uuid.UUID], window: list[Any] | None = None
+) -> list[showcase_lib.Photo]:
     """Every sampled frame of every video a grab can be made from, as a
     candidate: its embedding and frame image are already in the catalogue."""
     stmt = (
@@ -223,6 +253,8 @@ async def _video_frames(db: DbDep, library_ids: list[uuid.UUID]) -> list[showcas
     )
     if library_ids:
         stmt = stmt.where(Asset.library_id.in_(library_ids))
+    if window:
+        stmt = stmt.where(*window)
     return [
         showcase_lib.Photo(
             asset_id=showcase_lib.photo_key(str(row.id), row.ts_ms),
@@ -270,9 +302,20 @@ async def search_showcase(
     if body.library_ids:
         stmt = stmt.where(Asset.library_id.in_(body.library_ids))
         scope.append(Asset.library_id.in_(body.library_ids))
+    window = _window(body.captured_from, body.captured_to)
+    if window:
+        stmt = stmt.where(*window)
+        scope.extend(window)
     rows = (await db.execute(stmt)).all()
-    if not rows:
-        raise HTTPException(status_code=404, detail="No catalogued photographs to choose from")
+    if not rows and not (window and body.include_video):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No catalogued photographs were taken in that window"
+                if window
+                else "No catalogued photographs to choose from"
+            ),
+        )
     faces: dict[uuid.UUID, int] = {
         asset_id: int(n)
         for asset_id, n in (
@@ -311,7 +354,11 @@ async def search_showcase(
         for row in rows
     ]
     if body.include_video:
-        photos += await _video_frames(db, body.library_ids)
+        photos += await _video_frames(db, body.library_ids, window)
+    if not photos:
+        raise HTTPException(
+            status_code=404, detail="Nothing was filmed or photographed in that window"
+        )
     try:
         vectors = await asyncio.to_thread(_prompt_vectors, body.subject, body.avoid, body.kind)
     except EmbeddingUnavailable as err:

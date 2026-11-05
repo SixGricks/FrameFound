@@ -28,6 +28,7 @@ was not.
 """
 
 import math
+import re
 from dataclasses import dataclass
 
 # How fast examples take over from the text guess. At n=3 the two carry equal
@@ -198,3 +199,13 @@ def percentile(scores: list[float], point: float = BASELINE_PERCENTILE) -> float
     ordered = sorted(scores)
     index = min(len(ordered) - 1, int(round(point / 100.0 * (len(ordered) - 1))))
     return ordered[index]
+
+
+# Slugs are for lookup and de-duplication; the display name keeps the
+# operator's own capitalisation and spacing. "Power Broom", "power broom" and
+# "power-broom" are one tag — and so is whatever Claude proposes.
+_SLUG_STRIP = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(name: str) -> str:
+    return _SLUG_STRIP.sub("-", name.strip().lower()).strip("-")

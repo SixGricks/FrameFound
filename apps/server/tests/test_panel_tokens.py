@@ -157,8 +157,19 @@ async def test_an_unknown_scope_is_refused_rather_than_ignored(
 
 async def test_no_scope_grants_writing_to_the_library() -> None:
     """The whole scope vocabulary is a promise about what a stolen token cannot
-    do. If this list ever grows a write, that promise needs re-reading."""
-    assert set(panel_tokens.SCOPES) == {"read", "export"}
+    do. It grew once, on purpose: `tag` lets the MCP connector queue tag
+    suggestions and relay the operator's decisions — catalogue metadata,
+    judged by a human — and still nothing here reaches a file or an
+    original. If this list ever grows again, that promise needs re-reading."""
+    assert set(panel_tokens.SCOPES) == {"read", "export", "tag"}
+
+
+async def test_tagging_is_opt_in_like_export(db: AsyncSession, user: User) -> None:
+    default = await panel_tokens.mint(db, user=user, name="Reader")
+    assert not panel_tokens.has_scope(default.record, panel_tokens.TAG)
+    wider = await panel_tokens.mint(db, user=user, name="Claude", host="mcp", scopes=["tag"])
+    assert panel_tokens.has_scope(wider.record, panel_tokens.TAG)
+    assert wider.record.host == "mcp"
 
 
 async def test_scopes_are_stored_normalised(db: AsyncSession, user: User) -> None:

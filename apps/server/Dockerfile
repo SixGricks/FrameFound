@@ -27,7 +27,7 @@ COPY framefound ./framefound
 ARG PMTILES_VERSION=1.31.2
 RUN set -eux;     arch="$(dpkg --print-architecture)";     case "$arch" in       amd64) pm=x86_64 ;;       arm64) pm=arm64 ;;       *) echo "no pmtiles build for $arch; basemap extraction unavailable" >&2; exit 0 ;;     esac;     url="https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_${pm}.tar.gz";     curl -fsSL "$url" -o /tmp/pmtiles.tar.gz;     tar -xzf /tmp/pmtiles.tar.gz -C /usr/local/bin pmtiles;     rm -f /tmp/pmtiles.tar.gz;     chmod +x /usr/local/bin/pmtiles;     pmtiles version
 
-RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai]"
+RUN pip install --no-cache-dir ".[db,queue,scanner,media,ai,mcp]"
 
 # Pre-create the data mountpoint owned by the app user so Docker named
 # volumes initialize with writable ownership (found in deployment: a

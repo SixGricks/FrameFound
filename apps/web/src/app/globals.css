@@ -1484,3 +1484,103 @@ small a {
     display: none;
   }
 }
+
+/* ---- Security page: checkup, jump bar, disclosure ---- */
+
+.checkup ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.checkup li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.92rem;
+}
+
+.checkup li:first-child {
+  border-top: 0;
+}
+
+.checkup-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--sage);
+}
+
+.checkup-dot[data-tone="warn"] {
+  background: var(--amber);
+}
+
+.checkup-dot[data-tone="bad"] {
+  background: var(--ember);
+}
+
+.jumpbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin: 18px 0 0;
+  padding: 8px 0;
+  background: var(--ink);
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
+}
+
+.jumpbar a {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  color: var(--paper-dim);
+  font-size: 0.84rem;
+  text-decoration: none;
+}
+
+.jumpbar a:hover,
+.jumpbar a:focus-visible {
+  color: var(--paper);
+  border-color: var(--amber-line);
+}
+
+/* Anchored sections land below the sticky bars, not under them. */
+.secsection,
+.disclosure {
+  scroll-margin-top: 72px;
+}
+
+.disclosure summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.disclosure[open] summary {
+  margin-bottom: 4px;
+}
+
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--amber);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .checkup li {
+    flex-wrap: wrap;
+  }
+}

@@ -183,6 +183,19 @@ class AiEditConfig:
     api_key_sealed: str = ""
     model: str = "claude-sonnet-5"
     enabled: bool = True
+    # The ceiling on everything FrameFound asks the Claude API in a calendar
+    # month — auto-edit, naming and the tag reviewer together, enforced from
+    # the ledger (ai/spend.py). Zero pauses every call without removing the
+    # key.
+    monthly_budget_usd: float = 5.0
+    # The tag reviewer's model. Naming what is in a thumbnail is not a tone
+    # judgement, and at a fortieth of Sonnet's price the same budget reaches
+    # forty times as many pictures.
+    review_model: str = "claude-haiku-5-5"
+    # Review newly indexed, untagged media every night, under the budget.
+    review_auto: bool = False
+    # Pictures per run, by hand or by the nightly sweep.
+    review_batch: int = 40
 
     @property
     def ready(self) -> bool:
@@ -203,6 +216,41 @@ async def load_ai_edit_config(db: AsyncSession) -> AiEditConfig:
         return AiEditConfig()
     known = set(AiEditConfig().__dict__)
     return AiEditConfig(**{k: v for k, v in row.value.items() if k in known})
+
+
+REVIEW_STATE_KEY = "ai_review_state"
+
+
+@dataclass
+class AiReviewState:
+    """What the last Claude tag-review run did, for the Tags page and the
+    MCP connector. One row, overwritten per run; the ledger (ai_usage) is
+    the durable record."""
+
+    # idle | running | done | budget | failed
+    state: str = "idle"
+    started_at: str = ""
+    finished_at: str = ""
+    requested: int = 0
+    reviewed: int = 0
+    suggested: int = 0
+    new_tags: int = 0
+    skipped: int = 0
+    failed: int = 0
+    spent_usd: float = 0.0
+    message: str = ""
+
+
+async def load_review_state(db: AsyncSession) -> AiReviewState:
+    row = await db.get(AppSetting, REVIEW_STATE_KEY)
+    if row is None:
+        return AiReviewState()
+    known = set(AiReviewState().__dict__)
+    return AiReviewState(**{k: v for k, v in row.value.items() if k in known})
+
+
+async def save_review_state(db: AsyncSession, state: AiReviewState) -> None:
+    await _put(db, REVIEW_STATE_KEY, asdict(state))
 
 
 async def save_ai_edit_config(db: AsyncSession, config: AiEditConfig) -> None:

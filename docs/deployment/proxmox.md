@@ -50,3 +50,9 @@ App disk holds Postgres, thumbnails, proxies, caches — size it at roughly
    are rebuildable and may be excluded. Restore procedure: new VM → install →
    `./manage.sh restore <file>` → remount NAS → reconciliation scan relinks
    assets by content hash.
+7. **Reach it from outside (Tailscale)**: install Tailscale *in the VM*
+   (`curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+   --hostname framefound`), or on the Proxmox host as a subnet router when
+   you also want the Proxmox console and the NAS from the road. Both recipes,
+   HTTPS via `tailscale serve`, and the Claude connector's address are in
+   [docs/remote-access.md](../remote-access.md). No router ports either way.

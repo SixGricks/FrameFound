@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     media_root: Path = Path("/media")
     compute: Literal["cpu", "cuda"] = "cpu"
     domain: str = ""  # set in public-HTTPS mode; also switches cookies to Secure
+    # The host port Caddy publishes (compose's FRAMEFOUND_HTTP_PORT), for the
+    # addresses the Security page shows. The app itself listens on 8000.
+    http_port: int = 8080
 
     whisper_model: str = "small"
     vision_model: str = "ViT-B-32/laion2b_s34b_b79k"

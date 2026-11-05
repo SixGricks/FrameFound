@@ -43,7 +43,29 @@ const DEFAULTS: Omit<ShowcaseRequest, "library_ids" | "places" | "exclude_listin
   allow_people: false,
   kind: "finished",
   include_video: false,
+  captured_from: null,
+  captured_to: null,
 };
+
+/** YYYY-MM-DD for a local date, as <input type="date"> wants it. */
+function isoDay(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Quick windows: the shoots people actually ask for. */
+function windowPresets(today = new Date()): { label: string; from: string; to: string }[] {
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  const daysAgo = (n: number) => isoDay(new Date(y, m, today.getDate() - n));
+  return [
+    { label: "Last 30 days", from: daysAgo(30), to: isoDay(today) },
+    { label: "This month", from: isoDay(new Date(y, m, 1)), to: isoDay(today) },
+    { label: "Last month", from: isoDay(new Date(y, m - 1, 1)), to: isoDay(new Date(y, m, 0)) },
+    { label: "This year", from: isoDay(new Date(y, 0, 1)), to: isoDay(today) },
+    { label: "Last year", from: isoDay(new Date(y - 1, 0, 1)), to: isoDay(new Date(y - 1, 11, 31)) },
+  ];
+}
 
 /** The media kind that shows a pick: its own image, or its video's frame. */
 function imageKind(pick: ShowcasePick, still: "thumbnail" | "preview"): string {
@@ -244,14 +266,14 @@ export default function ShowcasePage() {
       return;
     }
     api
-      .showcasePlaces([...chosenLibraries])
+      .showcasePlaces([...chosenLibraries], form.captured_from, form.captured_to)
       .then((found) => {
         setPlaceOptions(found);
         // Keep only choices that still exist.
         setOnlyPlaces((prev) => new Set([...prev].filter((l) => found.some((p) => p.label === l))));
       })
       .catch(() => setPlaceOptions([]));
-  }, [chosenLibraries]);
+  }, [chosenLibraries, form.captured_from, form.captured_to]);
 
   async function search() {
     setBusy(true);
@@ -502,6 +524,58 @@ export default function ShowcasePage() {
               onChange={(e) => setForm({ ...form, alternates: e.target.valueAsNumber })}
             />
           </label>
+          <div
+            className="toolbar"
+            style={{ gap: 6, margin: 0, flexBasis: "100%", alignItems: "center" }}
+            role="group"
+            aria-label="Taken between"
+          >
+            <span className="faint" style={{ fontSize: "0.8rem" }}>
+              Taken between
+            </span>
+            <input
+              className="input"
+              type="date"
+              value={form.captured_from ?? ""}
+              max={form.captured_to ?? undefined}
+              onChange={(e) => setForm({ ...form, captured_from: e.target.value || null })}
+              aria-label="Taken on or after"
+            />
+            <span className="faint">and</span>
+            <input
+              className="input"
+              type="date"
+              value={form.captured_to ?? ""}
+              min={form.captured_from ?? undefined}
+              onChange={(e) => setForm({ ...form, captured_to: e.target.value || null })}
+              aria-label="Taken on or before"
+            />
+            <select
+              className="select"
+              value=""
+              onChange={(e) => {
+                const preset = windowPresets().find((p) => p.label === e.target.value);
+                if (preset) setForm({ ...form, captured_from: preset.from, captured_to: preset.to });
+              }}
+              aria-label="Quick window"
+            >
+              <option value="">Quick pick…</option>
+              {windowPresets().map((p) => (
+                <option key={p.label} value={p.label}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            {(form.captured_from || form.captured_to) && (
+              <button
+                className="btn"
+                style={{ padding: "3px 10px" }}
+                onClick={() => setForm({ ...form, captured_from: null, captured_to: null })}
+              >
+                Any time
+              </button>
+            )}
+          </div>
           <select
             className="select"
             value={form.orientation}

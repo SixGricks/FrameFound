@@ -25,3 +25,5 @@ deleted — superseded ADRs are marked as such.
 | [0016](0016-valkey-queue-store.md) | Valkey as the queue store image | Accepted |
 | [0017](0017-onnx-embeddings.md) | ONNX Runtime for visual embeddings (no AVX required) | Accepted |
 | 0018 | Privileged mount helper for UI-managed storage | TODO |
+| [0019](0019-premiere-panel.md) | Premiere panel: FCP7 XML first, panel tokens | Accepted |
+| [0020](0020-mcp-connector.md) | Claude as a client: MCP connector in the API, tag suggestions, one spend ledger and cap | Accepted |

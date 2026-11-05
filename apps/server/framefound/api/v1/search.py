@@ -168,6 +168,12 @@ async def search(
     library_id: uuid.UUID | None = None,
     limit: int = Query(default=25, ge=1, le=100),
 ) -> SearchResponse:
+    return await run_search(db, q, library_id, limit)
+
+
+async def run_search(db: DbDep, q: str, library_id: uuid.UUID | None, limit: int) -> SearchResponse:
+    """The search itself, apart from the HTTP: the MCP connector runs the
+    same one, so Claude and the web UI never disagree about a result."""
     dialect = db.get_bind().dialect.name
 
     seg_query = (

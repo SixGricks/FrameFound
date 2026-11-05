@@ -235,8 +235,6 @@ def _ask(
 ) -> tuple[dict[str, Any], dict[str, int]]:
     """One tool call about one preview; returns the tool's input and the
     token usage the API reported — the only honest cost figure."""
-    import httpx
-
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -271,7 +269,26 @@ def _ask(
         body["messages"][0]["content"][1]["text"] = (
             f"{instruction} Answer by calling {tool['name']}."
         )
+    payload, usage = post_messages(body, api_key)
+    try:
+        tool_use = next(block for block in payload["content"] if block.get("type") == "tool_use")
+        answer = dict(tool_use["input"])
+    except (KeyError, StopIteration, TypeError) as err:
+        raise RecipePickUnavailable("The model returned no answer") from err
+    return answer, usage
+
+
+def post_messages(body: dict[str, Any], api_key: str) -> tuple[dict[str, Any], dict[str, int]]:
+    """One Messages request, with the retry and error policy every caller
+    shares — the recipe-picker, photo naming, the tag reviewer. Returns the
+    response and the token usage it reported, the only honest cost figure.
+
+    Transient statuses are retried a few times with growing pauses; anything
+    else is explained in the API's own words. The key goes in a header and
+    nowhere else — never into a log, never into the exception text."""
     import time
+
+    import httpx
 
     for attempt in range(len(RETRY_DELAYS) + 1):
         last_try = attempt == len(RETRY_DELAYS)
@@ -301,9 +318,9 @@ def _ask(
         raise _explain(response)
     try:
         payload = response.json()
-        tool_use = next(block for block in payload["content"] if block.get("type") == "tool_use")
-        answer = dict(tool_use["input"])
-    except (KeyError, StopIteration, ValueError, json.JSONDecodeError) as err:
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            raise ValueError("not a messages response")
+    except (ValueError, json.JSONDecodeError) as err:
         raise RecipePickUnavailable("The model returned no answer") from err
     raw_usage = payload.get("usage") or {}
     usage = {
@@ -315,7 +332,7 @@ def _ask(
             "cache_read_input_tokens",
         )
     }
-    return answer, usage
+    return payload, usage
 
 
 def pick_recipe(preview_jpeg: bytes, api_key: str, model: str) -> dict[str, Any]:

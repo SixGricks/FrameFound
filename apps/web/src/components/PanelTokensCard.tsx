@@ -1,6 +1,7 @@
 "use client";
 
-// Panel tokens: the credentials the Premiere panel and Lightroom plugin use.
+// Panel tokens: the credentials the Premiere panel, the Lightroom plugin and
+// the Claude (MCP) connector use.
 //
 // Listed next to sessions because they are the same thing from the operator's
 // point of view — a way in that is currently open. The two facts that make the
@@ -10,7 +11,9 @@
 //
 // The secret is shown exactly once, and the copy affordance is deliberately
 // prominent: a token the operator fails to copy is one they will mint again,
-// leaving a dead credential in the list forever.
+// leaving a dead credential in the list forever. For a Claude token the
+// one-time card also carries the command that connects Claude Code, with the
+// token already in it, because that is the only moment it can.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -21,18 +24,33 @@ import { relativeTime, shortDate } from "@/lib/format";
 const HOSTS = [
   { value: "premiere", label: "Adobe Premiere Pro panel" },
   { value: "lightroom", label: "Lightroom Classic plugin" },
+  { value: "mcp", label: "Claude (MCP connector)" },
   { value: "other", label: "Something else" },
 ];
+
+function mcpUrl(): string {
+  if (typeof window === "undefined") return "/api/mcp";
+  return `${window.location.origin}/api/mcp`;
+}
+
+function claudeCodeCommand(token: string): string {
+  return (
+    `claude mcp add --transport http framefound ${mcpUrl()} ` +
+    `--header "Authorization: Bearer ${token}"`
+  );
+}
 
 export default function PanelTokensCard() {
   const [tokens, setTokens] = useState<PanelToken[] | null>(null);
   const [name, setName] = useState("");
   const [host, setHost] = useState("premiere");
   const [canExport, setCanExport] = useState(true);
+  const [canTag, setCanTag] = useState(false);
   const [fresh, setFresh] = useState<PanelTokenCreated | null>(null);
   const [busy, setBusy] = useState(false);
   // Whether the shown-once token reached the clipboard: null until tried.
   const [copied, setCopied] = useState<boolean | null>(null);
+  const [copiedCommand, setCopiedCommand] = useState<boolean | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -47,17 +65,26 @@ export default function PanelTokensCard() {
     load();
   }, [load]);
 
+  function chooseHost(value: string) {
+    setHost(value);
+    // What each client is for: a panel finds and imports footage (export);
+    // Claude looks and proposes tags (tag). Defaults follow, and can be unticked.
+    setCanExport(value !== "mcp");
+    setCanTag(value === "mcp");
+  }
+
   async function create() {
     if (!name.trim()) return;
     setBusy(true);
     setError("");
     try {
-      const created = await api.createPanelToken({
-        name: name.trim(),
-        host,
-        scopes: canExport ? ["read", "export"] : ["read"],
-      });
+      const scopes = ["read"];
+      if (canExport) scopes.push("export");
+      if (canTag) scopes.push("tag");
+      const created = await api.createPanelToken({ name: name.trim(), host, scopes });
       setFresh(created);
+      setCopied(null);
+      setCopiedCommand(null);
       setName("");
       await load();
     } catch (err) {
@@ -77,10 +104,10 @@ export default function PanelTokensCard() {
       </div>
 
       <p className="faint" style={{ maxWidth: "62ch" }}>
-        How the Premiere panel and the Lightroom plugin sign in. Each token is
-        for one machine, is read-only unless you widen it, and can never write
-        to your library or touch an original. Revoke one here and that machine
-        stops working immediately.
+        How the Premiere panel, the Lightroom plugin and Claude sign in. Each
+        token is for one machine, is read-only unless you widen it, and can
+        never write to your library or touch an original. Revoke one here and
+        that machine stops working immediately.
       </p>
 
       {error && <div className="empty">{error}</div>}
@@ -102,10 +129,45 @@ export default function PanelTokensCard() {
               Done
             </button>
           </div>
-          <p className="faint" style={{ marginBottom: 0 }}>
-            Paste it into the panel&apos;s Settings, along with this server&apos;s
-            address.
-          </p>
+          {fresh.host === "mcp" ? (
+            <>
+              <p className="faint" style={{ margin: "12px 0 6px" }}>
+                Connect Claude Code on your laptop with one command (the token is
+                already in it):
+              </p>
+              <div className="pathbox">
+                <span className="mono" style={{ overflowWrap: "anywhere" }}>
+                  {claudeCodeCommand(fresh.token)}
+                </span>
+                <button
+                  className="btn"
+                  style={{ padding: "3px 10px" }}
+                  onClick={async () =>
+                    setCopiedCommand(await copyText(claudeCodeCommand(fresh.token)))
+                  }
+                >
+                  {copiedCommand ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <p className="faint" style={{ fontSize: "0.82rem", marginBottom: 0 }}>
+                The address is the one you are using right now — over Tailscale it is
+                the tailnet address. Claude Desktop and the other ways in are in{" "}
+                <a
+                  href="https://github.com/SixGricks/FrameFound/blob/main/docs/mcp.md"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  docs/mcp.md
+                </a>
+                .
+              </p>
+            </>
+          ) : (
+            <p className="faint" style={{ marginBottom: 0 }}>
+              Paste it into the panel&apos;s Settings, along with this server&apos;s
+              address.
+            </p>
+          )}
         </div>
       )}
 
@@ -117,7 +179,7 @@ export default function PanelTokensCard() {
             className="input"
             value={name}
             maxLength={120}
-            placeholder="Edit bay iMac"
+            placeholder={host === "mcp" ? "Claude on DJ's laptop" : "Edit bay iMac"}
             onChange={(e) => setName(e.target.value)}
           />
         </div>
@@ -127,7 +189,7 @@ export default function PanelTokensCard() {
             id="pt-host"
             className="select"
             value={host}
-            onChange={(e) => setHost(e.target.value)}
+            onChange={(e) => chooseHost(e.target.value)}
           >
             {HOSTS.map((h) => (
               <option key={h.value} value={h.value}>
@@ -147,6 +209,21 @@ export default function PanelTokensCard() {
             <span className="faint">
               — writing an FCP7 bin from Premiere, and grabbing full-size video frames for a
               Lightroom listing. Searching and adding files in place need only read.
+            </span>
+          </span>
+        </label>
+        <label className="field" style={{ flexDirection: "row", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={canTag}
+            onChange={(e) => setCanTag(e.target.checked)}
+          />
+          <span>
+            Allow tagging{" "}
+            <span className="faint">
+              — Claude may queue tag <em>suggestions</em> for you to judge on the Tags page,
+              and record your yes or no when you give it in chat. Never a file, never an
+              original, and nothing becomes a fact until you decide.
             </span>
           </span>
         </label>
@@ -172,8 +249,8 @@ export default function PanelTokensCard() {
                   <th scope="row" style={{ fontWeight: 500 }}>
                     {token.name}
                     <span className="faint mono" style={{ display: "block" }}>
-                      {token.host} · {token.scopes.join(", ")} · added{" "}
-                      {shortDate(token.created_at)}
+                      {token.host === "mcp" ? "claude" : token.host} · {token.scopes.join(", ")} ·
+                      added {shortDate(token.created_at)}
                     </span>
                   </th>
                   <td className="mono faint">{token.prefix}…</td>
@@ -217,7 +294,7 @@ export default function PanelTokensCard() {
 
       {tokens && !tokens.length && (
         <div className="empty">
-          No panel tokens yet. Create one to connect Premiere or Lightroom.
+          No panel tokens yet. Create one to connect Premiere, Lightroom or Claude.
         </div>
       )}
     </>

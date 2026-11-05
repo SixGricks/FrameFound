@@ -10,7 +10,7 @@ from framefound.auth import service as auth_service
 from framefound.auth.crypto import SecretUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, client_ip, require_admin
 from framefound.ddns import settings_store as store
-from framefound.ddns import tailnet
+from framefound.ddns import tailnet, tailscale_local
 from framefound.ddns.providers import DnsError, build_provider, detect_public_ip
 
 log = structlog.get_logger()
@@ -195,3 +195,73 @@ async def test_dns(db: DbDep, _user: CurrentUser) -> DnsTestResult:
         message=f"Token works and can see {config.ddns_zone}",
         detected_ipv4=detected,
     )
+
+
+# --- the host's Tailscale: status and a one-button sign-in -----------------
+
+
+class TailscaleOut(BaseModel):
+    # not_installed | needs_login | needs_approval | stopped | starting | connected
+    state: str
+    login_url: str
+    dns_name: str
+    host_name: str
+    tailnet: str
+    ips: list[str]
+    # Addresses to bookmark once connected, with the port Caddy listens on.
+    url: str
+    short_url: str
+    mcp_url: str
+    admin_console: str
+    download: str
+    message: str
+
+
+def _tailscale_out(found: "tailscale_local.TailscaleStatus", message: str = "") -> TailscaleOut:
+    from framefound.config import get_settings
+
+    port = get_settings().http_port
+    suffix = "" if port == 80 else f":{port}"
+    url = f"http://{found.dns_name}{suffix}" if found.dns_name else ""
+    return TailscaleOut(
+        state=found.state,
+        login_url=found.login_url,
+        dns_name=found.dns_name,
+        host_name=found.host_name,
+        tailnet=found.tailnet,
+        ips=found.ips,
+        url=url,
+        short_url=f"http://{found.host_name}{suffix}" if found.host_name else "",
+        mcp_url=f"{url}/api/mcp" if url else "",
+        admin_console=tailscale_local.ADMIN_CONSOLE,
+        download=tailscale_local.DOWNLOAD,
+        message=message,
+    )
+
+
+@router.get("/tailscale", response_model=TailscaleOut)
+async def tailscale_status(_user: CurrentUser) -> TailscaleOut:
+    """Whether this server is on the tailnet, and under what name."""
+    try:
+        found = await tailscale_local.status()
+    except tailscale_local.TailscaleUnavailable as err:
+        return _tailscale_out(tailscale_local.TailscaleStatus(state="unavailable"), str(err))
+    return _tailscale_out(found)
+
+
+@router.post("/tailscale/login", response_model=TailscaleOut, dependencies=[require_admin])
+async def tailscale_login(request: Request, db: DbDep, user: CurrentUser) -> TailscaleOut:
+    """Get a Tailscale sign-in link for this server (or turn it back on).
+
+    The link signs the *server* into the operator's tailnet; opening it
+    needs their Tailscale account, so producing one grants nothing.
+    """
+    try:
+        found = await tailscale_local.start_login()
+    except tailscale_local.TailscaleUnavailable as err:
+        raise HTTPException(409, str(err)) from None
+    await auth_service.audit(
+        db, "remote_access.tailscale_login", actor_user_id=user.id, ip=client_ip(request)
+    )
+    await db.commit()
+    return _tailscale_out(found)

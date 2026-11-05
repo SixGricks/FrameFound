@@ -12,6 +12,7 @@ Queues are segregated by resource class (ADR-0004):
 """
 
 from celery import Celery
+from celery.schedules import crontab
 
 from framefound.config import get_settings
 from framefound.logging import configure_logging
@@ -31,5 +32,11 @@ celery_app.conf.update(
         # Library scan schedules run in the scanner service, not beat.
         # TODO(m3): derivative retention cleanup
         # TODO(m7): DDNS update checks
+        # The Claude tag reviewer's nightly sweep. The task itself checks
+        # whether automatic review is on, so scheduling it is free when off.
+        "ai-tag-review-sweep": {
+            "task": "framefound.review_sweep",
+            "schedule": crontab(hour=8, minute=20),  # 03:20 Eastern
+        },
     },
 )

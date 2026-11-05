@@ -34,6 +34,32 @@ versioning: [Semantic Versioning](https://semver.org/).
   API, and `infrastructure/scripts/seed_dev.py` seeds a catalogue to look at.
 
 ### Added
+- **Claude as a client (2026-11-05).** An MCP connector at `/api/mcp`
+  (`framefound/mcp`, ADR-0020): Claude Code or Claude Desktop connects with
+  a panel token and can find media by tag, search, look at thumbnails,
+  propose tags and record the operator's decisions. Panel tokens gain the
+  `mcp` host label and a `tag` scope; Claude's tags are suggestions, never
+  facts. See [docs/mcp.md](docs/mcp.md).
+- **A second opinion under a budget.** "Review with Claude" on the Tags page
+  (and a nightly sweep, off by default) sends thumbnails of untagged media to
+  the Claude API and queues what an admission policy admits. One ledger
+  (`ai_usage`, migration 0025) records every call FrameFound makes to the API
+  — reviewer, auto-edit, naming — and a **monthly budget** on the Security
+  page is enforced from it before each call. `asset_tags.origin` says who
+  suggested a tag (clip / claude / mcp) and the review queue shows it.
+- **Tailscale in one button.** The api container reads the host's Tailscale
+  socket (`/var/run/tailscale`, read-only) and the Security page shows the
+  real state with a single *Sign in to Tailscale* button that opens the
+  sign-in page, then the addresses to bookmark once the server joins.
+- **Security page rework**: a plain-language checkup with a fix button per
+  line, a jump bar to four sections, a QR code for two-factor setup, readable
+  device names, and the own-domain/Cloudflare modes under *Advanced*.
+- **Showcase by capture date**: a *Taken between* window (with quick picks)
+  limits the ranking and the place list to what was shot in it.
+- Tailscale: the Security page's card shows the connector's tailnet address,
+  and [docs/remote-access.md](docs/remote-access.md) now has the full
+  out-of-office recipe (VM install, `tailscale serve` HTTPS, Proxmox subnet
+  router).
 - Slideshow rendering: propose a themed selection, review it, render an MP4.
   Ken Burns per still, theme colour grade, crossfades, optional operator-supplied
   music. `slideshows` table (migration 0013), `/api/v1/slideshows`, and a

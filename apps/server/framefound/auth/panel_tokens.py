@@ -14,8 +14,10 @@ makes. The session layer reached the same conclusion.
 
 **Read-only by default.** The panel's job is to find footage and hand it to an
 editor. It never needs to write to the catalogue and it must never be able to
-touch an original, so the default scope grants neither, and the widest scope
-offered still grants neither.
+touch an original, so the default scope grants neither. The one catalogue
+write any scope grants is `tag` — tag suggestions and decisions through the
+MCP connector, which is what makes Claude's second opinion possible — and
+no scope will ever reach an original.
 
 **Revocable, and visibly so.** Every token is listed with its prefix, its host,
 and when it was last used, next to the sessions on the Security page. A
@@ -43,9 +45,17 @@ PREFIX_SHOWN = 10
 
 READ = "read"
 EXPORT = "export"
+# Propose and decide tags (the MCP connector). Suggestions only, plus the
+# operator's own yes/no relayed through Claude; never a file, never an
+# original. Not granted to a read-only account's token (mcp/auth.py).
+TAG = "tag"
 # The complete set. Deliberately short: every scope here is a promise about
 # what a stolen token cannot do, and a long list makes that promise unreadable.
-SCOPES = (READ, EXPORT)
+SCOPES = (READ, EXPORT, TAG)
+
+# Informational labels, never permissions. "mcp" is Claude through the
+# connector (docs/mcp.md).
+HOSTS = ("premiere", "lightroom", "mcp", "other")
 
 
 class PanelTokenError(RuntimeError):
@@ -99,7 +109,7 @@ async def mint(
         name=name.strip()[:120],
         token_hash=_hash(plaintext),
         prefix=plaintext[:PREFIX_SHOWN],
-        host=host if host in ("premiere", "lightroom", "other") else "other",
+        host=host if host in HOSTS else "other",
         scopes=normalise_scopes(scopes),
         expires_at=expires_at,
     )

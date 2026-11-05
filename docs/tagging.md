@@ -141,15 +141,69 @@ the bar tightens.
 
 ---
 
+## A second opinion from Claude
+
+The learner spreads a tag you chose. It cannot propose "horse barn" about a
+picture nobody has tagged, and it cannot read the badge on a machine. Claude
+can look at a thumbnail and say what it is — in the words your vocabulary
+already uses where one fits, and in new words where none does.
+
+Both routes below end in the same place: a **suggestion** in the review queue
+above, marked with who made it, that becomes an example only when you say
+yes. A second opinion that could confirm itself would not be a second opinion.
+
+**In conversation**, through the MCP connector ([mcp.md](mcp.md)): "look at
+the untagged pictures from Tuesday and tell me what they are." Claude views
+each thumbnail, proposes tags, and records your yes or no when you give it.
+Costs nothing beyond your Claude subscription.
+
+**On the server**, with the Anthropic key on the Security page: **Review
+with Claude** on the Tags page sends a batch of untagged pictures (newest
+first, those with a thumbnail and no tag or suggestion of any kind) to the
+Claude API, or turn on the nightly sweep to do it on its own. Each answer
+passes an **admission policy** before it reaches you — by default a
+vocabulary match needs 50% confidence, a brand-new tag 75%, three words at
+most, six per picture. That policy is `admit()` in `framefound/ai/tag_review.py`,
+written to be changed: it is the one judgement in the reviewer that is about
+*your* library.
+
+### The budget
+
+Everything FrameFound asks the Claude API — the reviewer, auto-edit, naming —
+goes into one ledger with the token counts the API reported, and the
+**monthly budget** on the Security page is enforced from it: before every
+call, the software checks that this month's spend plus the next call's
+estimate stays under the cap, and a run that would cross it stops and says
+so. The page shows what has been spent. Zero pauses all calls without
+removing the key.
+
+What it costs, from the price sheet (2026-11): the reviewer's default model
+(Haiku 5.5) is about $0.0004 a picture, so $5 a month covers roughly ten
+thousand pictures; Sonnet 5.5 about $0.008; Opus 5.5 about $0.015. The
+rules and vocabulary are cached across a run, so the repeats bill cheaper.
+
+### Where it fits and where it does not
+
+- It reads thumbnails (512px). A tractor filling the frame is easy; a model
+  number on a badge is not.
+- Video is judged from its poster frame, not every shot.
+- It never names people. Faces are the People page's job.
+- The learner still does the spreading: once you confirm Claude's "horse
+  barn" on three pictures, the match takes it from there, free.
+
+---
+
 ## Reference
 
 | | |
 |---|---|
 | Learning maths | `framefound/ai/tagging.py` |
 | Tasks | `framefound/processing/tag_tasks.py` |
-| API | `/api/v1/tags`, `/api/v1/tags/assets/{id}` |
-| Tables | `tags`, `asset_tags` |
-| UI | `components/TagEditor.tsx`, `app/tags/page.tsx` |
+| Claude reviewer | `framefound/ai/tag_review.py`, `framefound/processing/tag_review_tasks.py` |
+| Spend ledger and cap | `framefound/ai/spend.py` |
+| API | `/api/v1/tags`, `/api/v1/tags/assets/{id}`, `/api/v1/tags/review/claude` |
+| Tables | `tags`, `asset_tags` (`origin`: clip / claude / mcp), `ai_usage` |
+| UI | `components/TagEditor.tsx`, `app/tags/page.tsx`, `components/AiEditCard.tsx` |
 
 Related: [location.md](location.md) uses the same embeddings to infer where
 media was shot.
