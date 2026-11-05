@@ -133,16 +133,36 @@ def _skies_dir(settings: Settings) -> Path:
     return path
 
 
+SKY_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+# A mask is drawn over a preview a few thousand pixels wide. A 2 MB PNG of
+# one colour can declare ~170 megapixels, which decoded to float32 is most
+# of the api container's memory; two at once and it was OOM-killed.
+MAX_MASK_PIXELS = 8000 * 8000
+
+
 def _sky_path(settings: Settings, name: str) -> Path:
     # The same rule a recipe applies (develop.SKY_NAME_RE). Uploads used to
     # check only for separators, so `sky#1.jpg` or `été.jpg` could be added
     # and listed but never chosen: the recipe refused the name.
-    if not develop_lib.SKY_NAME_RE.match(name) or ".." in name:
+    if (
+        not develop_lib.SKY_NAME_RE.match(name)
+        or ".." in name
+        # Images only. `x.html` passed the name rule, Pillow's verify()
+        # accepts a PNG with <script> in a text chunk, and FileResponse
+        # served it as text/html, same-origin: stored XSS against an admin.
+        or Path(name).suffix.lower() not in SKY_TYPES
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
-                "Not a sky name: use letters, digits, spaces, dots, dashes and underscores "
-                "(up to 119 characters), starting with a letter or digit"
+                "Not a sky name: a .jpg, .png or .webp named with letters, digits, spaces, "
+                "dots, dashes and underscores (up to 119 characters), starting with a "
+                "letter or digit"
             ),
         )
     return _skies_dir(settings) / name
@@ -203,7 +223,11 @@ async def sky_image(  # type: ignore[no-untyped-def]
         raise HTTPException(status_code=404, detail="No such sky")
     from fastapi.responses import FileResponse
 
-    return FileResponse(path)
+    return FileResponse(
+        path,
+        media_type=SKY_TYPES[path.suffix.lower()],
+        headers={"Content-Security-Policy": "default-src 'none'; sandbox"},
+    )
 
 
 @router.delete("/skies/{name}", status_code=204)
@@ -408,6 +432,10 @@ async def request_inpaint(
         from PIL import Image
 
         with Image.open(io.BytesIO(raw)) as img:
+            if img.size[0] * img.size[1] > MAX_MASK_PIXELS:
+                raise HTTPException(
+                    status_code=413, detail="The mask is larger than any photograph"
+                )
             gray = img.convert("L")
             import numpy as np
 

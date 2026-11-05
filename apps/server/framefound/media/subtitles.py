@@ -34,6 +34,17 @@ def build_vtt(segments: list[SpeechSegment]) -> str:
     return "\n".join(lines)
 
 
+def build_srt(segments: list[SpeechSegment]) -> str:
+    """SubRip: numbered cues and a comma before the milliseconds — what
+    Premiere's caption import, YouTube and most players expect."""
+    blocks = []
+    for number, seg in enumerate(segments, start=1):
+        start = _timestamp(seg.start_s).replace(".", ",")
+        end = _timestamp(seg.end_s).replace(".", ",")
+        blocks.append(f"{number}\n{start} --> {end}\n{seg.text}\n")
+    return "\n".join(blocks)
+
+
 def _parse_timestamp(text: str) -> float | None:
     match = _TS.search(text)
     if match is None:

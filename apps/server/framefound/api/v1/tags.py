@@ -398,7 +398,8 @@ async def queue_claude_review(
     if not chosen:
         return (
             0,
-            "Nothing to review: every picture with a thumbnail already has a tag or a suggestion",
+            "Nothing to review: every picture with a thumbnail has been tagged, answered, "
+            "or already reviewed by Claude",
         )
     try:
         from framefound.processing.tag_review_tasks import review_tags_with_claude

@@ -145,6 +145,15 @@ Browser ──► Cloudflare edge ──► outbound tunnel (cloudflared contain
   transits Cloudflare (TLS terminates at their edge) — not fully local.
 - Shipped as an optional compose profile (`--profile tunnel`) + token config.
   Never required.
+- **Point the tunnel's public hostname at `http://caddy:8081`, not `:80`.**
+  8081 is the tunnel's own entrance, reachable only from the cloudflared
+  container: it marks each request as having come through the tunnel and
+  carries Cloudflare's `Cf-Connecting-Ip` to the API. Through `:80` every
+  tunnel visitor looked like a LAN client — Caddy rewrites `X-Forwarded-For`
+  to cloudflared's private address — so the *disable public access* switch,
+  the docs lock and the per-address login limiter did nothing for them
+  (found in the 2026-11 security review). Every other site strips the marker,
+  so it cannot be sent from outside.
 
 ## Mode D — Local only
 

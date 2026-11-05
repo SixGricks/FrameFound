@@ -330,3 +330,66 @@ def render_waveform(src: Path, dst: Path, width: int = 1200, height: int = 160) 
         ],
         WAVEFORM_TIMEOUT_S,
     )
+
+
+# Speech audio is decoded at the rate Whisper works at; mixing to mono there
+# is a few megabytes a minute of WAV rather than the source's full PCM.
+SPEECH_SAMPLE_RATE = 16000
+SPEECH_TIMEOUT_S = 2 * 3600
+
+
+def audio_stream_count(src: Path) -> int:
+    """How many audio streams the container holds (0 when ffprobe cannot say)."""
+    from framefound.processing.probe import _run_json_tool
+
+    if shutil.which("ffprobe") is None:
+        return 0
+    data = _run_json_tool(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-print_format",
+            "json",
+            str(src),
+        ]
+    )
+    if not isinstance(data, dict):
+        return 0
+    return len(data.get("streams") or [])
+
+
+def speech_mix_args(src: Path, dst: Path, streams: int) -> list[str]:
+    """ffmpeg argv: every audio stream of `src` mixed to 16 kHz mono WAV.
+
+    Whisper's own decoder hears audio stream 0 only. Cinema and broadcast
+    cameras record the on-camera mic there and the lavalier or the board
+    feed on streams 2 and up, so the person actually speaking was the part
+    the transcript left out.
+    """
+    argv = ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn"]
+    if streams > 1:
+        inputs = "".join(f"[0:a:{i}]" for i in range(streams))
+        # normalize=0: the default divides each input by the count, which
+        # turns a quiet lav on one of four streams into a whisper. Summing
+        # at unity has the opposite failure: cameras often carry one mic on
+        # CH1 and a safety copy on CH2, so a hot PA feed of the auctioneer
+        # added to itself goes past full scale and hard-clips in the s16 WAV
+        # Whisper hears. The limiter, still in float, catches only those
+        # peaks; level=0 stops it adding make-up gain to everything else.
+        mix = f"amix=inputs={streams}:normalize=0,alimiter=limit=0.95:level=0"
+        argv += ["-filter_complex", f"{inputs}{mix}[speech]"]
+        argv += ["-map", "[speech]"]
+    else:
+        argv += ["-map", "0:a:0"]
+    argv += ["-ac", "1", "-ar", str(SPEECH_SAMPLE_RATE), "-c:a", "pcm_s16le", str(dst)]
+    return argv
+
+
+def extract_speech_audio(src: Path, dst: Path, streams: int) -> None:
+    """Write the mixed speech track for transcription (see speech_mix_args)."""
+    _run(speech_mix_args(src, dst, streams), SPEECH_TIMEOUT_S)

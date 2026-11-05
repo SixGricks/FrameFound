@@ -41,6 +41,7 @@ from framefound.db.models import (
     Asset,
     AssetTag,
     Derivative,
+    Frame,
     Library,
     Tag,
     Transcript,
@@ -68,7 +69,22 @@ To look at a picture, call view_media; thumbnails are small but enough to name a
 subject. When you propose tags, prefer the existing vocabulary (list_tags) and add
 new words only for a prominent, nameable subject someone would search for later.
 Proposals are queued for the operator; nothing you say becomes a fact until they
-decide, and decide_tag records their answer when they give it to you in chat."""
+decide, and decide_tag records their answer when they give it to you in chat.
+
+Making a video from the footage: search_media (media_type "video") finds clips by
+what they show, what was said and their tags; get_transcript gives every timed cue
+so a quote is cut on its words; get_scenes gives each shot's start and end. To see
+a moment of a video — a scene's frame_ms, or a search hit's at_ms — call
+view_media(id, ts_ms=...); it returns the nearest sampled frame as a picture. The
+signed links in results are for the person to open; you cannot fetch them.
+get_media_files gives the original's path on the person's computer and a 1080p
+proxy to download. build_rough_cut lays chosen pieces end to end as an FCP7 XML
+timeline that Premiere Pro and DaVinci Resolve import (File > Import, or Import >
+Timeline in Resolve). Final Cut Pro 10/11 cannot open it without a converter to
+FCPXML such as 7toX — say so if the person edits in Final Cut. Paths depend on the
+computer: call path_profiles and pass the person's profile (their Windows PC or
+their Mac) so the paths and the timeline open there. Originals are never changed or
+downloaded."""
 
 
 # --- shapes ------------------------------------------------------------------
@@ -101,6 +117,10 @@ class MediaItem(BaseModel):
     suggested: list[str] = Field(description="Tags suggested but not yet judged")
     preview_url: str | None = Field(description="Signed link to the thumbnail, valid 12 hours")
     path: str = Field(description="Where the original lives, as the server sees it")
+    local_path: str | None = Field(
+        default=None,
+        description="The original's path on the computer named by `profile`, when given",
+    )
 
 
 class MediaPage(BaseModel):
@@ -113,7 +133,13 @@ class MediaPage(BaseModel):
 class SearchHit(MediaItem):
     matched: list[str] = Field(description="How it matched: tag, visual, transcript, name")
     transcript: str | None = None
-    at_ms: int | None = Field(default=None, description="Where in a video the match is")
+    at_ms: int | None = Field(
+        default=None,
+        description=(
+            "Where in a video or recording the match is (never set for a photo); "
+            "for a video, view_media(id, ts_ms=at_ms) shows it"
+        ),
+    )
     similarity: float | None = None
 
 
@@ -168,7 +194,13 @@ class ReviewStatus(BaseModel):
     budget_usd: float
     spent_this_month_usd: float
     remaining_usd: float
-    untagged: int = Field(description="Online pictures with a thumbnail and no tag of any kind")
+    untagged: int = Field(
+        description=(
+            "Online pictures with a thumbnail that nobody has judged yet: no tag or answer of "
+            "yours, no suggestion from Claude, not already reviewed by the API. The learner's "
+            "guesses do not count."
+        )
+    )
     last_run: dict[str, Any]
 
 
@@ -249,7 +281,10 @@ def _item(
     libraries: dict[uuid.UUID, Library],
     tags: dict[uuid.UUID, tuple[list[str], list[str]]],
     base: str,
+    profiles: dict[uuid.UUID, tuple[Any, Any]] | None = None,
 ) -> MediaItem:
+    from framefound.api.v1.panel import _translate_for
+
     library = libraries.get(asset.library_id)
     confirmed, suggested = tags.get(asset.id, ([], []))
     root = library.root_path.rstrip("/") if library else ""
@@ -266,6 +301,7 @@ def _item(
         suggested=suggested,
         preview_url=_media_url(base, asset.id, "thumbnail"),
         path=f"{root}/{asset.relative_path}",
+        local_path=_translate_for(asset, profiles) if profiles else None,
     )
 
 
@@ -285,6 +321,12 @@ async def _tag_by_name(db: AsyncSession, name: str) -> Tag | None:
     if not slug:
         return None
     return (await db.execute(select(Tag).where(Tag.slug == slug))).scalar_one_or_none()
+
+
+async def _profile_map(db: AsyncSession, profile: str | None) -> dict[uuid.UUID, tuple[Any, Any]]:
+    from framefound.mcp.video import _profile_map as resolve
+
+    return await resolve(db, profile)
 
 
 def _require_tag_scope(who: Principal) -> None:
@@ -407,11 +449,13 @@ def build_server() -> MCPServer:
         captured_before: str | None = None,
         limit: int = 25,
         page: int = 1,
+        profile: str | None = None,
     ) -> MediaPage:
         """Media carrying tags. `match` "all" needs every tag, "any" needs one.
         Confirmed tags only unless `include_suggested`. No tags: the newest
         media, filtered by type, library and capture dates (ISO, e.g.
-        2026-09-01). `library` is a name or id."""
+        2026-09-01). `library` is a name or id. `profile` (see path_profiles)
+        adds each original's path on that computer."""
         who = principal()
         limit = max(1, min(limit, MAX_RESULTS))
         page = max(1, page)
@@ -491,18 +535,28 @@ def build_server() -> MCPServer:
             )
             libraries = await _libraries(db)
             on = await _tags_on(db, [asset.id for asset in rows])
+            profiles = await _profile_map(db, profile)
         return MediaPage(
             total=total,
             page=page,
             page_size=limit,
-            items=[_item(asset, libraries, on, who.base_url) for asset in rows],
+            items=[_item(asset, libraries, on, who.base_url, profiles) for asset in rows],
         )
 
     @server.tool()
-    async def search_media(query: str, library: str | None = None, limit: int = 20) -> SearchResult:
+    async def search_media(
+        query: str,
+        library: str | None = None,
+        limit: int = 20,
+        media_type: Literal["image", "video", "audio"] | None = None,
+        profile: str | None = None,
+    ) -> SearchResult:
         """Search by words: tags, what the pictures look like (visual search),
-        what was said (transcripts) and file names, merged into one list.
-        A `matched` of "visual" is CLIP's opinion; "tag" is the operator's."""
+        what was said (transcripts) and file names, ranked into one list.
+        A `matched` of "visual" is CLIP's opinion; "tag" is the operator's.
+        `at_ms` is the best moment in a video or recording; for a video, look
+        at it with view_media(id, ts_ms=at_ms). `media_type` narrows to photos, video
+        or audio; `profile` (see path_profiles) adds local paths."""
         from framefound.api.v1.search import run_search
 
         who = principal()
@@ -512,7 +566,7 @@ def build_server() -> MCPServer:
             raise ToolError("Give at least two characters to search for")
         async with open_session() as db:
             library_id = await _library_id(db, library)
-            found = await run_search(db, term[:200], library_id, limit)
+            found = await run_search(db, term[:200], library_id, limit, media_type=media_type)
             ordered: list[uuid.UUID] = []
             matched: dict[uuid.UUID, list[str]] = {}
             extra: dict[uuid.UUID, dict[str, Any]] = {}
@@ -526,6 +580,13 @@ def build_server() -> MCPServer:
                 for key, value in fields.items():
                     extra.setdefault(asset_id, {}).setdefault(key, value)
 
+            # The fused ranking first: an asset matched by tag, picture and
+            # speech outranks one that tops a single list. The per-kind
+            # lists below only fill in details fusion did not carry.
+            for fused in found.results:
+                for reason in fused.reasons:
+                    how = "suggested tag" if reason == "suggested_tag" else reason
+                    note(fused.asset_id, how, at_ms=fused.ts_ms, transcript=fused.snippet)
             for hit in found.tag_hits:
                 note(hit.asset_id, "tag" if hit.confirmed else "suggested tag")
             for visual in found.visual_hits:
@@ -545,19 +606,25 @@ def build_server() -> MCPServer:
             }
             libraries = await _libraries(db)
             on = await _tags_on(db, ordered)
+            profiles = await _profile_map(db, profile)
         hits = []
         for asset_id in ordered:
             asset = assets.get(asset_id)
             if asset is None:
                 continue
-            base = _item(asset, libraries, on, who.base_url).model_dump()
+            base = _item(asset, libraries, on, who.base_url, profiles).model_dump()
             fields = extra.get(asset_id, {})
+            # A photo's one Frame row sits at ts_ms 0, so a visual hit on it
+            # carried at_ms 0 — and Claude, told to pass at_ms to view_media,
+            # got "ts_ms is for a moment in a video" and had to retry. A photo
+            # has no moment to point at.
+            at_ms = fields.get("at_ms") if asset.media_type in ("video", "audio") else None
             hits.append(
                 SearchHit(
                     **base,
                     matched=matched[asset_id],
                     transcript=fields.get("transcript"),
-                    at_ms=fields.get("at_ms"),
+                    at_ms=at_ms,
                     similarity=fields.get("similarity"),
                 )
             )
@@ -620,32 +687,70 @@ def build_server() -> MCPServer:
 
     @server.tool(structured_output=False)
     async def view_media(
-        id: str, kind: Literal["thumbnail", "preview", "poster"] = "thumbnail"
+        id: str,
+        kind: Literal["thumbnail", "preview", "poster"] = "thumbnail",
+        ts_ms: int | None = None,
     ) -> list[Any]:
         """Look at the picture (or a video's poster frame). Returns the image
         itself, small, plus what the catalogue already says about it. Audio
-        has nothing to look at."""
+        has nothing to look at.
+
+        For a moment inside a video, pass `ts_ms` (milliseconds): a scene's
+        frame_ms from get_scenes, or a search hit's at_ms. You get the
+        nearest sampled frame, and the caption says which moment it is."""
         who = principal()
+        shown: str = kind
+        frame_at: int | None = None
+        relative_path: str | None
         async with open_session() as db:
             asset = await _asset(db, id)
             if asset.media_type == "audio":
                 raise ToolError("Audio has no picture to look at; get_media has its transcript")
-            relative_path = (
-                await db.execute(
-                    select(Derivative.relative_path).where(
-                        Derivative.asset_id == asset.id,
-                        Derivative.kind == kind,
-                        Derivative.status == "ready",
+            if ts_ms is not None:
+                # The only way Claude can *see* a scene: get_scenes and
+                # search_media once offered only signed LAN URLs, which
+                # Claude Desktop's off-machine fetching cannot reach, so b-roll
+                # from a ten-minute drone clip was chosen from its poster.
+                if asset.media_type != "video":
+                    raise ToolError(
+                        f"{asset.filename} is a {asset.media_type}; ts_ms is for a moment "
+                        "in a video. Leave it out to see the picture."
                     )
-                )
-            ).scalar_one_or_none()
+                # Nearest, not exact as the frame URL is: at_ms is often a
+                # transcript cue's start, which falls between sampled frames.
+                # Only two columns: the row's 512-float embedding is no use here.
+                nearest = (
+                    await db.execute(
+                        select(Frame.ts_ms, Frame.relative_path)
+                        .where(Frame.asset_id == asset.id)
+                        .order_by(func.abs(Frame.ts_ms - max(0, ts_ms)), Frame.ts_ms)
+                        .limit(1)
+                    )
+                ).first()
+                if nearest is None:
+                    raise ToolError(
+                        f"No frames have been sampled from {asset.filename} yet; "
+                        "leave out ts_ms to see its poster"
+                    )
+                frame_at, relative_path = int(nearest[0]), str(nearest[1])
+                shown = "frame"
+            else:
+                relative_path = (
+                    await db.execute(
+                        select(Derivative.relative_path).where(
+                            Derivative.asset_id == asset.id,
+                            Derivative.kind == kind,
+                            Derivative.status == "ready",
+                        )
+                    )
+                ).scalar_one_or_none()
             on = await _tags_on(db, [asset.id])
         if relative_path is None:
             raise ToolError(f"No {kind} has been generated for {asset.filename} yet")
         path = get_settings().data_dir / str(relative_path)
         if not path.is_file():
             raise ToolError(
-                f"The {kind} file for {asset.filename} is missing; it can be regenerated"
+                f"The {shown} file for {asset.filename} is missing; it can be regenerated"
             )
 
         def encode() -> bytes:
@@ -663,10 +768,16 @@ def build_server() -> MCPServer:
         caption = (
             f"{asset.filename} ({asset.media_type}"
             + (f", {asset.duration_s:.0f}s" if asset.duration_s else "")
-            + f"). Confirmed tags: {', '.join(confirmed) or 'none'}. "
+            + ")"
+            + (
+                f". This is the sampled frame at {frame_at / 1000:.2f}s (ts_ms {frame_at})"
+                if frame_at is not None
+                else ""
+            )
+            + f". Confirmed tags: {', '.join(confirmed) or 'none'}. "
             f"Suggested, unjudged: {', '.join(suggested) or 'none'}."
         )
-        log.info("mcp.viewed", asset_id=str(asset.id), kind=kind, by=who.token_name)
+        log.info("mcp.viewed", asset_id=str(asset.id), kind=shown, by=who.token_name)
         return [Image(data=jpeg, format="jpeg"), caption]
 
     @server.tool()
@@ -828,6 +939,10 @@ def build_server() -> MCPServer:
         review_queue as origin "claude". Needs the 'tag' scope."""
         who = principal()
         _require_tag_scope(who)
+        if who.role != "admin":
+            # The same rule as "Review with Claude" on the Tags page: this
+            # spends the month's API budget, which is the admin's to spend.
+            raise ToolError("Only an admin account can start a paid review")
         from framefound.api.v1.tags import queue_claude_review
 
         async with open_session() as db:
@@ -840,4 +955,7 @@ def build_server() -> MCPServer:
         log.info("mcp.review_started", queued=queued, by=who.token_name)
         return ReviewStarted(queued=queued, message=message)
 
+    from framefound.mcp import video
+
+    video.register(server)
     return server

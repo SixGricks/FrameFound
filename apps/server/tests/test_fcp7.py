@@ -6,11 +6,22 @@ like — 29.97 is thirty frames in 1001/1000 seconds. Get it wrong and the file
 imports cleanly and then drifts, which is worse than failing.
 """
 
+import math
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from framefound.nle.fcp7 import Clip, Marker, build_bin, file_url, frames, rate_for
+from framefound.nle.fcp7 import (
+    Clip,
+    Cut,
+    Marker,
+    build_bin,
+    build_sequence,
+    effective_rate,
+    file_url,
+    frames,
+    rate_for,
+)
 
 
 def test_pal_and_film_rates_are_not_ntsc() -> None:
@@ -193,3 +204,112 @@ def test_clip_ids_are_unique() -> None:
     root = ET.fromstring(build_bin("R", clips))
     ids = [c.get("id") for c in root.findall("bin/children/clip")]
     assert len(set(ids)) == 3
+
+
+# --- sequences (build_rough_cut) ----------------------------------------------
+
+
+def _clipitems(xml: str) -> list[ET.Element]:
+    root = ET.fromstring(xml)  # noqa: S314 - our own output
+    return list(root.iter("clipitem"))
+
+
+def _spans(item: ET.Element) -> tuple[int, int, int, int]:
+    return tuple(int(item.findtext(k) or 0) for k in ("start", "end", "in", "out"))  # type: ignore[return-value]
+
+
+def _drone(fps: float = 29.97) -> Clip:
+    return Clip(name="drone.mp4", path="/media/drone.mp4", duration_s=600, fps=fps)
+
+
+@pytest.mark.parametrize(
+    "cuts",
+    [
+        # The rough cut the MCP test builds: a quote, a 3 s photo, more drone.
+        [
+            Cut(_drone(), 12.0, 15.5),
+            Cut(Clip(name="barn.jpg", path="/media/barn.jpg", has_audio=False), 0, 3, True),
+            Cut(_drone(), 40.0, 46.0),
+        ],
+        # Short cuts at 25 fps: seven of these ten used to disagree.
+        [Cut(_drone(25.0), 10.0 * i, 10.0 * i + 1.03) for i in range(10)],
+        [Cut(_drone(23.976), 7.3, 9.1), Cut(_drone(23.976), 20.0, 21.7)],
+    ],
+    ids=["ntsc-with-a-still", "pal-short-cuts", "film"],
+)
+def test_every_clipitem_takes_as_much_source_as_timeline(cuts: list[Cut]) -> None:
+    """At one rate, a clipitem whose out-in differs from end-start is a speed
+    change nobody asked for: Resolve plays it at ~99%, Premiere moves the out
+    point. The 29.97 still-then-drone case once gave 180 timeline frames over
+    179 of source. Video and both audio tracks share the placement."""
+    items = _clipitems(build_sequence("T", cuts))
+    assert len(items) > len(cuts)  # audio clipitems are checked too
+    for item in items:
+        start, end, in_, out = _spans(item)
+        assert out - in_ == end - start, item.get("id")
+    video = [i for i in items if i.get("id", "").startswith("clipitem-v")]
+    for before, after in zip(video, video[1:], strict=False):
+        assert _spans(after)[0] == _spans(before)[1], "cuts butt up, no gap or overlap"
+
+
+def test_placement_still_follows_running_seconds() -> None:
+    """Deriving the source span must not bring back the drift that placing
+    by summed frame counts had: cut N still starts at frames(sum of lengths)."""
+    cuts = [Cut(_drone(25.0), 10.0 * i, 10.0 * i + 1.03) for i in range(10)]
+    items = _clipitems(build_sequence("T", cuts))
+    starts = [_spans(i)[0] for i in items if i.get("id", "").startswith("clipitem-v")]
+    expected, elapsed = [], 0.0
+    for cut in cuts:
+        expected.append(frames(elapsed, 25.0))
+        elapsed += cut.out_s - cut.in_s
+    assert starts == expected
+
+
+def test_a_different_rate_converts_by_the_real_rates() -> None:
+    """23.976 drone in a 29.97 sequence: the source span is the timeline span
+    scaled by 23.976/29.97, not the cut's length floored separately."""
+    interview = Clip(name="int.mov", path="/media/int.mov", duration_s=600, fps=29.97)
+    cuts = [Cut(interview, 5.0, 9.0), Cut(_drone(23.976), 7.3, 9.1)]
+    items = [i for i in _clipitems(build_sequence("T", cuts)) if i.get("id") == "clipitem-v2"]
+    start, end, in_, out = _spans(items[0])
+    assert in_ == frames(7.3, 23.976)
+    assert out - in_ == round((end - start) * effective_rate(23.976) / effective_rate(29.97))
+
+
+def test_a_cut_to_the_clips_end_does_not_point_past_the_media() -> None:
+    """Rounding the derived span can land one frame beyond the last frame;
+    an out point past the media imports as a frame of offline."""
+    short = Clip(name="s.mp4", path="/media/s.mp4", duration_s=10.0, fps=29.97)
+    cuts = [Cut(short, 0.0, 0.5), Cut(short, 9.5, 10.0)]
+    last = frames(10.0, 29.97)
+    for item in _clipitems(build_sequence("T", cuts)):
+        start, end, in_, out = _spans(item)
+        assert out <= last
+        assert out - in_ == end - start
+
+
+def test_frames_a_clamp_trims_are_not_added_to_the_next_cut() -> None:
+    """The clamp above pulled a cut's end back but the running clock still
+    advanced by the full requested length, so the next cut began earlier
+    than the clock said and took the trimmed frames as extra length — and
+    since its source span follows its timeline span, extra *source* too.
+    Three 23.976 b-roll cuts run to their clips' ends (what build_rough_cut
+    does when out_s is omitted) put the closing quote two frames past
+    where it was cut: out 6100 for a requested 6098."""
+    interview = Clip(name="int.mov", path="/media/int.mov", duration_s=600, fps=29.97)
+    broll = [
+        Clip(name=f"b{i}.mp4", path=f"/media/b{i}.mp4", duration_s=d, fps=23.976)
+        for i, d in enumerate([5.0, 5.21, 5.21])
+    ]
+    cuts = [
+        Cut(interview, 100.0, 104.0),
+        *(Cut(b, 1.0, b.duration_s or 0.0) for b in broll),
+        Cut(interview, 200.0, 203.5),
+    ]
+    video = [i for i in _clipitems(build_sequence("T", cuts)) if i.get("id") == "clipitem-v5"]
+    start, end, in_, out = _spans(video[0])
+    # A cut never takes more timeline than its length rounds up to...
+    assert end - start <= math.ceil(3.5 * effective_rate(29.97))
+    # ...so the quote ends within a frame of where it was cut (flooring the
+    # in point and the span separately can differ from flooring the out by one).
+    assert out - frames(203.5, 29.97) <= 1

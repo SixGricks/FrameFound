@@ -8,6 +8,9 @@ horizontally, and revisit as part of the remote-access hardening checklist.
 import time
 from dataclasses import dataclass, field
 
+# Sweep expired buckets once the table holds this many keys.
+PRUNE_AT = 10_000
+
 
 @dataclass
 class _Bucket:
@@ -40,6 +43,8 @@ class LoginRateLimiter:
 
     def record_failure(self, key: str) -> None:
         now = time.monotonic()
+        if len(self._buckets) >= PRUNE_AT:
+            self._prune(now)
         bucket = self._buckets.setdefault(key, _Bucket(window_start=now))
         if now - bucket.window_start > self.window_seconds:
             bucket.failures = 0
@@ -52,3 +57,18 @@ class LoginRateLimiter:
 
     def record_success(self, key: str) -> None:
         self._buckets.pop(key, None)
+
+    def _prune(self, now: float) -> None:
+        """Forget buckets that no longer hold anything back.
+
+        Keys are attacker-chosen (any email, any address), and nothing used
+        to remove a bucket except a successful sign-in — a slow spray grew
+        the dict for as long as the process lived.
+        """
+        stale = [
+            key
+            for key, bucket in self._buckets.items()
+            if bucket.locked_until <= now and now - bucket.window_start > self.window_seconds
+        ]
+        for key in stale:
+            del self._buckets[key]

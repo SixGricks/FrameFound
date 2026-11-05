@@ -1,8 +1,9 @@
 """Reciprocal Rank Fusion (ADR-0011).
 
-Three retrieval strategies answer every query — spoken words, filenames, and
-visual similarity — and their scores are not comparable: a BM25 rank, a
-substring hit, and a cosine distance live on different scales. Normalising
+Four retrieval strategies answer every query — tags, spoken words, filenames,
+and visual similarity — and their scores are not comparable: a tag link, a
+text-search rank, a substring hit, and a cosine distance live on different
+scales. Normalising
 them against each other means inventing a conversion nobody can defend.
 
 RRF sidesteps that by using only *position*: an item scoring 1/(k + rank) in
@@ -36,12 +37,16 @@ def fuse(
 
     `ranked_lists` maps a strategy name to its keys in rank order. Weights let
     an operator favour a strategy later without changing the algorithm.
+
+    A key repeated within one list counts once, at its best rank: three
+    transcript segments of the same clip are one piece of evidence, not
+    three, and must not outvote a strategy that found the asset once.
     """
     weights = weights or {}
     fused: dict[str, FusedHit] = {}
     for strategy, keys in ranked_lists.items():
         weight = weights.get(strategy, 1.0)
-        for rank, key in enumerate(keys):
+        for rank, key in enumerate(dict.fromkeys(keys)):
             hit = fused.setdefault(key, FusedHit(key=key))
             hit.score += weight / (RRF_K + rank + 1)
             if strategy not in hit.reasons:

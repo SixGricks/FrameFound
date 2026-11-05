@@ -242,6 +242,12 @@ async def test_the_tools_are_what_the_docs_promise(env: dict) -> None:
         "decide_tag",
         "api_review_status",
         "start_api_review",
+        # Making video (framefound/mcp/video.py; test_mcp_video.py).
+        "path_profiles",
+        "get_media_files",
+        "get_transcript",
+        "get_scenes",
+        "build_rough_cut",
     }
 
 
@@ -410,7 +416,11 @@ async def test_the_api_reviewer_reports_its_budget_and_needs_the_scope(env: dict
             start = await session.call_tool("start_api_review", {})
         body = status.structured_content
         assert body["configured"] is False and body["budget_usd"] == 5.0
-        assert body["untagged"] == 0, "every picture here carries a tag or a suggestion"
+        # The kitchen carries only the CLIP learner's guess, which no longer
+        # takes a picture out of the review pool (tag_review._untagged_filter):
+        # the learner can only spread words already taught, so Claude has
+        # still not looked at it. The two barns have a person's tags.
+        assert body["untagged"] == 1, "only the kitchen awaits a first opinion"
         assert start.is_error and "'tag' scope" in _text(start)
         async with connect(env["app"], env["tagger"]) as session:
             start = await session.call_tool("start_api_review", {})

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from framefound.auth.router import login_limiter
+from framefound.auth.router import address_limiter, login_limiter
 from framefound.config import get_settings
 from framefound.db.base import Base
 from framefound.db.engine import get_session
@@ -30,6 +30,7 @@ def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[FastAPI]:
     monkeypatch.setenv("FRAMEFOUND_SECRET_KEY", "test-secret-key-for-signing")
     get_settings.cache_clear()
     login_limiter._buckets.clear()  # module-level limiter persists across tests
+    address_limiter._buckets.clear()
 
     engine = create_async_engine(
         "sqlite+aiosqlite://",

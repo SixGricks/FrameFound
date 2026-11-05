@@ -2,9 +2,11 @@
 
 The catalogue can find the shot in three milliseconds and then the editor
 alt-tabs to Premiere and hunts for the file by hand. This closes that gap
-without an Adobe SDK, code signing, or a panel — Premiere, DaVinci Resolve and
-Final Cut all import FCP7 XML, so one exporter serves every NLE the target
-users actually run.
+without an Adobe SDK, code signing, or a panel — Premiere Pro and DaVinci
+Resolve both import FCP7 XML, so one exporter serves the NLEs the target users
+actually run. Final Cut Pro (10.x/11) is *not* one of them: it reads only
+FCPXML, and an FCP7 file needs a converter such as 7toX first. Only the long
+discontinued Final Cut Pro 7 opened this format natively.
 
 Two things about this format are worth stating because they are where
 implementations go wrong:
@@ -96,9 +98,13 @@ def frames(seconds: float | None, fps: float | None) -> int:
     """
     if not seconds or seconds <= 0:
         return 0
+    return max(0, int(seconds * effective_rate(fps)))
+
+
+def effective_rate(fps: float | None) -> float:
+    """Frames per wall-clock second for a probed rate: 29.97 is 30*1000/1001."""
     timebase, ntsc = rate_for(fps)
-    effective = timebase * 1000.0 / 1001.0 if ntsc else float(timebase)
-    return max(0, int(seconds * effective))
+    return timebase * 1000.0 / 1001.0 if ntsc else float(timebase)
 
 
 def file_url(path: str) -> str:
@@ -180,7 +186,196 @@ def build_bin(name: str, clips: list[Clip]) -> str:
     for index, clip in enumerate(clips, start=1):
         children.append(_clip_element(clip, index))
 
+    return _document(root)
+
+
+def _document(root: ET.Element) -> str:
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode")
     # The DOCTYPE is not optional: Premiere refuses files without it.
     return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n' + body + "\n"
+
+
+@dataclass
+class Cut:
+    """One piece of a rough cut: a clip from `in_s` to `out_s` of its source.
+
+    A still photograph is a Cut too (`is_still`), held on screen for
+    `out_s - in_s` seconds — real-estate pieces mix drone video with the
+    listing's photographs.
+    """
+
+    clip: Clip
+    in_s: float
+    out_s: float
+    is_still: bool = False
+    note: str = ""
+
+
+def build_sequence(
+    name: str,
+    cuts: list[Cut],
+    *,
+    fps: float | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> str:
+    """An FCP7 XML *sequence*: the cuts laid end to end on V1 (and A1/A2).
+
+    Where `build_bin` hands over a pile of clips, this is an edit someone
+    (or Claude, through the MCP connector) has already decided on — a
+    rough cut to open in Premiere or Resolve and finish by hand. Every cut
+    references its original through a workstation path, so nothing is
+    copied and the editor relinks nothing.
+
+    Timing is in frames at each *source's* rate for in/out, and at the
+    sequence's rate for where the piece sits on the timeline — the two
+    differ when 23.976 drone footage meets a 29.97 interview.
+    """
+    seq_fps = fps or next((c.clip.fps for c in cuts if c.clip.fps and not c.is_still), None)
+    root = ET.Element("xmeml", {"version": "5"})
+    sequence = ET.SubElement(root, "sequence", {"id": "sequence-1"})
+    ET.SubElement(sequence, "name").text = name
+    duration_el = ET.SubElement(sequence, "duration")
+    _rate_element(sequence, seq_fps)
+
+    media = ET.SubElement(sequence, "media")
+    video = ET.SubElement(media, "video")
+    fmt = ET.SubElement(video, "format")
+    characteristics = ET.SubElement(fmt, "samplecharacteristics")
+    first = next((c.clip for c in cuts if not c.is_still and c.clip.width), None)
+    ET.SubElement(characteristics, "width").text = str(width or (first.width if first else 1920))
+    ET.SubElement(characteristics, "height").text = str(height or (first.height if first else 1080))
+    _rate_element(characteristics, seq_fps)
+    video_track = ET.SubElement(video, "track")
+    audio = ET.SubElement(media, "audio")
+    audio_tracks = [ET.SubElement(audio, "track"), ET.SubElement(audio, "track")]
+
+    files_written: dict[str, str] = {}
+    # Placed from running *seconds*, not by adding frame counts: each cut's
+    # length truncates to whole frames, and summing those lost up to a frame
+    # per cut — on a two-hundred-cut piece, several seconds of drift from
+    # where the transcript says the words are.
+    elapsed_s = 0.0
+    position = 0
+    seq_rate = effective_rate(seq_fps)
+    for index, cut in enumerate(cuts, start=1):
+        length_s = max(0.0, cut.out_s - cut.in_s)
+        end = frames(elapsed_s + length_s, seq_fps)
+        span = end - position
+        if span <= 0:
+            continue
+        # A still has no rate of its own, and a clip with no probed rate is
+        # taken at the sequence's — so in/out are always counted in the rate
+        # the clipitem declares, not a 25 fps fallback it never mentions.
+        source_rate = seq_fps if cut.is_still else (cut.clip.fps or seq_fps)
+        same_rate = rate_for(source_rate) == rate_for(seq_fps)
+        source_in = 0 if cut.is_still else frames(cut.in_s, source_rate)
+        # The source span comes *from* the timeline span. Flooring the cut's
+        # length on its own as well gave two numbers that disagreed by a
+        # frame on about half the cuts (a 29.97 cut 180 frames long on the
+        # timeline over 179 of source; seven of ten 1.03 s cuts at 25 fps),
+        # and an NLE reads a clipitem whose out-in differs from end-start at
+        # one rate as a speed change or a shifted out point. Across rates
+        # (23.976 drone into a 29.97 interview) it converts by the real,
+        # NTSC-aware rates.
+        if same_rate:
+            source_span = span
+        else:
+            source_span = max(1, round(span * effective_rate(source_rate) / seq_rate))
+        clock_end = end
+        if not cut.is_still and cut.clip.duration_s:
+            # Derived from the timeline, a cut that ends on the clip's last
+            # frame can point one frame past the media, which imports as a
+            # frame of offline. Pull both ends back so they still agree.
+            last = frames(cut.clip.duration_s, source_rate)
+            if source_in + source_span > last:
+                source_span = last - source_in
+                span = (
+                    source_span
+                    if same_rate
+                    else round(source_span * seq_rate / effective_rate(source_rate))
+                )
+                if source_span <= 0 or span <= 0:
+                    continue
+                end = position + span
+        # The running clock gives up whatever the clamp trimmed. Advancing it
+        # by the full requested length handed those frames to the next cut,
+        # whose source span is derived from its timeline span — so a quote
+        # after three b-roll cuts run to their clip's end played two frames
+        # past where it was cut (out 6100 for a requested 6098). Taking the
+        # trimmed frames off keeps the clock's sub-frame remainder intact.
+        elapsed_s += length_s - (clock_end - end) / seq_rate
+        place = _Placement(
+            start=position,
+            end=end,
+            source_in=source_in,
+            source_out=source_in + source_span,
+            source_rate=source_rate,
+        )
+        position = place.end
+        video_track.append(_clipitem(f"clipitem-v{index}", cut, place, files_written))
+        if cut.clip.has_audio and not cut.is_still:
+            for channel, track_el in enumerate(audio_tracks, start=1):
+                item = _clipitem(f"clipitem-a{channel}-{index}", cut, place, files_written)
+                source_track = ET.SubElement(item, "sourcetrack")
+                ET.SubElement(source_track, "mediatype").text = "audio"
+                ET.SubElement(source_track, "trackindex").text = str(channel)
+                track_el.append(item)
+
+    duration_el.text = str(position)
+    return _document(root)
+
+
+@dataclass(frozen=True)
+class _Placement:
+    start: int  # timeline frames, at the sequence rate
+    end: int
+    source_in: int  # source frames, at the source's own rate
+    source_out: int
+    source_rate: float | None
+
+
+def _clipitem(
+    item_id: str, cut: Cut, place: _Placement, files_written: dict[str, str]
+) -> ET.Element:
+    """One <clipitem> on a sequence track. The first use of an original
+    carries its full <file>; later uses refer back to it by id, as
+    Premiere itself writes it."""
+    item = ET.Element("clipitem", {"id": item_id})
+    ET.SubElement(item, "name").text = cut.clip.name
+    total = place.source_out if cut.is_still else frames(cut.clip.duration_s, place.source_rate)
+    ET.SubElement(item, "duration").text = str(max(total, place.source_out))
+    _rate_element(item, place.source_rate)
+    ET.SubElement(item, "start").text = str(place.start)
+    ET.SubElement(item, "end").text = str(place.end)
+    ET.SubElement(item, "in").text = str(place.source_in)
+    ET.SubElement(item, "out").text = str(place.source_out)
+    key = cut.clip.path
+    if key in files_written:
+        ET.SubElement(item, "file", {"id": files_written[key]})
+    else:
+        file_id = f"file-{len(files_written) + 1}"
+        files_written[key] = file_id
+        file_el = ET.SubElement(item, "file", {"id": file_id})
+        ET.SubElement(file_el, "name").text = cut.clip.name
+        ET.SubElement(file_el, "pathurl").text = file_url(cut.clip.path)
+        _rate_element(file_el, place.source_rate)
+        if not cut.is_still:
+            ET.SubElement(file_el, "duration").text = str(total)
+        file_media = ET.SubElement(file_el, "media")
+        file_video = ET.SubElement(file_media, "video")
+        if cut.clip.width and cut.clip.height:
+            chars = ET.SubElement(file_video, "samplecharacteristics")
+            ET.SubElement(chars, "width").text = str(cut.clip.width)
+            ET.SubElement(chars, "height").text = str(cut.clip.height)
+        if cut.clip.has_audio and not cut.is_still:
+            file_audio = ET.SubElement(file_media, "audio")
+            ET.SubElement(file_audio, "channelcount").text = "2"
+    if cut.note:
+        marker = ET.SubElement(item, "marker")
+        ET.SubElement(marker, "name").text = cut.note[:60]
+        ET.SubElement(marker, "comment").text = cut.note
+        ET.SubElement(marker, "in").text = str(place.source_in)
+        ET.SubElement(marker, "out").text = "-1"
+    return item

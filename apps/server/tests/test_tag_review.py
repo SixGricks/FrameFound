@@ -272,6 +272,45 @@ async def test_untagged_means_a_thumbnail_and_no_opinion_of_any_kind(env: dict) 
         assert await tag_review.count_untagged(db) == 2
 
 
+async def test_a_learner_guess_does_not_take_a_picture_away_from_claude(env: dict) -> None:
+    """New media is scored against every tag the moment it is embedded, hours
+    before the nightly review. When any row counted as an opinion, the
+    learner's guesses took most of a new shoot out of Claude's pool, and
+    Claude reviewed only what the learner had nothing to say about."""
+    async with env["factory"]() as db:
+        barn = (await db.execute(select(Tag).where(Tag.slug == "barn"))).scalar_one()
+        db.add(AssetTag(asset_id=env["ids"][0], tag_id=barn.id, source="suggested", origin="clip"))
+        # A suggestion written before `origin` existed is the learner's too.
+        db.add(AssetTag(asset_id=env["ids"][1], tag_id=barn.id, source="suggested"))
+        await db.commit()
+        assert set(await tag_review.pick_untagged(db, 10)) == {env["ids"][0], env["ids"][1]}
+        assert await tag_review.count_untagged(db) == 2
+
+
+async def test_claude_having_looked_takes_a_picture_out_of_the_pool(env: dict) -> None:
+    """Claude's own suggestion is an opinion. So is an API review that wrote
+    nothing — Claude agreeing with the learner, or the admission policy
+    keeping nothing — or the nightly sweep would pay to review the same
+    newest pictures every night. A failed call is not a review."""
+    async with env["factory"]() as db:
+        barn = (await db.execute(select(Tag).where(Tag.slug == "barn"))).scalar_one()
+        db.add(AssetTag(asset_id=env["ids"][0], tag_id=barn.id, source="suggested", origin="mcp"))
+        db.add(AssetTag(asset_id=env["ids"][1], tag_id=barn.id, source="suggested", origin="clip"))
+        db.add(
+            AiUsage(
+                purpose=spend.TAG_REVIEW, model="claude-haiku-5-5", asset_id=env["ids"][1], ok=False
+            )
+        )
+        await db.commit()
+        assert await tag_review.pick_untagged(db, 10) == [env["ids"][1]], (
+            "Claude's suggestion counts; a failed call does not"
+        )
+        db.add(AiUsage(purpose=spend.TAG_REVIEW, model="claude-haiku-5-5", asset_id=env["ids"][1]))
+        await db.commit()
+        assert await tag_review.pick_untagged(db, 10) == []
+        assert await tag_review.count_untagged(db) == 0
+
+
 async def test_proposals_become_suggestions_and_leave_decisions_alone(env: dict) -> None:
     async with env["factory"]() as db:
         barn = (await db.execute(select(Tag).where(Tag.slug == "barn"))).scalar_one()

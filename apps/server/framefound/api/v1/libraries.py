@@ -5,12 +5,13 @@ triggers work is admin-only. Library roots are validated against the media
 root allowlist — the scanner never accepts arbitrary filesystem paths.
 """
 
+import re
 import uuid
 from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 
 from framefound.auth import service as auth_service
@@ -24,10 +25,47 @@ router = APIRouter(prefix="/libraries", tags=["libraries"])
 ACTIVE_SCAN_STATUSES = ("pending", "running", "paused")
 
 
-class PathMappingIn(BaseModel):
+_WINDOWS_SHAPED = re.compile(r"^([A-Za-z]:[\\/]?|\\\\[^\\]+)")
+
+
+def prefix_problem(platform: str, prefix: str) -> str | None:
+    """Why `prefix` is not a path *that platform* can open, or None if it is.
+
+    Translation decides Windows-or-POSIX from the prefix's shape, so a
+    "macos" profile holding `Z:\\` was accepted and quietly handed the Mac
+    Windows paths that nothing there can open.
+
+    A plain function, not only a validator: the same rule refuses new
+    profiles and *flags* stored ones. As a validator inherited by the
+    response model it ran on rows saved before the rule existed, and one
+    such row turned the library's profile list into a 500 (review, 2026-11).
+    """
+    prefix = prefix.strip()
+    if platform == "windows" and not _WINDOWS_SHAPED.match(prefix):
+        return "A Windows profile needs a drive (Z:\\Photos) or a share (\\\\nas\\Photos)"
+    if platform in ("macos", "linux") and not prefix.startswith("/"):
+        hint = "/Volumes/Photos" if platform == "macos" else "/mnt/photos"
+        return f"A {platform} profile needs an absolute path such as {hint}"
+    return None
+
+
+class PathMappingDraft(BaseModel):
+    """A profile's shape, before the platform check — what the PUT accepts,
+    so the handler can name the profile that fails it (see there)."""
+
     profile_name: str = Field(min_length=1, max_length=100)
     platform: str = Field(pattern="^(windows|macos|linux)$")
     mapped_prefix: str = Field(min_length=1, max_length=1024)
+
+
+class PathMappingIn(PathMappingDraft):
+    @model_validator(mode="after")
+    def _prefix_fits_platform(self) -> "PathMappingIn":
+        problem = prefix_problem(self.platform, self.mapped_prefix)
+        if problem:
+            raise ValueError(problem)
+        self.mapped_prefix = self.mapped_prefix.strip()
+        return self
 
 
 class LibraryCreate(BaseModel):
@@ -271,9 +309,21 @@ async def cancel_scan(library_id: uuid.UUID, db: DbDep, _user: CurrentUser) -> S
 # operator cannot create is a feature that does not exist.
 
 
-class PathMappingOut(PathMappingIn):
+class PathMappingOut(BaseModel):
+    """A stored profile, as it is — never re-validated.
+
+    It inherited PathMappingIn's platform check once, and a row saved before
+    that check existed made the whole list a 500. The editor then showed no
+    profiles, and its replace-all Save deleted the ones it never loaded.
+    A stored profile that fails the check is listed with a `warning`.
+    """
+
     id: uuid.UUID
+    profile_name: str
+    platform: str
+    mapped_prefix: str
     example: str
+    warning: str | None = None
 
 
 @router.get("/{library_id}/path-mappings", response_model=list[PathMappingOut])
@@ -305,6 +355,7 @@ async def list_path_mappings(
             platform=row.platform,
             mapped_prefix=row.mapped_prefix,
             example=_translate(f"{root}/Example/Clip.mp4", root, row.mapped_prefix),
+            warning=prefix_problem(row.platform, row.mapped_prefix),
         )
         for row in rows
     ]
@@ -316,7 +367,7 @@ async def list_path_mappings(
     dependencies=[require_admin],
 )
 async def replace_path_mappings(
-    library_id: uuid.UUID, body: list[PathMappingIn], _user: CurrentUser, db: DbDep
+    library_id: uuid.UUID, body: list[PathMappingDraft], _user: CurrentUser, db: DbDep
 ) -> list[PathMappingOut]:
     """Replace the whole set for one library.
 
@@ -333,6 +384,14 @@ async def replace_path_mappings(
     names = [m.profile_name.strip() for m in body]
     if len(set(names)) != len(names):
         raise HTTPException(status_code=400, detail="Two profiles cannot share a name")
+    # Checked here, not by a validator on the body: a validator's reason only
+    # reaches the 422's `detail`, and the editor showed "Invalid request"
+    # with nothing to say which of the profiles was wrong, or why.
+    for mapping in body:
+        problem = prefix_problem(mapping.platform, mapping.mapped_prefix)
+        if problem:
+            raise HTTPException(status_code=422, detail=f"{mapping.profile_name}: {problem}")
+        mapping.mapped_prefix = mapping.mapped_prefix.strip()
 
     await db.execute(sql_delete(PathMapping).where(PathMapping.library_id == library_id))
     for mapping in body:

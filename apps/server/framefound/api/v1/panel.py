@@ -19,6 +19,7 @@ rather than the operator's session — see `auth/panel_tokens.py`.
 
 import asyncio
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -431,6 +432,46 @@ class PanelListingDetail(BaseModel):
 _A_PHOTOGRAPH = or_(Asset.media_type == "image", ListingItem.frame_ms.is_not(None))
 # A frame grab is a 16-bit TIFF (ffmpeg.extract_still).
 GRAB_EXT = "tif"
+# Stills kept per video. A listing uses a handful of frames from a clip;
+# a few hundred is generous, and bounds what a loop over frame_ms can write.
+MAX_GRABS_PER_VIDEO = 300
+
+
+def _count_grabs(folder: Path) -> int:
+    if not folder.is_dir():
+        return 0
+    return sum(1 for name in folder.iterdir() if name.suffix == f".{GRAB_EXT}")
+
+
+# The cap and the free-space floor are checks before a write, and a burst of
+# concurrent GETs all ran their checks before any ffmpeg had written a byte:
+# every one saw 0 stills and the same free space, and each wrote ~50 MB
+# (review, 2026-11). So a video's count, check and extraction happen under
+# that video's lock, and extractions across all videos share two slots, which
+# bounds how far past the floor the writes in flight can go. In-process locks
+# are enough: the API is one uvicorn process.
+_GRAB_LOCKS: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = weakref.WeakValueDictionary()
+_GRAB_SLOTS_PER_LOOP: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+GRAB_SLOTS = 2
+
+
+def _grab_lock(asset_id: uuid.UUID) -> asyncio.Lock:
+    lock = _GRAB_LOCKS.get(asset_id)
+    if lock is None:
+        lock = _GRAB_LOCKS[asset_id] = asyncio.Lock()
+    return lock
+
+
+def _grab_slots() -> asyncio.Semaphore:
+    # Per event loop only because an asyncio primitive belongs to one loop,
+    # and each test runs in a loop of its own; the server has the one.
+    loop = asyncio.get_running_loop()
+    slots = _GRAB_SLOTS_PER_LOOP.get(loop)
+    if slots is None:
+        slots = _GRAB_SLOTS_PER_LOOP[loop] = asyncio.Semaphore(GRAB_SLOTS)
+    return slots
 
 
 @router.get("/grabs/{asset_id}/{frame_ms}", dependencies=[require_panel_scope("export")])
@@ -456,12 +497,34 @@ async def frame_grab(
     library = await db.get(Library, asset.library_id)
     if library is None:
         raise HTTPException(status_code=404, detail="That library no longer exists")
+    if asset.duration_s is not None and frame_ms > asset.duration_s * 1000:
+        raise HTTPException(status_code=422, detail="That time is past the end of the video")
     grab = get_settings().data_dir / "grabs" / str(asset_id) / f"{frame_ms}.{GRAB_EXT}"
-    if not grab.is_file():
+    if grab.is_file():
+        return FileResponse(grab, media_type="image/tiff")
+    async with _grab_lock(asset_id), _grab_slots():
+        # Asked again while this request waited for the lock: serve it.
+        if grab.is_file():
+            return FileResponse(grab, media_type="image/tiff")
+        # Each new millisecond is a new full-size 16-bit TIFF (~50 MB at 4K),
+        # and this is a GET: a loop over frame_ms filled the data disk, and
+        # Postgres with it. Real use is a listing's dozen frames per clip.
+        from framefound.processing.derivatives import OutOfSpace, ensure_space
+
+        existing = await asyncio.to_thread(_count_grabs, grab.parent)
+        if existing >= MAX_GRABS_PER_VIDEO:
+            raise HTTPException(
+                status_code=429,
+                detail=f"This video already has {existing} grabbed stills; that is the limit",
+            )
+        try:
+            await asyncio.to_thread(ensure_space, get_settings().data_dir)
+        except OutOfSpace as err:
+            raise HTTPException(status_code=507, detail=str(err)) from err
         source = Path(library.root_path) / asset.relative_path
-        # A name of its own per request: two imports asking for the same
-        # frame at once (a listing opened on two machines) each write their
-        # own partial, and the first to finish is the one kept.
+        # A partial of its own, renamed into place only when complete: a
+        # request that dies mid-write must never leave a truncated TIFF where
+        # the next import would be served it.
         partial = grab.with_name(f"{frame_ms}.{uuid.uuid4().hex}.part.{GRAB_EXT}")
         partial.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -472,10 +535,7 @@ async def frame_grab(
             raise HTTPException(
                 status_code=502, detail=f"Could not grab that frame: {err}"
             ) from err
-        if grab.is_file():
-            partial.unlink(missing_ok=True)
-        else:
-            partial.replace(grab)
+        partial.replace(grab)
         log.info("panel.grabbed", asset_id=str(asset_id), frame_ms=frame_ms)
     return FileResponse(grab, media_type="image/tiff")
 

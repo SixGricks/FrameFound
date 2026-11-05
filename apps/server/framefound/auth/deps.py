@@ -106,6 +106,16 @@ def require_panel_scope(scope: str) -> params.Depends:
         record = await panel_tokens.resolve_record(db, token)
         if record is None or not panel_tokens.has_scope(record, scope):
             raise HTTPException(403, f"This panel token does not have the '{scope}' scope")
+        if scope != panel_tokens.READ and request.method not in _SAFE_METHODS:
+            # A token is never stronger than its account: a read-only account
+            # cannot POST an FCP7 bin in a browser, so not with a token. Gated
+            # on the method exactly as get_current_user is: refusing every
+            # non-read scope also refused the GET frame grab the same account
+            # makes in a browser, so its Lightroom listing imports failed on
+            # every video still (review, 2026-11).
+            owner = await db.get(User, record.user_id)
+            if owner is None or owner.role == "readonly":
+                raise HTTPException(403, "This account is read-only")
 
     dependency: params.Depends = Depends(_check)
     return dependency

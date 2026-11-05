@@ -20,6 +20,36 @@ from starlette.requests import Request
 FORWARDED_FOR = "x-forwarded-for"
 REAL_IP = "x-real-ip"
 
+# Set by Caddy's tunnel-only entrance (infrastructure/caddy/Caddyfile, :8081)
+# and stripped by every other site, so a client can never send it in.
+#
+# Why it exists: Cloudflare Tunnel traffic arrives from the cloudflared
+# container, Caddy rewrites X-Forwarded-For to that container's 172.x
+# address, and every internet visitor through the tunnel was classified as
+# LAN — the public-access kill switch did nothing for them, the API docs were
+# served to them, and they all shared one login-limiter bucket.
+INGRESS = "x-framefound-ingress"
+TUNNEL_CLIENT = "x-framefound-client"
+# Stands in for a tunnel visitor whose address Cloudflare did not supply.
+# Never parsed as an IP; classify_client maps it to "internet".
+TUNNEL_UNKNOWN = "tunnel-unknown"
+
+
+def _tunnel_client(claimed: str) -> str:
+    """A tunnel visitor's address — always one on the internet.
+
+    Cloudflare sets Cf-Connecting-Ip at its edge and overwrites anything the
+    client sent. A private or loopback value cannot have come from there, so
+    it is refused rather than letting a tunnel request pass as local.
+    """
+    try:
+        address = ipaddress.ip_address(claimed.strip())
+    except ValueError:
+        return TUNNEL_UNKNOWN
+    if address.is_private or address.is_loopback or address.is_link_local:
+        return TUNNEL_UNKNOWN
+    return str(address)
+
 
 @lru_cache(maxsize=1)
 def _trusted_networks(raw: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -51,6 +81,9 @@ def resolve_client_ip(request: Request, trusted: str) -> str | None:
     peer = request.client.host if request.client else None
     if not is_trusted_proxy(peer, trusted):
         return peer
+
+    if request.headers.get(INGRESS) == "tunnel":
+        return _tunnel_client(request.headers.get(TUNNEL_CLIENT, ""))
 
     forwarded = request.headers.get(FORWARDED_FOR)
     if forwarded:

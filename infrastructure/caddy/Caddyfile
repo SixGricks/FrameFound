@@ -35,6 +35,12 @@
 	}
 
 	handle /api/* {
+		# Nothing the API serves is a page to run: JSON, media, captions.
+		# Should a stored file ever come back as HTML (the 2026-11 review
+		# found a sky upload that could), it renders inert. The docs pages
+		# are the exception — they need their scripts.
+		@not_docs not path /api/docs* /api/redoc* /api/openapi.json
+		header @not_docs Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; sandbox"
 		reverse_proxy api:8000
 	}
 	handle {
@@ -42,8 +48,28 @@
 	}
 }
 
+# Nobody outside may claim to have come through the tunnel: the API treats
+# this header (set only by the :8081 entrance below) as "from the internet".
+(not_tunnel) {
+	request_header -X-FrameFound-Ingress
+	request_header -X-FrameFound-Client
+}
+
 # Local / LAN / Tailscale mode
 :80 {
+	import not_tunnel
+	import app
+}
+
+# Cloudflare Tunnel entrance. Not published on the host: only the cloudflared
+# container reaches it, over the edge network. Point the tunnel's public
+# hostname at http://caddy:8081 (docs/remote-access.md, Mode C). Without this
+# entrance every tunnel visitor looked like a LAN client — Caddy rewrites
+# X-Forwarded-For to cloudflared's private address — so the public-access
+# switch did not apply to them.
+:8081 {
+	request_header X-FrameFound-Ingress tunnel
+	request_header X-FrameFound-Client {http.request.header.Cf-Connecting-Ip}
 	import app
 }
 
@@ -52,5 +78,6 @@
 # domain + email set, Caddy obtains Let's Encrypt certificates automatically.
 {$FRAMEFOUND_DOMAIN:framefound.internal} {
 	tls {$FRAMEFOUND_ACME_EMAIL:internal}
+	import not_tunnel
 	import app
 }

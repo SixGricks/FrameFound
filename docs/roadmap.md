@@ -3,6 +3,137 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-05 (evening) — QA, security and UI review; video for Cowork; every talking clip transcribed
+
+Asked for: a QA, security and UI review; faster, better search for client
+photos and video; tags that say what is in a picture; MCP good enough for
+Claude Cowork to find footage and make videos from it; every video with
+talking transcribed and linked to its video; and the whole thing natural
+from both the Windows PC and the Mac Mini.
+
+**How it was done.** Four read-only reviews (security; search and tagging;
+transcription; Windows/Mac), each finding re-read in the code before
+anything changed; the fixes; then an adversarial review of the whole diff —
+seven reviewers, every finding put to three skeptics told to refute it (26
+of 31 survived, most of them defects in *this* change, all now fixed and
+re-reviewed). A UI pass in the browser on the seeded catalogue at 1280 and
+375 px. Server suite 1074 green locally (bar the three Windows-only path
+tests); the search SQL, both new migrations and their downgrades run on a
+throwaway PostgreSQL 16 + pgvector on the VM.
+
+**Search — finding the shot for a client**
+- **One ranked list.** Tag, picture, speech and name hits are fused (the
+  RRF code existed and nothing called it) into *Best matches*, each with why
+  it matched, the moment to open at and, for video, the matched frame
+  rather than the poster. A clip matched by tag *and* picture *and* speech
+  now outranks one that tops a single list.
+- **Natural sentences work.** "someone saying starting bid" ANDed every
+  word and found nothing; an any-word pass now tops up, ranked. Transcript
+  hits were ordered by *timestamp*, not relevance — now `ts_rank_cd`.
+  "drone shot of a white farmhouse" finds the tag *farmhouse* (tags inside
+  the query, on word boundaries).
+- **One long clip no longer fills the page:** one row per asset at its best
+  frame, before the limit. A **Photos / Video / Audio** filter, offline files
+  excluded everywhere, and pgvector's iterative scan so a filtered visual
+  search is not starved. Trigram indexes for file-name search (migration
+  0026), the query embedding cached, and "visual search failed" no longer
+  shown as "still indexing".
+
+**Tagging**
+- **New media is scored on arrival** against every learned tag (it only
+  happened when someone pressed Re-learn), plus a nightly re-learn of every
+  tag (02:40).
+- A tag with ≥5 confirmed examples can reach the top 10% of the library,
+  not only the top 1%; **one rejection no longer locks a tag** (a candidate
+  is vetoed only if its nearest judged neighbour is a rejection); videos are
+  judged on their three best frames, not the mean of 240; a tag's words are
+  read through real-estate, drone and farm-auction phrasings.
+- The review queue is bounded: at most 60 unanswered suggestions per tag
+  from a library pass, 120 counting arrivals. The learner's guesses no
+  longer take a picture out of the Claude reviewer's pool.
+
+**Transcription — every talking clip, linked to it**
+- **One bad night used up a file's every turn**: each Celery retry wrote a
+  failed row, and three rows was the give-up count. Now counted per queueing.
+- **Every audio track is heard** — lav mics on stream 2+ were never
+  transcribed; tracks are mixed (with a limiter) before Whisper.
+- **Real speech is kept**: a cue is dropped as invented only when it is
+  *both* doubtful and probably silent (an auctioneer over a generator was
+  being thrown away), a bid chant is no longer dropped as a "loop", and the
+  phrases Whisper invents over music ("thank you for watching") are.
+- **Every clip says where it stands:** speech, no speech, queued, failed,
+  or off — on the asset page and in the API. "No speech" is now recorded, so
+  a re-run that hears nothing clears old words. Clips the old code heard
+  nothing in are marked (migration 0027) and given one more listen by the
+  sweep. **SRT and VTT downloads** beside each transcript; **Reprocess**
+  re-transcribes; long runs are no longer redelivered every hour (Redis
+  visibility timeout 12 h); a file that kills the worker stops after three
+  deaths; the clip being transcribed is not queued again.
+
+**MCP — Claude Cowork making videos** ([mcp.md](mcp.md), "Making a video")
+- Five new tools: `path_profiles`, `get_media_files` (the original's path
+  *on this computer* plus a signed 1080p proxy), `get_transcript` (every
+  timed cue), `get_scenes` (shot ranges with pictures), and
+  `build_rough_cut` — an FCP7 XML **sequence** Premiere and Resolve open as
+  a timeline, linked to the originals through that computer's profile,
+  frame-accurate over long pieces. `view_media` can look at a frame by time;
+  `search_media` takes `media_type` and `profile`.
+- The Claude Desktop config in the docs did not connect on either OS
+  (`mcp-remote` refuses plain http; Windows splits the header). Fixed, with
+  both config file locations and the Mac `npx` path note.
+
+**Windows and Mac**
+- Lightroom and Premiere pick **this computer's** profile on first run (the
+  Mac was handed the PC's `Y:\` paths and reported every file unreachable);
+  the Premiere picker labels each profile's OS; Lightroom's "can't open"
+  advice is Mac-specific on a Mac; a Mac `install-dev.sh` for the panel.
+- A profile's path must fit its platform (`/Volumes/…` for a Mac); an old
+  mismatched row still loads, flagged, instead of breaking the editor.
+
+**Security** (each with a test)
+- **High: the public-access switch did nothing for Cloudflare Tunnel
+  visitors** — Caddy rewrote their address to the tunnel container's, so
+  they were "LAN". Tunnel traffic now enters on its own Caddy port, marked;
+  **point the tunnel at `http://caddy:8081`** ([remote-access.md](remote-access.md)).
+- Password hashing moved off the event loop (a sign-in flood froze the API);
+  email-rotation spraying is limited per address, except where an address
+  is shared; a sky upload could be stored as HTML and run as an admin
+  (images only now, served inert, and a CSP on `/api/*`); a 170-megapixel
+  mask could OOM the API; frame grabs are capped per video and by free
+  space; a disabled user's panel tokens stopped working; read-only tokens
+  cannot write; only admins start a paid Claude review over MCP; the Google
+  key no longer reaches the logs.
+
+**UI, seen in the browser:** best matches with reason chips and timecodes,
+the media filter carried in the URL (Back included), transcript states and
+SRT/VTT links on the asset page, nothing wider than 375 px. Not reachable
+locally: real visual search, real transcription, the Premiere and Lightroom
+clients — those need the VM and the workstations.
+
+**Needs the operator**
+1. Deploy (`git pull && docker compose up -d --build`; migrations 0026 and
+   0027 run on start).
+2. If the Cloudflare Tunnel is used: point its public hostname at
+   `http://caddy:8081`.
+3. Add a **Mac Mini** path profile for each library (`/Volumes/<share>`),
+   then reload the Lightroom plugin and the Premiere panel on the Mac
+   (`bash apps/panel-premiere/install-dev.sh`).
+4. In Claude Desktop on each computer, the config from mcp.md, then ask
+   Cowork for a rough cut.
+5. Once deployed, check that search uses its indexes on the real catalogue
+   (read-only; look for `Bitmap Index Scan on ix_transcript_segments_text_fts`
+   or similar and `ix_assets_filename_trgm` rather than `Seq Scan`):
+
+   ```bash
+   cd ~/framefound && docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+   EXPLAIN ANALYZE SELECT id FROM transcript_segments
+    WHERE to_tsvector('english', text) @@ websearch_to_tsquery('english', 'starting bid')
+    ORDER BY ts_rank_cd(to_tsvector('english', text), websearch_to_tsquery('english', 'starting bid')) DESC
+    LIMIT 40;
+   EXPLAIN ANALYZE SELECT id FROM assets WHERE filename ILIKE '%DJI_04%' LIMIT 40;
+   SQL
+   ```
+
 ### 2026-11-05 — Claude as a client (MCP), tag review under a budget, Tailscale in one button, Security page rework, Showcase by date
 
 Asked for three things: an MCP so Claude can call in and ask for media by

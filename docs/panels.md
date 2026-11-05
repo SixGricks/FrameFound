@@ -255,16 +255,37 @@ thing most likely to have moved between Premiere versions — remains untested.
 
 ### Two things worth knowing before a first load
 
-- **Premiere → Edit → Preferences → Plugins → "Enable developer mode"** must be
-  ticked, and it needs a Premiere restart. Without it the UXP Developer Tool
-  reports *"No applications are connected to the service"* and Premiere never
-  appears as a target. This is not in Adobe's quick-start and cost most of the
-  setup time.
+- **"Enable developer mode"** must be ticked, and it needs a Premiere restart.
+  On Windows it is under **Premiere Pro → Edit → Preferences → Plugins**; on a
+  Mac, under **Premiere Pro → Settings → Plugins** (there is no Edit →
+  Preferences there). Without it the UXP Developer Tool reports *"No
+  applications are connected to the service"* and Premiere never appears as a
+  target. This is not in Adobe's quick-start and cost most of the setup time.
 - The UXP Developer Tool is **not** installed with Premiere. It comes from the
   Creative Cloud app, listed under its own name.
 
-`apps/panel-premiere/install-dev.ps1` copies the panel to the External plugins
-folder and prints those steps.
+Two scripts stage a copy of the panel in the External plugins folder and print
+those steps — one per platform:
+
+| Machine | Run | Copies to |
+|---|---|---|
+| Windows | `powershell -ExecutionPolicy Bypass -File apps\panel-premiere\install-dev.ps1`, or right-click the file → **Run with PowerShell** | `%APPDATA%\Adobe\UXP\Plugins\External\com.sixgricks.framefound` |
+| Mac | `bash apps/panel-premiere/install-dev.sh` | `~/Library/Application Support/Adobe/UXP/Plugins/External/com.sixgricks.framefound` |
+
+The `-ExecutionPolicy Bypass` is not decoration: a Windows machine with no
+policy set runs as *Restricted*, and a bare `powershell -File` is refused there
+with "running scripts is disabled on this system". It applies to that one
+process only.
+
+The scripts do not replace UDT — they end by telling you to **Add Plugin** and
+**Load** the copy they staged, so the two routes differ only in which
+`manifest.json` UDT is pointed at: the repository's (the steps above) or the
+staged copy's. Pick one copy and dev-load only that one. If you move to the
+repository route, delete the staged folder first, because a copy left in
+External is the first half of the duplicate registration suspected below.
+For the same reason, if the scripted route still fails with `"domains": "all"`,
+delete the staged folder, restart Premiere and load from the repository — that
+rules the duplicate in or out.
 
 ## The UXP permission error, investigated properly (2026-07-31)
 
@@ -314,7 +335,8 @@ value**:
   narrowed one entry at a time starting with `http://192.168.1.193:8080`.
 - If it still fails with `"all"`, no allowlist can fix it — the permission
   block is not being applied, and the next suspect is the plugin being
-  registered twice under one id (a copy in `%APPDATA%\...\Plugins\External`
+  registered twice under one id (a copy in `%APPDATA%\...\Plugins\External`,
+  or `~/Library/Application Support/Adobe/UXP/Plugins/External` on a Mac,
   which Premiere loads at startup, *and* a UDT dev-load of the same id in the
   same session).
 

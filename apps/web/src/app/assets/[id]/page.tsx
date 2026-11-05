@@ -15,12 +15,22 @@ import { copyText } from "@/lib/clipboard";
 import {
   api,
   mediaUrl,
+  subtitlesUrl,
   type AssetDetail,
   type SceneFrame,
   type Transcript,
   type VisualHit,
 } from "@/lib/api";
 import { bytes, duration, resolution, shortDate, timecode } from "@/lib/format";
+
+// Said where the transcript would be, so "nothing here" is never ambiguous.
+const TRANSCRIPT_NOTES: Partial<Record<AssetDetail["transcript_state"], string>> = {
+  queued: "Transcript on its way — speech recognition has this clip in its queue.",
+  failed: "Transcription failed for this clip. Reprocess it to try again.",
+  off: "Transcription is turned off for this library.",
+  // A finished run that heard nothing (see _transcript_state).
+  no_speech: "No speech was heard in this clip.",
+};
 
 function DetailPage() {
   const params = useParams<{ id: string }>();
@@ -176,10 +186,32 @@ function DetailPage() {
               <div className="sectionhead" style={{ marginTop: 0 }}>
                 <h2>Transcript</h2>
                 <span className="faint mono">
-                  {transcript.segment_count} cues · {transcript.language} ·{" "}
+                  {/* Rows backfilled for clips heard before empty runs were
+                      recorded carry no language; skip the empty field. */}
+                  {transcript.segment_count} cues ·{" "}
+                  {transcript.language && `${transcript.language} · `}
                   {transcript.model_name}
+                  {transcript.segment_count > 0 && (
+                    <>
+                      {" · "}
+                      <a href={subtitlesUrl(asset.id, "srt")} download>
+                        SRT
+                      </a>{" "}
+                      <a href={subtitlesUrl(asset.id, "vtt")} download>
+                        VTT
+                      </a>
+                    </>
+                  )}
                 </span>
               </div>
+              {transcript.segment_count === 0 && (
+                // The server's state, not the empty row, says what this
+                // means: a placeholder left by the old code (migration 0027)
+                // reads "queued", because the sweep listens to it again.
+                <p className="muted">
+                  {TRANSCRIPT_NOTES[asset.transcript_state] ?? TRANSCRIPT_NOTES.no_speech}
+                </p>
+              )}
               <div className="transcript">
                 {transcript.segments.map((seg, index) => (
                   <button
@@ -197,6 +229,11 @@ function DetailPage() {
                 ))}
               </div>
             </section>
+          )}
+          {!transcript && TRANSCRIPT_NOTES[asset.transcript_state] && (
+            <p className="muted" style={{ marginTop: 26 }}>
+              {TRANSCRIPT_NOTES[asset.transcript_state]}
+            </p>
           )}
         </div>
 

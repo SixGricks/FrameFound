@@ -23,6 +23,15 @@ const PLACEHOLDER: Record<string, string> = {
   linux: "/mnt/gelco",
 };
 
+// A stored profile the server now finds unusable on its platform (a "macos"
+// profile holding Z:\, saved before that was checked) comes back flagged
+// rather than failing the whole list.
+type StoredMapping = PathMapping & { warning?: string | null };
+
+function asInput(m: PathMapping): PathMappingInput {
+  return { profile_name: m.profile_name, platform: m.platform, mapped_prefix: m.mapped_prefix };
+}
+
 export default function PathMappingsEditor({
   libraryId,
   libraryName,
@@ -31,24 +40,33 @@ export default function PathMappingsEditor({
   libraryName: string;
 }) {
   const [rows, setRows] = useState<PathMappingInput[]>([]);
-  const [saved, setSaved] = useState<PathMapping[]>([]);
+  const [saved, setSaved] = useState<StoredMapping[]>([]);
+  // Save replaces the library's whole set. After a failed load the rows on
+  // screen are empty, not the stored set, and saving them deleted every
+  // profile this editor never showed (review, 2026-11). So Save waits for a
+  // load that worked.
+  const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const found = await api.pathMappings(libraryId);
+      const found: StoredMapping[] = await api.pathMappings(libraryId);
       setSaved(found);
-      setRows(
-        found.map((m) => ({
-          profile_name: m.profile_name,
-          platform: m.platform,
-          mapped_prefix: m.mapped_prefix,
-        })),
+      setRows(found.map(asInput));
+      setLoaded(true);
+      // A failed load leaves "saving is off" in the note. Without clearing it,
+      // reopening after the server recovered showed that message beside a
+      // Save button that was live again (review, 2026-11).
+      setNote("");
+    } catch (err) {
+      setLoaded(false);
+      setNote(
+        `Could not load these profiles (${
+          err instanceof Error ? err.message : "no answer"
+        }); saving is off so the stored ones are not replaced.`,
       );
-    } catch {
-      setSaved([]);
     }
   }, [libraryId]);
 
@@ -57,12 +75,16 @@ export default function PathMappingsEditor({
   }, [open, load]);
 
   async function save() {
+    if (!loaded) return;
     setBusy(true);
     setNote("");
     try {
       const cleaned = rows.filter((r) => r.profile_name.trim() && r.mapped_prefix.trim());
-      const result = await api.replacePathMappings(libraryId, cleaned);
+      const result: StoredMapping[] = await api.replacePathMappings(libraryId, cleaned);
       setSaved(result);
+      // Rows again from what was stored, so each example and warning sits
+      // under its own profile once blank rows have been dropped.
+      setRows(result.map(asInput));
       setNote(`Saved ${result.length} profile${result.length === 1 ? "" : "s"}.`);
     } catch (err) {
       setNote(err instanceof Error ? err.message : "Could not save those");
@@ -131,6 +153,13 @@ export default function PathMappingsEditor({
               e.g. {saved[index].example}
             </p>
           )}
+          {saved[index]?.warning &&
+            saved[index].platform === row.platform &&
+            saved[index].mapped_prefix === row.mapped_prefix && (
+              <p role="alert" style={{ fontSize: "0.8rem", color: "var(--amber)" }}>
+                {saved[index].warning}. Fix it here, or Save will refuse the set.
+              </p>
+            )}
           <button
             className="btn"
             onClick={() => setRows((current) => current.filter((_, i) => i !== index))}
@@ -143,6 +172,7 @@ export default function PathMappingsEditor({
       <div className="toolbar">
         <button
           className="btn"
+          disabled={!loaded}
           onClick={() =>
             setRows((current) => [
               ...current,
@@ -152,7 +182,7 @@ export default function PathMappingsEditor({
         >
           Add a workstation
         </button>
-        <button className="btn btn-primary" disabled={busy} onClick={save}>
+        <button className="btn btn-primary" disabled={busy || !loaded} onClick={save}>
           {busy ? "Saving…" : "Save"}
         </button>
         {note && <span className="faint">{note}</span>}

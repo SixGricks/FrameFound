@@ -27,7 +27,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.db.engine import session_factory
-from framefound.db.models import Asset, Derivative, Face, Frame, Job, Library, Scan
+from framefound.db.models import Asset, Derivative, Face, Frame, Job, Library, Scan, Transcript
 from framefound.logging import configure_logging
 from framefound.scanner import scan as scan_engine
 from framefound.scanner.stability import is_file_stable
@@ -47,9 +47,28 @@ DEPART_MIN_AGE_SECONDS = 60.0
 # small batch and lets the next pass carry on rather than filling the
 # queue with hours of work at once.
 TRANSCRIBE_BATCH = 25
-# After this many failures an asset is left alone. A file ffmpeg cannot
+# After this many queueings fail an asset is left alone. A file ffmpeg cannot
 # open will never succeed, and retrying it forever starves everything else.
 MAX_TRANSCRIBE_ATTEMPTS = 3
+# What one queueing writes: the first try plus Celery's retries, each its own
+# failed Job row. Counting rows against the queueing limit meant a single bad
+# moment (the 555-job models-directory incident) used up all three turns and
+# the asset was never transcribed.
+TRANSCRIBE_ROWS_PER_ATTEMPT = 3
+# The broker's visibility timeout (celery_app.py; a test holds the two
+# equal). A run killed with its worker container — any deploy: docker stop
+# SIGKILLs after 10 s, and Celery's warm shutdown waits rather than
+# requeueing — leaves its message unacked, and Redis puts it back only after
+# this long. Until then the clip is the broker's to redeliver. The sweep
+# used to queue it again once the reaper called the row dead at six hours,
+# and the broker's copy came back at twelve: the file was heard twice.
+BROKER_REDELIVERY_AGE = timedelta(hours=12)
+# model_name on the empty rows migration 0027 wrote for clips the old code
+# heard nothing in. Many were not silent: the old filter dropped any cue
+# with one doubtful signal (an auctioneer over a generator) and only audio
+# stream 0 was decoded (a lav on stream 2 of an MXF). The sweep hears each
+# once more; the re-run replaces the row, so it drops out after one turn.
+LEGACY_NO_SPEECH_MODEL = "legacy/no-speech"
 # Clustering one or two loose faces produces noise, not people. Waiting for
 # a handful means the first groups the operator sees are worth naming.
 MIN_FACES_TO_CLUSTER = 4
@@ -397,8 +416,12 @@ async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     Absence of a transcript is not enough to act on: a music bed legitimately
     produces none, and re-queueing on that basis would loop forever. A
     *succeeded* job is the real signal that an asset has had its turn,
-    whatever the outcome. Assets that have failed repeatedly are left alone so
-    one broken file cannot occupy the queue.
+    whatever the outcome — except a run by the old code that left only
+    migration 0027's placeholder row, which gets one more listen with the
+    current filter and stream mix. A run that never listened (transcription was off
+    for the library) is recorded `skipped`, not succeeded, so switching
+    transcription back on brings the asset back here. Assets that have failed
+    repeatedly are left alone so one broken file cannot occupy the queue.
     """
     if await _queue_busy("transcribe"):
         return
@@ -406,11 +429,31 @@ async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     had_a_turn = select(Job.asset_id).where(
         Job.task_name == "transcribe_asset", Job.status == "succeeded"
     )
+    # A succeeded run by the old code is not a turn when all it left is
+    # migration 0027's placeholder (see LEGACY_NO_SPEECH_MODEL).
+    heard_by_old_code = select(Transcript.asset_id).where(
+        Transcript.model_name == LEGACY_NO_SPEECH_MODEL
+    )
     failed_often = (
         select(Job.asset_id)
-        .where(Job.task_name == "transcribe_asset", Job.status == "failed")
+        # Abandoned counts too: a file that OOM-kills the worker must not be
+        # queued afresh by this sweep for ever. Ending the broker's own
+        # redelivery of it is transcribe_asset's job (its worker-death cap).
+        .where(Job.task_name == "transcribe_asset", Job.status.in_(("failed", "abandoned")))
         .group_by(Job.asset_id)
-        .having(func.count() >= MAX_TRANSCRIBE_ATTEMPTS)
+        .having(func.count() >= MAX_TRANSCRIBE_ATTEMPTS * TRANSCRIBE_ROWS_PER_ATTEMPT)
+    )
+    # The asset being transcribed right now: with acks_late its message has
+    # left the queue list, so the queue reads idle while a 3-hour recording is
+    # mid-run, and with no succeeded row yet it looked like it never had a
+    # turn — the sweep queued it again and the whole file was heard twice.
+    # Abandoned counts as well, for as long as the broker may still redeliver
+    # it (BROKER_REDELIVERY_AGE); past that a lost message cannot come back,
+    # so the row no longer holds the clip.
+    in_flight = select(Job.asset_id).where(
+        Job.task_name == "transcribe_asset",
+        Job.status.in_(("running", "abandoned")),
+        Job.started_at > datetime.now(UTC) - BROKER_REDELIVERY_AGE,
     )
     candidates = (
         (
@@ -423,8 +466,9 @@ async def _requeue_missing_transcripts(db: AsyncSession) -> None:
                     Asset.availability == "online",
                     Asset.processing_status == "ready",
                     or_(Asset.media_type == "audio", Asset.audio_codec.is_not(None)),
-                    Asset.id.not_in(had_a_turn),
+                    or_(Asset.id.not_in(had_a_turn), Asset.id.in_(heard_by_old_code)),
                     Asset.id.not_in(failed_often),
+                    Asset.id.not_in(in_flight),
                 )
                 .limit(TRANSCRIBE_BATCH)
             )
@@ -557,6 +601,10 @@ async def _requeue_missing_visuals(db: AsyncSession) -> None:
 #
 # Generous, because the point is to catch the dead and not the slow: a proxy
 # transcode is allowed four hours and long-form transcription can approach it.
+# Must stay below the broker's visibility timeout (celery_app.py, 12 h): a
+# job alive past that is redelivered and run twice. Dead here is not done
+# there, though: a killed run's message still comes back at 12 h, so the
+# transcript sweep leaves an abandoned row alone until BROKER_REDELIVERY_AGE.
 ORPHAN_JOB_AGE = timedelta(hours=6)
 
 

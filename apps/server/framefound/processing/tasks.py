@@ -35,7 +35,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -47,6 +47,21 @@ from framefound.processing import derivatives as deriv
 from framefound.processing.probe import probe_media
 from framefound.scanner.paths import PathValidationError, safe_join
 from framefound.storage.reachability import unreachable_reason
+
+# Each Celery retry writes its own failed Job row; the scanner's give-up
+# count is measured in queueings, so it needs to know how many rows one makes.
+TRANSCRIBE_RETRIES = 2
+# A file that kills the worker (an OOM on a long multi-track decode) never
+# reaches a retry: the child dies, task_reject_on_worker_lost puts the message
+# straight back, and Celery's retry count does not move on that path — so it
+# crashed the only transcribe slot for ever. Each death leaves its Job row
+# "running" (reaped to "abandoned" after six hours). As many deaths as one
+# queueing is allowed tries is the redelivery loop, and the file is given up.
+TRANSCRIBE_MAX_WORKER_DEATHS = TRANSCRIBE_RETRIES + 1
+TRANSCRIBE_DEATH_WINDOW_S = 24 * 3600
+
+if TYPE_CHECKING:
+    from framefound.ai.transcription import TranscriptionResult
 
 log = structlog.get_logger()
 
@@ -219,11 +234,31 @@ async def _proxy(db: AsyncSession, asset: Asset, library: Library, path: Path) -
     await deriv.generate_video_proxy(db, get_settings().data_dir, asset, library, path)
 
 
+async def _transcribe_audio(asset: Asset, path: Path) -> "TranscriptionResult":
+    """Run speech recognition, mixing every audio stream first when there
+    are several (Whisper alone hears stream 0 — see speech_mix_args)."""
+    import tempfile
+
+    from framefound.ai.transcription import get_transcription_provider
+    from framefound.processing import ffmpeg
+
+    provider = get_transcription_provider()
+    streams = await asyncio.to_thread(ffmpeg.audio_stream_count, path)
+    if streams <= 1:
+        return await asyncio.to_thread(provider.transcribe, path)
+    scratch = get_settings().data_dir / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=scratch) as work:
+        mixed = Path(work) / f"{asset.id}.wav"
+        await asyncio.to_thread(ffmpeg.extract_speech_audio, path, mixed, streams)
+        log.info("transcript.mixed_streams", asset_id=str(asset.id), streams=streams)
+        return await asyncio.to_thread(provider.transcribe, mixed)
+
+
 async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
     from sqlalchemy import delete, select
 
-    from framefound.ai.transcription import get_transcription_provider
-    from framefound.db.models import Transcript, TranscriptSegment
+    from framefound.db.models import Derivative, Transcript, TranscriptSegment
     from framefound.media.subtitles import build_vtt, find_sidecar, import_sidecar
 
     if not library.transcribe_enabled:
@@ -240,13 +275,7 @@ async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Pa
         if result is not None:
             log.info("transcript.sidecar_imported", asset_id=str(asset.id), file=sidecar.name)
     if result is None:
-        provider = get_transcription_provider()
-        result = await asyncio.to_thread(provider.transcribe, path)
-    if not result.segments:
-        # Music beds and silent tracks legitimately yield nothing. Recording an
-        # empty transcript would only pollute search results.
-        log.info("transcript.no_speech", asset_id=str(asset.id))
-        return
+        result = await _transcribe_audio(asset, path)
 
     existing = (
         await db.execute(select(Transcript).where(Transcript.asset_id == asset.id))
@@ -281,6 +310,19 @@ async def _transcribe(db: AsyncSession, asset: Asset, library: Library, path: Pa
                 confidence=seg.confidence,
             )
         )
+
+    if not result.segments:
+        # Music beds and silent drone footage legitimately yield nothing. The
+        # empty row is the record that it was listened to: without it "no
+        # speech", "failed" and "not done yet" looked the same everywhere,
+        # and a re-run that heard nothing left the old words in place. It
+        # adds nothing to search — there are no segments to match.
+        await db.execute(
+            delete(Derivative).where(Derivative.asset_id == asset.id, Derivative.kind == "subtitle")
+        )
+        await db.commit()
+        log.info("transcript.no_speech", asset_id=str(asset.id))
+        return
 
     # Subtitle sidecar as a derivative (served with the proxy player).
     subtitle = await deriv._upsert(db, asset.id, "subtitle", "vtt")
@@ -510,6 +552,12 @@ async def _embed_frames(db: AsyncSession, asset: Asset, library: Library, path: 
     await db.commit()
     if embedded:
         log.info("embeddings.created", asset_id=str(asset.id), frames=embedded)
+        # New media meets the vocabulary as soon as it is searchable: one
+        # matrix product against every learned tag, suggestions only. It
+        # logs and swallows its own failures — embedding has succeeded.
+        from framefound.processing.tag_tasks import suggest_tags_for_asset
+
+        await suggest_tags_for_asset(db, asset.id)
 
 
 @celery_app.task(
@@ -726,16 +774,78 @@ def infer_locations(library_id: str) -> None:
     asyncio.run(run())
 
 
+async def _transcribe_preflight(asset_id: uuid.UUID) -> bool:
+    """Whether this delivery should transcribe at all. When it should not,
+    the Job row it writes says why, and the message is acked by returning.
+
+    Decided before `_with_asset` adds this delivery's own row, so the deaths
+    counted are earlier deliveries only.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    engine = create_async_engine(get_settings().db_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as db:
+            since = datetime.now(UTC) - timedelta(seconds=TRANSCRIBE_DEATH_WINDOW_S)
+            deaths = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(Job)
+                    .where(
+                        Job.task_name == "transcribe_asset",
+                        Job.asset_id == asset_id,
+                        Job.status.in_(("running", "abandoned")),
+                        Job.started_at >= since,
+                    )
+                )
+            ).scalar_one()
+            status = error = None
+            if deaths >= TRANSCRIBE_MAX_WORKER_DEATHS:
+                status = "failed"
+                error = f"The worker died {deaths} times on this file (likely out of memory)"
+                log.error("transcribe.worker_lost_repeatedly", asset_id=str(asset_id), n=deaths)
+            else:
+                asset = await db.get(Asset, asset_id)
+                library = await db.get(Library, asset.library_id) if asset is not None else None
+                # A run that never listened is not a turn. Recorded as
+                # succeeded, it read as "heard nothing" and the scanner's
+                # sweep never came back once transcription was switched on.
+                # (_transcribe re-checks, for a switch flipped mid-flight.)
+                if library is not None and not library.transcribe_enabled:
+                    status = "skipped"
+                    error = "Transcription is off for this library"
+            if status is None:
+                return True
+            db.add(
+                Job(
+                    task_name="transcribe_asset",
+                    asset_id=asset_id,
+                    status=status,
+                    error=error,
+                    finished_at=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+            return False
+    finally:
+        await engine.dispose()
+
+
 @celery_app.task(
     name="framefound.transcribe_asset",
     queue="transcribe",
     autoretry_for=(Exception,),
     retry_backoff=True,
-    retry_kwargs={"max_retries": 2},
+    retry_kwargs={"max_retries": TRANSCRIBE_RETRIES},
 )
 def transcribe_asset(asset_id: str) -> None:
     """Speech-to-text with timestamped segments + VTT sidecar (idempotent)."""
     try:
+        if not asyncio.run(_transcribe_preflight(uuid.UUID(asset_id))):
+            return
         asyncio.run(_with_asset("transcribe_asset", uuid.UUID(asset_id), _transcribe))
     except Exception:
         log.error("transcribe.failed", asset_id=asset_id, exc_info=True)

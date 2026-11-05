@@ -1,5 +1,6 @@
 """Auth domain logic — pure functions over a session; no HTTP concerns."""
 
+import asyncio
 import hashlib
 import secrets
 import uuid
@@ -41,14 +42,34 @@ async def create_user(db: AsyncSession, email: str, password: str, role: str) ->
     return user
 
 
+# argon2id at 64 MiB costs ~150 ms of CPU. On the event loop, a few sign-in
+# attempts a second froze every other request (one uvicorn process); in
+# threads, behind this gate, a flood of them waits its turn instead.
+_HASHING = asyncio.Semaphore(2)
+_equalizer_hash: str | None = None
+
+
+async def _verify(password_hash: str | None, password: str) -> bool:
+    global _equalizer_hash
+    async with _HASHING:
+        if password_hash is None:
+            # Unknown email: verify against a fixed hash anyway, so timing
+            # does not reveal whether the address exists. Hashed once, not
+            # per attempt — that was a second argon2 run for every miss.
+            if _equalizer_hash is None:
+                _equalizer_hash = await asyncio.to_thread(hash_password, "timing-equalizer")
+            await asyncio.to_thread(verify_password, _equalizer_hash, password)
+            return False
+        return await asyncio.to_thread(verify_password, password_hash, password)
+
+
 async def authenticate(db: AsyncSession, email: str, password: str) -> User | None:
     result = await db.execute(select(User).where(User.email == email.lower()))
     user = result.scalar_one_or_none()
     if user is None:
-        # Hash anyway so response timing doesn't reveal whether the email exists.
-        verify_password(hash_password("timing-equalizer"), password)
+        await _verify(None, password)
         return None
-    if user.disabled or not verify_password(user.password_hash, password):
+    if not await _verify(user.password_hash, password) or user.disabled:
         return None
     return user
 

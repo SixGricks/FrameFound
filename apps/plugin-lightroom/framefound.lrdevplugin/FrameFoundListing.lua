@@ -72,6 +72,13 @@ end
 --  helps, and saying "is the drive connected?" would send someone looking
 --  in the wrong place.
 local function unreachableAdvice(path)
+  if MAC_ENV then
+    -- macOS opens trailing-space folders fine; what goes wrong on a Mac is
+    -- the share not being mounted, or mounted twice as /Volumes/NAME-1.
+    return "Is the share mounted? In Finder press ⌘K and connect to it, then check "
+      .. "/Volumes: if it appears as “NAME-1”, eject the duplicates so it is mounted "
+      .. "once under the name this machine's FrameFound profile uses."
+  end
   local folder = path:match("([^\\/]*[ %.])[\\/]")
   if folder then
     return "Windows cannot open a folder whose name ends in a space or a dot, and “"
@@ -378,7 +385,7 @@ LrTasks.startAsyncTask(function()
 
     -- One entry per profile name: a workstation's profile covers several
     -- libraries (W:, X:, Y:), and the server lists one row for each.
-    local profileItems, prefixes, order = {}, {}, {}
+    local profileItems, prefixes, order, platforms = {}, {}, {}, {}
     local okProfiles, profiles = LrTasks.pcall(Client.profiles)
     if not okProfiles then
       -- A failed request is not "no profiles"; say what actually happened.
@@ -393,6 +400,7 @@ LrTasks.startAsyncTask(function()
           table.insert(order, name)
         end
         table.insert(prefixes[name], profile.mapped_prefix or "?")
+        platforms[name] = platforms[name] or profile.platform
       end
     end
     for _, name in ipairs(order) do
@@ -414,7 +422,18 @@ LrTasks.startAsyncTask(function()
 
     local prefs = Client.prefs()
     local props = LrBinding.makePropertyTable(context)
-    props.profile = prefixes[prefs.profile] and prefs.profile or order[1]
+    -- First run on a machine: the first profile *for this OS*, not the first
+    -- alphabetically — "DJ's PC (Windows)" sorts ahead of any "Mac…" name,
+    -- and a Mac handed Y:\ paths reports every photograph as unreachable.
+    local thisPlatform = MAC_ENV and "macos" or "windows"
+    local fallback = order[1]
+    for _, name in ipairs(order) do
+      if platforms[name] == thisPlatform then
+        fallback = name
+        break
+      end
+    end
+    props.profile = prefixes[prefs.profile] and prefs.profile or fallback
     props.preferRaw = prefs.preferRaw ~= false
     -- Named copies: Lightroom cannot rename a file, and FrameFound never
     -- renames an original, so a copy is how the files in Lightroom get the

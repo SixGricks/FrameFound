@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 
 from framefound.auth import service, totp
+from framefound.auth.client_address import TUNNEL_UNKNOWN, is_trusted_proxy
 from framefound.auth.crypto import SecretUnavailable, seal, unseal
 from framefound.auth.deps import (
     SESSION_COOKIE,
@@ -28,6 +29,15 @@ log = structlog.get_logger()
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 login_limiter = LoginRateLimiter()
+# Generous: a household or an office shares one address, and a person who
+# mistypes a few times must never lock their colleagues out.
+address_limiter = LoginRateLimiter(max_attempts=20)
+
+
+def _is_shared_address(ip: str | None, trusted_proxies: str) -> bool:
+    """An address that is not one client's: unknown, a tunnel visitor
+    Cloudflare did not name, or one of our own proxies (every hop was ours)."""
+    return ip is None or ip == TUNNEL_UNKNOWN or is_trusted_proxy(ip, trusted_proxies)
 
 
 class SetupRequest(BaseModel):
@@ -101,7 +111,22 @@ async def login(
 ) -> UserOut:
     ip = client_ip(request)
     key = f"{ip}:{body.email.lower()}"
+    # Per address as well as per address-and-email: rotating the email was
+    # never throttled, which is password spraying across accounts.
+    #
+    # Not when the address stands for many people, though: a tunnel still
+    # aimed at caddy:80, the tailscale sidecar, or a tunnel visitor without
+    # Cf-Connecting-Ip all resolve to one shared value, and 20 bad guesses
+    # with made-up emails from anyone there locked every sign-in through it
+    # out — the operator's with the right password too (review, 2026-11).
+    # Those keep the per address-and-email limit they always had.
+    shared = _is_shared_address(ip, settings.trusted_proxies)
+    if shared:
+        log.warning("auth.login_from_shared_address", ip=ip)
+    ip_key = None if shared else f"ip:{ip}"
     wait = login_limiter.retry_after(key)
+    if ip_key is not None:
+        wait = max(wait, address_limiter.retry_after(ip_key))
     if wait > 0:
         raise HTTPException(
             429,
@@ -112,6 +137,8 @@ async def login(
     user = await service.authenticate(db, body.email, body.password)
     if user is None:
         login_limiter.record_failure(key)
+        if ip_key is not None:
+            address_limiter.record_failure(ip_key)
         await service.audit(db, "auth.login_failed", ip=ip, detail={"email": body.email.lower()})
         await db.commit()
         # Same message whether the email or the password was wrong.

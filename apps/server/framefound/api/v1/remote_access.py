@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from framefound.auth import service as auth_service
+from framefound.auth.client_address import TUNNEL_UNKNOWN
 from framefound.auth.crypto import SecretUnavailable
 from framefound.auth.deps import CurrentUser, DbDep, client_ip, require_admin
 from framefound.ddns import settings_store as store
@@ -25,6 +26,8 @@ def classify_client(ip: str | None) -> str:
     """How did this request reach us? Drives the status panel."""
     if not ip:
         return "unknown"
+    if ip == TUNNEL_UNKNOWN:
+        return "internet"  # through the tunnel, address withheld: fail closed
     try:
         address = ipaddress.ip_address(ip)
     except ValueError:

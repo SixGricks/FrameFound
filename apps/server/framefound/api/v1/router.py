@@ -67,7 +67,6 @@ async def system_info() -> SystemInfo:
 # contract of record — see docs/architecture.md):
 #
 # TODO(m3): /assets/{id}/thumbnail · /assets/{id}/proxy (signed URLs)
-# TODO(m4): GET /assets/{id}/transcript · /assets/{id}/subtitles
 # TODO(m5): GET /search (hybrid: q, filters, quoted-exact) · /assets/{id}/similar
 # TODO(m5): GET /assets/{id}/scenes
 # TODO(m6): CRUD /collections, /saved-searches · GET /jobs, POST /jobs/{id}/retry

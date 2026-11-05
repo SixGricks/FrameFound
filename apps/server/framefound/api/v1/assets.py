@@ -4,8 +4,9 @@ import math
 import uuid
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.sql.elements import UnaryExpression
@@ -65,6 +66,9 @@ class AssetDetail(AssetSummary):
     description: str | None
     custom_fields: dict[str, Any]
     first_indexed_at: datetime
+    # none (no audio) | speech | no_speech | queued | failed | off. Lets the
+    # page say *why* there are no words beside a clip instead of nothing.
+    transcript_state: str = "none"
 
 
 class AssetPage(BaseModel):
@@ -236,7 +240,67 @@ async def get_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> Asset
     asset = await db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "Asset not found")
-    return AssetDetail.model_validate(asset)
+    detail = AssetDetail.model_validate(asset)
+    detail.transcript_state = await _transcript_state(db, asset)
+    return detail
+
+
+async def _transcript_state(db: DbDep, asset: Asset) -> str:
+    from framefound.db.models import Job, Library, Transcript
+
+    if asset.media_type != "audio" and asset.audio_codec is None:
+        return "none"
+    from datetime import UTC
+
+    from framefound.scanner.__main__ import BROKER_REDELIVERY_AGE, LEGACY_NO_SPEECH_MODEL
+
+    row = (
+        await db.execute(
+            select(Transcript.segment_count, Transcript.model_name).where(
+                Transcript.asset_id == asset.id
+            )
+        )
+    ).first()
+    # Migration 0027's placeholder is not a verdict: the old code heard
+    # nothing in clips the current filter and stream mix do hear words in,
+    # and the sweep queues each one again. Read it like no row at all.
+    legacy = row is not None and row.model_name == LEGACY_NO_SPEECH_MODEL
+    if row is not None and not legacy:
+        return "speech" if row.segment_count > 0 else "no_speech"
+    library = await db.get(Library, asset.library_id)
+    if library is not None and not library.transcribe_enabled:
+        return "off"
+
+    last = (
+        await db.execute(
+            select(Job.status, Job.started_at)
+            .where(Job.asset_id == asset.id, Job.task_name == "transcribe_asset")
+            .order_by(Job.started_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if last is None:
+        return "queued"  # never tried: the scanner's sweep will queue it
+    status, started = last
+    if status in ("running", "abandoned"):
+        # Still coming until the broker can no longer redeliver it: a run
+        # killed by a deploy returns when the visibility timeout runs out,
+        # and the sweep waits for that copy too. Saying "failed, reprocess"
+        # in that window invited the manual run that heard the file twice.
+        started = started if started.tzinfo else started.replace(tzinfo=UTC)
+        return "queued" if datetime.now(UTC) - started < BROKER_REDELIVERY_AGE else "failed"
+    if status == "succeeded":
+        # The old code's run, kept as 0027's placeholder: the sweep hears it
+        # again. Otherwise a run that finished and left no row: before every
+        # run recorded an empty transcript, this was how a clip that heard
+        # nothing looked, and "queued" promised a transcript no job would
+        # bring (the sweep counts a succeeded run as the asset's turn).
+        return "queued" if legacy else "no_speech"
+    if status == "failed":
+        return "failed"
+    # "skipped" while the library is now on: the run never listened, so the
+    # sweep picks the asset up again (it only counts succeeded runs).
+    return "queued"
 
 
 class TranscriptSegmentOut(BaseModel):
@@ -280,6 +344,53 @@ async def get_transcript(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> 
         processed_at=transcript.processed_at,
         segment_count=transcript.segment_count,
         segments=[TranscriptSegmentOut.model_validate(s) for s in transcript.segments],
+    )
+
+
+@router.get("/{asset_id}/subtitles")
+async def download_subtitles(
+    asset_id: uuid.UUID,
+    _user: CurrentUser,
+    db: DbDep,
+    format: str = Query(default="srt", pattern="^(srt|vtt)$"),
+) -> Response:
+    """The transcript as a caption file to download: SRT for Premiere and
+    YouTube, VTT for the web. Built from the stored segments, so it always
+    matches what search and the transcript panel show."""
+    from sqlalchemy.orm import selectinload
+
+    from framefound.ai.transcription import SpeechSegment
+    from framefound.db.models import Transcript
+    from framefound.media.subtitles import build_srt, build_vtt
+
+    asset = await db.get(Asset, asset_id)
+    transcript = (
+        await db.execute(
+            select(Transcript)
+            .where(Transcript.asset_id == asset_id)
+            .options(selectinload(Transcript.segments))
+        )
+    ).scalar_one_or_none()
+    if asset is None or transcript is None or not transcript.segments:
+        raise HTTPException(404, "No transcript is available for this item")
+    cues = [
+        SpeechSegment(start_s=s.start_ms / 1000, end_s=s.end_ms / 1000, text=s.text)
+        for s in transcript.segments
+    ]
+    body = build_srt(cues) if format == "srt" else build_vtt(cues)
+    stem = asset.filename.rsplit(".", 1)[0] or "transcript"
+    # ASCII-only fallback name plus the RFC 5987 one, so a filename with an
+    # accent or an em dash survives on both Windows and macOS browsers.
+    ascii_name = "".join(ch if ch.isascii() and ch not in '"\\' else "_" for ch in stem)
+    return Response(
+        content=body,
+        media_type="application/x-subrip" if format == "srt" else "text/vtt",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}.{format}"; '
+                f"filename*=UTF-8''{quote(stem)}.{format}"
+            )
+        },
     )
 
 
@@ -385,6 +496,12 @@ async def reprocess_asset(asset_id: uuid.UUID, db: DbDep, _user: CurrentUser) ->
         generate_derivatives.delay(str(asset_id))
         if asset.media_type == "video":
             generate_proxy.delay(str(asset_id))
+        if asset.media_type == "audio" or asset.audio_codec is not None:
+            # Reprocess is how a better model or a fixed share gets a second
+            # listen; the sweep only ever re-queues files never heard at all.
+            from framefound.processing.tasks import transcribe_asset
+
+            transcribe_asset.delay(str(asset_id))
     except Exception as err:  # queue down
         raise HTTPException(503, "Processing queue is not available right now") from err
     return {"status": "queued"}

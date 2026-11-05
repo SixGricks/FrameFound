@@ -6,6 +6,45 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (2026-11-05 QA, security and UI review)
+- Search: one fused, ranked *Best matches* list (tag, picture, speech,
+  name) with reasons, the moment to open and the matched video frame;
+  natural sentences match transcripts (any-word top-up) and tags inside the
+  query; transcript hits ranked by relevance, not time; one row per asset in
+  visual search; a Photos/Video/Audio filter; offline files excluded;
+  pgvector iterative scan for filtered searches; trigram indexes on file
+  names (migration 0026); cached query embeddings.
+- Tagging: new media is scored against learned tags on arrival, and every
+  tag is re-learned nightly; a relaxed bar for well-taught tags; rejections
+  veto look-alikes instead of locking a tag; videos judged on their best
+  three frames; domain prompt templates; per-tag caps on unanswered
+  suggestions.
+- Transcription: retries counted per queueing (one bad night no longer
+  gave a file up for good); every audio stream mixed before Whisper; speech
+  kept unless both doubtful and silent, known invented phrases dropped;
+  "no speech" recorded and shown, legacy no-speech clips re-heard (migration
+  0027); `transcript_state` on the asset; `GET /assets/{id}/subtitles`
+  (SRT/VTT); Reprocess re-transcribes; Redis visibility timeout 12 h; a file
+  that keeps killing the worker is given up after three deaths.
+- Clients: Lightroom and Premiere choose this computer's path profile on
+  first run; profiles must fit their platform; Mac `install-dev.sh`.
+
+### Added (2026-11-05)
+- MCP video tools for Claude Cowork: `path_profiles`, `get_media_files`,
+  `get_transcript`, `get_scenes`, `build_rough_cut` (FCP7 XML sequences for
+  Premiere and Resolve), `view_media(ts_ms=)`, and `profile`/`media_type`
+  on the search tools. Working Claude Desktop config for Windows and macOS.
+
+### Security (2026-11-05)
+- Cloudflare Tunnel visitors were classified as LAN, bypassing the
+  public-access switch: tunnel traffic now enters on Caddy `:8081`, marked.
+  **Point the tunnel at `http://caddy:8081`.**
+- argon2 off the event loop; per-address sign-in limit (not for shared
+  addresses); sky uploads are images only and served inert, CSP on `/api/*`;
+  inpaint mask size cap; frame-grab caps; disabled users' tokens refused;
+  read-only tokens cannot write; admin-only paid review over MCP; the
+  geocoding key kept out of logs.
+
 ### Changed (2026-10-14 review)
 - Server performance: the alerts banner probes shares off the event loop,
   in parallel, with a timeout and a 30 s cache (one hung CIFS mount froze

@@ -119,7 +119,13 @@ export interface AssetDetail extends AssetSummary {
   title: string | null;
   description: string | null;
   first_indexed_at: string;
+  /** Why there are (or are not) words beside this clip. */
+  transcript_state: "none" | "speech" | "no_speech" | "queued" | "failed" | "off";
 }
+
+/** The transcript as a caption file (the session cookie authorises it). */
+export const subtitlesUrl = (assetId: string, format: "srt" | "vtt") =>
+  `/api/v1/assets/${assetId}/subtitles?format=${format}`;
 
 export interface Page<T> {
   items: T[];
@@ -224,7 +230,7 @@ export interface ClaudeReviewStatus {
   remaining_usd: number;
   auto: boolean;
   batch: number;
-  /** Online pictures with a thumbnail and no tag of any kind. */
+  /** Pictures nobody has judged yet: no tag or answer, no Claude suggestion, not yet reviewed by the API (the learner's guesses do not count). */
   untagged: number;
   pending_from_claude: number;
   last: ClaudeReviewState;
@@ -511,6 +517,23 @@ export interface VisualHit {
   similarity: number;
 }
 
+/** One asset in the fused ranking, with why it matched. `ts_ms` is the
+ * moment to open it at (speech if words matched, else the best frame);
+ * `frame_ms` is that best frame alone — a transcript time is not a
+ * sampled frame, so thumbnails use `frame_ms`. */
+export interface FusedResult {
+  asset_id: string;
+  filename: string;
+  library_id: string;
+  media_type: MediaType;
+  score: number;
+  reasons: string[];
+  ts_ms: number | null;
+  frame_ms: number | null;
+  snippet: string | null;
+  tag: string | null;
+}
+
 export interface SearchResponse {
   query: string;
   transcript_hits: Array<{
@@ -530,9 +553,17 @@ export interface SearchResponse {
     captured_at: string | null;
   }>;
   visual_hits: VisualHit[];
+  /** "indexing" clears itself as frames are embedded; "unavailable" (no
+   * model, or the encoder crashed) will not, so the two are told apart.
+   * Absent on a server older than the field. */
+  visual_status?: VisualStatus;
+  /** visual_status === "ready"; kept for older clients. */
   visual_available: boolean;
   tag_hits: TagHit[];
+  results: FusedResult[];
 }
+
+export type VisualStatus = "ready" | "indexing" | "unavailable";
 
 export interface RoomOption {
   key: string;
@@ -1002,8 +1033,10 @@ export const api = {
   transcript: (id: string) => request<Transcript>(`/assets/${id}/transcript`),
   reprocess: (id: string) => request<unknown>(`/assets/${id}/reprocess`, { method: "POST" }),
 
-  search: (q: string, libraryId?: string) =>
-    request<SearchResponse>(`/search${query({ q, library_id: libraryId, limit: 40 })}`),
+  search: (q: string, libraryId?: string, mediaType?: MediaType) =>
+    request<SearchResponse>(
+      `/search${query({ q, library_id: libraryId, media_type: mediaType, limit: 40 })}`,
+    ),
   similar: (assetId: string) => request<VisualHit[]>(`/search/similar/${assetId}`),
   scenes: (assetId: string) => request<SceneFrame[]>(`/assets/${assetId}/scenes`),
 

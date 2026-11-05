@@ -30,6 +30,7 @@ const state = {
   server: "",
   token: "",
   profile: "",
+  profileChosen: false, // false until the operator picks, "none" included
   results: [],
   selected: new Set(),
   identity: null, // /panel/me: who the token is and what it may do
@@ -52,7 +53,11 @@ function load() {
   try {
     state.server = localStorage.getItem("ff.server") || "";
     state.token = localStorage.getItem("ff.token") || "";
-    state.profile = localStorage.getItem("ff.profile") || "";
+    // Absent and "" are different answers: absent is "never chosen here",
+    // "" is "No path profile", chosen on purpose (see loadProfiles).
+    const profile = localStorage.getItem("ff.profile");
+    state.profile = profile || "";
+    state.profileChosen = profile !== null;
   } catch (e) {
     /* first run */
   }
@@ -84,6 +89,14 @@ function save() {
 function remember(key, value) {
   try {
     localStorage.setItem(key, value);
+  } catch (e) {
+    /* see save() */
+  }
+}
+
+function forget(key) {
+  try {
+    localStorage.removeItem(key);
   } catch (e) {
     /* see save() */
   }
@@ -201,6 +214,20 @@ async function connect() {
   }
 }
 
+const PLATFORM_LABELS = { windows: "Windows", macos: "Mac", linux: "Linux" };
+
+/** "windows" | "macos" | "" — the path profile platform this panel runs on. */
+function thisPlatform() {
+  try {
+    const name = require("os").platform();
+    if (name === "win32") return "windows";
+    if (name === "darwin") return "macos";
+  } catch (e) {
+    /* older UXP without the os module: leave the choice to the operator */
+  }
+  return "";
+}
+
 async function loadProfiles() {
   const select = $("profile");
   select.innerHTML = "";
@@ -213,24 +240,46 @@ async function loadProfiles() {
   // profile covers, so a workstation with W:, X: and Y: appeared three times.
   const profiles = await api("/panel/profiles");
   const prefixes = new Map();
+  const platforms = new Map();
   for (const profile of profiles) {
     if (!prefixes.has(profile.profile_name)) prefixes.set(profile.profile_name, []);
     prefixes.get(profile.profile_name).push(profile.mapped_prefix);
+    if (!platforms.has(profile.profile_name)) platforms.set(profile.profile_name, profile.platform);
   }
+  const here = thisPlatform();
   for (const [name, mapped] of prefixes) {
     const option = document.createElement("option");
     option.value = name;
-    option.textContent = `${name} — ${mapped.join("  ")}`;
+    const platform = platforms.get(name);
+    // The platform in the label: on the Mac, the PC's profile is one click
+    // away and hands back Z:\ paths Premiere cannot open.
+    const label = PLATFORM_LABELS[platform] || platform || "";
+    option.textContent = `${name}${label ? ` (${label})` : ""} — ${mapped.join("  ")}`;
+    if (here && platform && platform !== here) option.textContent += " · other OS";
     select.appendChild(option);
   }
-  select.value = state.profile;
-  if (select.value !== state.profile) {
+  if (state.profile && !prefixes.has(state.profile)) {
     // The saved profile was renamed or removed. Showing "no profile" while
     // still sending the old name produced paths of null for every result.
+    // Forgotten rather than set to "none": the operator never chose none,
+    // so this machine's own profile is picked below, as on a first run.
     state.profile = "";
-    select.value = "";
-    remember("ff.profile", "");
+    state.profileChosen = false;
+    forget("ff.profile");
   }
+  if (!state.profileChosen && here) {
+    // Never chosen on this machine: pick its own OS's profile, if there is
+    // one. Only then — "No path profile" is a choice too, and treating its
+    // empty value as a first run overrode it on every connect (review,
+    // 2026-11), handing back paths from a profile the operator turned off.
+    const mine = [...platforms].find(([, platform]) => platform === here);
+    if (mine) {
+      state.profile = mine[0];
+      state.profileChosen = true;
+      remember("ff.profile", state.profile);
+    }
+  }
+  select.value = state.profile;
 }
 
 // --- searching ------------------------------------------------------------
@@ -532,6 +581,7 @@ $("type").addEventListener("change", () => {
 });
 $("profile").addEventListener("change", () => {
   state.profile = $("profile").value;
+  state.profileChosen = true;
   remember("ff.profile", state.profile);
   if (state.results.length) search();
 });

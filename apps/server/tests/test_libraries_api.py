@@ -1,8 +1,10 @@
 """Library API tests: allowlist enforcement, CRUD, scan control."""
 
+import uuid
 from pathlib import Path
 
 from conftest import TEST_SETUP_TOKEN
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 ADMIN = {"email": "admin@example.com", "password": "a-strong-password"}
@@ -122,3 +124,92 @@ def test_assets_listing_empty(client: TestClient, tmp_path: Path) -> None:
     resp = client.get("/api/v1/assets")
     assert resp.status_code == 200
     assert resp.json() == {"items": [], "total": 0, "page": 1, "page_size": 50}
+
+
+# --- path profiles saved before the platform check ---------------------------
+
+
+def _store_profiles(
+    client: TestClient, app: FastAPI, library_id: str, profiles: list[tuple[str, str, str]]
+) -> None:
+    """Rows written straight to the table, as the API accepted them before it
+    checked a prefix against its platform (and as ops/merge_libraries still
+    writes them)."""
+    from framefound.db.engine import get_session
+    from framefound.db.models import PathMapping
+
+    async def store() -> None:
+        async for db in app.dependency_overrides[get_session]():
+            for name, platform, prefix in profiles:
+                db.add(
+                    PathMapping(
+                        library_id=uuid.UUID(library_id),
+                        profile_name=name,
+                        platform=platform,
+                        mapped_prefix=prefix,
+                    )
+                )
+            await db.commit()
+
+    assert client.portal is not None
+    client.portal.call(store)
+
+
+def test_a_stored_profile_that_no_longer_fits_is_listed_with_a_warning(
+    client: TestClient, app: FastAPI, tmp_path: Path
+) -> None:
+    """The response model inherited the new check, so one such row made the
+    list a 500 — and the editor, showing nothing, then saved over the rest."""
+    sign_in_admin(client)
+    lib_id = client.post(
+        "/api/v1/libraries", json={"name": "Photos", "root_path": str(make_lib_dir(tmp_path))}
+    ).json()["id"]
+    _store_profiles(
+        client,
+        app,
+        lib_id,
+        [
+            ("Mac Mini", "macos", "Z:\\"),
+            ("Old PC", "windows", "//nas/share"),
+            ("DJ", "windows", "Y:\\"),
+        ],
+    )
+
+    listed = client.get(f"/api/v1/libraries/{lib_id}/path-mappings")
+    assert listed.status_code == 200, listed.text
+    warnings = {row["profile_name"]: row["warning"] for row in listed.json()}
+    assert "absolute path" in warnings["Mac Mini"]
+    assert "Windows profile" in warnings["Old PC"]
+    assert warnings["DJ"] is None
+
+
+def test_a_refused_profile_is_named_and_nothing_is_replaced(
+    client: TestClient, app: FastAPI, tmp_path: Path
+) -> None:
+    """The validator's reason only reached the 422's detail; the editor
+    showed "Invalid request" with no word of which profile, or why."""
+    sign_in_admin(client)
+    lib_id = client.post(
+        "/api/v1/libraries", json={"name": "Photos", "root_path": str(make_lib_dir(tmp_path))}
+    ).json()["id"]
+    _store_profiles(client, app, lib_id, [("DJ", "windows", "Y:\\")])
+
+    refused = client.put(
+        f"/api/v1/libraries/{lib_id}/path-mappings",
+        json=[
+            {"profile_name": "DJ", "platform": "windows", "mapped_prefix": "Y:\\"},
+            {"profile_name": "Mac Mini", "platform": "macos", "mapped_prefix": "Z:\\"},
+        ],
+    )
+    assert refused.status_code == 422
+    message = refused.json()["error"]["message"]
+    assert "Mac Mini" in message and "/Volumes" in message
+    kept = client.get(f"/api/v1/libraries/{lib_id}/path-mappings").json()
+    assert [row["profile_name"] for row in kept] == ["DJ"]
+
+    saved = client.put(
+        f"/api/v1/libraries/{lib_id}/path-mappings",
+        json=[{"profile_name": "Mac Mini", "platform": "macos", "mapped_prefix": " /Volumes/X "}],
+    )
+    assert saved.status_code == 200, saved.text
+    assert [(r["mapped_prefix"], r["warning"]) for r in saved.json()] == [("/Volumes/X", None)]

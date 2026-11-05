@@ -124,7 +124,10 @@ async def reverse_geocode_many(
                 try:
                     return key, await _lookup_one(client, lat, lon, api_key)
                 except Exception as exc:
-                    log.warning("geocode.failed", key=key, error=str(exc)[:200])
+                    # Never str(exc): an HTTPStatusError's text is the whole
+                    # request URL, `&key=<the Google API key>` included.
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    log.warning("geocode.failed", key=key, error=type(exc).__name__, status=status)
                     return key, None
 
         results = await asyncio.gather(*(fetch(k, la, lo) for k, la, lo in to_fetch))

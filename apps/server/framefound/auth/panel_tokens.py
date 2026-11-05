@@ -137,7 +137,9 @@ async def resolve(db: AsyncSession, token: str, *, ip: str | None = None) -> Use
         return None
 
     user = await db.get(User, record.user_id)
-    if user is None:
+    if user is None or user.disabled:
+        # A disabled account's sessions stop working; its tokens kept on,
+        # in the panels and the MCP connector, until revoked by hand.
         return None
 
     # Last-used is what makes the Security page actionable: a token that has

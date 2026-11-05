@@ -343,9 +343,37 @@ async def vocabulary(db: AsyncSession) -> list[tuple[str, int]]:
 
 
 def _untagged_filter() -> Any:
-    """Online pictures with a thumbnail and no tag row of any kind — nobody
-    and nothing has had an opinion yet."""
-    has_opinion = exists().where(AssetTag.asset_id == Asset.id)
+    """Online pictures with a thumbnail that no person and no Claude has
+    given an opinion on yet.
+
+    The CLIP learner's own pending guesses do not count. Since new media is
+    scored against every tag on arrival, a learner guess lands a few seconds
+    after a file is embedded, hours before the nightly review — and when any
+    row counted, most of a new shoot left this pool before Claude saw it
+    (2026-11 review). The learner can only spread words already taught; a
+    picture it has guessed at is still one Claude has not looked at.
+    Legacy suggestions from before `origin` existed are the learner's too.
+
+    A picture the API reviewer has already answered for is out, whatever it
+    wrote: when Claude only agreed with the learner, or the admission policy
+    kept nothing, no row is written, and without this the nightly sweep
+    would pay to review the same newest pictures every night.
+    """
+    from sqlalchemy import and_, or_
+
+    from framefound.ai import spend
+    from framefound.db.models import AiUsage
+
+    learner_guess = and_(
+        AssetTag.source == "suggested",
+        or_(AssetTag.origin.is_(None), AssetTag.origin == ORIGIN_CLIP),
+    )
+    has_opinion = exists().where(AssetTag.asset_id == Asset.id, ~learner_guess)
+    reviewed = exists().where(
+        AiUsage.asset_id == Asset.id,
+        AiUsage.purpose == spend.TAG_REVIEW,
+        AiUsage.ok.is_(True),
+    )
     has_thumbnail = exists().where(
         Derivative.asset_id == Asset.id,
         Derivative.kind == "thumbnail",
@@ -356,6 +384,7 @@ def _untagged_filter() -> Any:
         Asset.media_type.in_(("image", "video")),
         has_thumbnail,
         ~has_opinion,
+        ~reviewed,
     )
 
 

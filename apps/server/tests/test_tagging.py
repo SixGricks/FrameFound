@@ -5,7 +5,7 @@ is learning rather than guessing:
 
 - one example should shift the prototype but not take it over;
 - enough examples should override a wrong guess from the words;
-- a rejection must raise the bar so the same mistake is not offered twice.
+- a rejection must veto its look-alikes so the same mistake is not offered twice.
 """
 
 import math
@@ -129,15 +129,21 @@ def test_the_threshold_admits_the_weakest_accepted_example() -> None:
         assert tagging.cosine(prototype, vector) >= threshold.value
 
 
-def test_a_rejection_raises_the_bar_above_itself() -> None:
+def test_a_rejection_vetoes_its_look_alikes_without_raising_the_bar() -> None:
     """The correction loop. Something the operator said was wrong must not be
-    offered again, so the threshold moves above it."""
+    offered again — but raising the whole bar above it (the old rule) let one
+    near-miss lock the tag. The veto is per candidate instead."""
     prototype = unit(1, 0)
     positives = [rotated(0.0), rotated(0.5)]
     near_miss = rotated(0.45)  # closer than the weakest positive
+    without = tagging.derive_threshold(prototype, positives, [])
     threshold = tagging.derive_threshold(prototype, positives, [near_miss])
-    assert tagging.cosine(prototype, near_miss) < threshold.value
-    assert "rejected" in threshold.reason
+    assert threshold.value == without.value
+    assert "rejection" in threshold.reason
+    # Something that looks like the rejection is vetoed...
+    assert tagging.vetoed(rotated(0.44), positives, [near_miss])
+    # ...something that looks like an accepted example is not.
+    assert not tagging.vetoed(rotated(0.05), positives, [near_miss])
 
 
 def test_a_distant_rejection_does_not_move_the_bar() -> None:
@@ -223,8 +229,9 @@ def test_every_threshold_carries_an_explanation() -> None:
 def test_prompts_are_caption_shaped() -> None:
     """CLIP was trained on captions; a bare noun performs measurably worse."""
     prompts = tagging.prompt_variants("Power Broom")
-    assert "a photo of a power broom" in prompts
-    assert "power broom" in prompts
+    assert "a photo of power broom" in prompts
+    assert "an aerial drone photo of power broom" in prompts
+    assert all(prompt != "power broom" for prompt in prompts)
 
 
 def test_prompt_variants_normalise_case_and_spacing() -> None:
