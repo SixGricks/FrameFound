@@ -163,9 +163,6 @@ the listing as a full-size zip and import that.
 
 ## What is not built
 
-- **Marker export from transcript hits.** A search hit currently lands on the
-  file; landing on the frame needs markers carried into the XML. `fcp7.py`
-  already has a `Marker` type waiting for it.
 - **Lightroom → FrameFound direction.** Publishing edits back, or writing
   Lightroom keywords into FrameFound tags. Both are writes, and no token scope
   permits a write today — adding one is a deliberate decision, not an
@@ -422,3 +419,22 @@ keeps what was done. The SDK calls it relies on beyond the old items —
 `findPhotoByPath`, `createCollectionSet`, `createCollection`,
 `collection:addPhotos`, `setActiveSources` with several collections,
 `LrProgressScope` — have not yet run in Lightroom.
+
+## Selects for Premiere (2026-11-06)
+
+`POST /api/v1/panel/export/selects` (`export` scope) builds the same selects
+reel as *Send to Premiere* on the web search page and the MCP tool
+`build_selects` (one builder, `api/v1/selects.py`; ADR-0021): a bin of the
+source clips with a marker at each chosen moment, and a `<title> selects`
+sequence of those moments with handles. The body is `{title, profile,
+query?, moments?: [{id, at_s?, in_s?, out_s?, kind?, reason?}], handles_s,
+max_moment_s, max_speech_s, still_s, order}`; the reply carries `xml`,
+`filename`, the `selects` it made and the files it could not map or found
+offline. The panel does not call it yet — its UXP network permission is the
+open problem above — but the route is there for when it does.
+
+Premiere's own proxies (`Proxies/<stem>_Proxy.<ext>`) are paired with their
+originals and never returned by the panel's search or export.
+
+Whether Premiere takes an FCP7 bin clip with real `in`/`out` as a subclip is
+untested: import `fixtures/premiere/subclip-probe.xml` and see.

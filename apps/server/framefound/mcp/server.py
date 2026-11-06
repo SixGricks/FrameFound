@@ -46,6 +46,7 @@ from framefound.db.models import (
     Tag,
     Transcript,
     TranscriptSegment,
+    catalogued,
 )
 from framefound.mcp.auth import Principal, open_session, principal
 from framefound.media.signing import SigningError, sign_media_url
@@ -472,7 +473,7 @@ def build_server() -> MCPServer:
         )
         async with open_session() as db:
             library_id = await _library_id(db, library)
-            query = select(Asset).where(Asset.availability == "online")
+            query = select(Asset).where(Asset.availability == "online", catalogued())
             if library_id is not None:
                 query = query.where(Asset.library_id == library_id)
             if media_type:
@@ -804,7 +805,7 @@ def build_server() -> MCPServer:
                 select(AssetTag, Asset, Tag)
                 .join(Asset, Asset.id == AssetTag.asset_id)
                 .join(Tag, Tag.id == AssetTag.tag_id)
-                .where(AssetTag.source == "suggested", Asset.availability == "online")
+                .where(AssetTag.source == "suggested", Asset.availability == "online", catalogued())
                 .order_by(AssetTag.confidence.desc().nullslast(), AssetTag.created_at.desc())
                 .limit(limit)
             )

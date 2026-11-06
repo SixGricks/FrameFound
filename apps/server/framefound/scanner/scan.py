@@ -29,7 +29,7 @@ import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from framefound.db.models import Asset, Library, Scan
+from framefound.db.models import PAIRED_PROXY_STATUS, Asset, Library, Scan
 from framefound.media.detect import (
     SUPPORTED_EXTENSIONS,
     extension_of,
@@ -38,6 +38,8 @@ from framefound.media.detect import (
 )
 from framefound.scanner.identity import partial_hash
 from framefound.scanner.paths import PathValidationError, safe_join
+from framefound.scanner.proxies import is_proxy_path
+from framefound.scanner.proxies import reconcile as reconcile_proxies
 from framefound.scanner.stability import looks_at_rest
 from framefound.storage.reachability import unreachable_reason
 
@@ -305,7 +307,11 @@ async def run_scan(
                     scan.files_moved += 1
                 else:
                     scan.files_deferred += 1
-                if new_asset is not None:
+                if new_asset is not None and not is_proxy_path(rel, library):
+                    # Editing proxies wait for the pairing pass at the end:
+                    # their original may be in a later batch, and a proxy
+                    # queued now would be transcribed and embedded before
+                    # anyone knew it was one.
                     to_enqueue.append(new_asset.id)
             else:
                 stored_mtime = _as_utc(asset.mtime).timestamp()
@@ -319,7 +325,10 @@ async def run_scan(
                         scan.files_deferred += 1
                     else:
                         scan.files_changed += 1
-                        to_enqueue.append(updated.id)
+                        if updated.proxy_of_id is not None:
+                            updated.processing_status = PAIRED_PROXY_STATUS
+                        elif not is_proxy_path(rel, library):
+                            to_enqueue.append(updated.id)
                 else:
                     asset.last_verified_at = scan_time
                     if asset.availability != "online":
@@ -349,10 +358,22 @@ async def run_scan(
             conditions.append(~Asset.relative_path.startswith(f"{prefix}/", autoescape=True))
         missing = await db.execute(update(Asset).where(*conditions).values(availability="missing"))
         scan.files_missing = int(missing.rowcount or 0)  # type: ignore[attr-defined]
+    # After the missing check, so an original deleted since the last scan has
+    # already been flagged and releases its proxy back into the catalogue.
+    await db.commit()
+    plan, pairing_queue = await reconcile_proxies(db, library)
+    for asset_id in pairing_queue:
+        to_enqueue.append(asset_id)
+    if plan.changes:
+        log.info(
+            "scan.proxies", library=library.name, paired=len(plan.link), released=len(plan.unlink)
+        )
     scan.status = "completed"
     scan.finished_at = _now()
     library.last_scan_at = scan.finished_at
     await db.commit()
+    for asset_id in to_enqueue:
+        enqueue(asset_id)
     log.info(
         "scan.completed",
         library=library.name,

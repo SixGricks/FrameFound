@@ -48,6 +48,11 @@ channels, bitrate, orientation.
 Capture: camera_make/model, lens, focal_length, aperture, shutter, iso,
 gps_lat/lon (nullable), captured_at.
 Curation: rating, favorite, archived, title, description, custom_fields (JSONB).
+Pairing: proxy_of_id (nullable FK to assets, migration 0028) — set on an
+editing proxy (Premiere's `Proxies/<stem>_Proxy.<ext>`, the library's
+`proxy_pattern`) whose original is catalogued; such a row is out of every
+catalogue listing (`catalogued()`) and is decoded on the original's behalf
+(ADR-0021).
 Indexes: (library_id, relative_path) unique; content_hash; captured_at;
 media_type + captured_at; tsvector GIN over filename+title+description.
 

@@ -21,6 +21,7 @@ from framefound.api.v1.people import router as people_router
 from framefound.api.v1.places import router as places_router
 from framefound.api.v1.remote_access import router as remote_access_router
 from framefound.api.v1.search import router as search_router
+from framefound.api.v1.selects import router as selects_router
 from framefound.api.v1.showcase import router as showcase_router
 from framefound.api.v1.slideshows import router as slideshows_router
 from framefound.api.v1.storage import router as storage_router
@@ -35,6 +36,7 @@ api_v1.include_router(libraries_router)
 api_v1.include_router(assets_router)
 api_v1.include_router(media_router)
 api_v1.include_router(search_router)
+api_v1.include_router(selects_router)
 api_v1.include_router(remote_access_router)
 api_v1.include_router(storage_router)
 api_v1.include_router(duplicates_router)

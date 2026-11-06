@@ -28,7 +28,7 @@ from sqlalchemy.engine import CursorResult
 
 from framefound.ai import people as people_lib
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, Face, Person
+from framefound.db.models import Asset, Face, Person, catalogued
 from framefound.media.maps_store import load_face_config, save_face_config
 
 log = structlog.get_logger()
@@ -347,7 +347,7 @@ async def get_person(
     stmt = (
         select(Face, Asset)
         .join(Asset, Asset.id == Face.asset_id)
-        .where(Face.person_id == person_id)
+        .where(Face.person_id == person_id, catalogued())
         # Unreviewed first: the review queue is the reason to open this page.
         #
         # Within the queue, by similarity to this person — not by detection
@@ -686,7 +686,11 @@ async def list_suggestions(
         await db.execute(
             select(Face, Asset)
             .join(Asset, Asset.id == Face.asset_id)
-            .where(Face.suggested_person_id == person_id, Face.suggestion_state == "pending")
+            .where(
+                Face.suggested_person_id == person_id,
+                Face.suggestion_state == "pending",
+                catalogued(),
+            )
             .order_by(Face.suggested_similarity.desc())
             .limit(limit)
         )

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.sql.elements import UnaryExpression
 
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, AssetTag, Derivative, Tag
+from framefound.db.models import Asset, AssetTag, Derivative, Tag, catalogued
 from framefound.media.signing import SigningError, sign_media_url
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -99,7 +99,7 @@ async def list_assets(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> AssetPage:
-    query = select(Asset)
+    query = select(Asset).where(catalogued())
     if library_id is not None:
         query = query.where(Asset.library_id == library_id)
     if media_type is not None:
@@ -195,6 +195,7 @@ async def assets_near(
 
     min_lat, max_lat, min_lon, max_lon = bounding_box(lat, lon, radius_km)
     query = select(Asset).where(
+        catalogued(),
         Asset.gps_lat.is_not(None),
         Asset.gps_lat.between(min_lat, max_lat),
         Asset.gps_lon.between(min_lon, max_lon),

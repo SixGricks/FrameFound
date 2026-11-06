@@ -27,3 +27,4 @@ deleted — superseded ADRs are marked as such.
 | 0018 | Privileged mount helper for UI-managed storage | TODO |
 | [0019](0019-premiere-panel.md) | Premiere panel: FCP7 XML first, panel tokens | Accepted |
 | [0020](0020-mcp-connector.md) | Claude as a client: MCP connector in the API, tag suggestions, one spend ledger and cap | Accepted |
+| [0021](0021-proxy-pairing-and-selects.md) | Editing proxies paired, not catalogued; selects to Premiere as markers and a string-out | Accepted |

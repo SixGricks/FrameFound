@@ -29,9 +29,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
+from framefound.api.v1.selects import SelectsRequest, SelectsResult
 from framefound.auth.deps import DbDep, PanelPrincipal, require_panel_scope
 from framefound.config import get_settings
-from framefound.db.models import Asset, Library, Listing, ListingItem, PathMapping
+from framefound.db.models import Asset, Library, Listing, ListingItem, PathMapping, catalogued
 from framefound.media import photo_index
 from framefound.media.signing import SigningError, sign_media_url
 
@@ -220,7 +221,8 @@ async def panel_search(
     matched: dict[uuid.UUID, str] = {}
     # A file the share no longer has is not a result: Premiere would be
     # handed a path that does not exist and fail into the XML fallback.
-    online = Asset.availability == "online"
+    # A paired editing proxy is not a result either: the original is.
+    online = (Asset.availability == "online") & catalogued()
 
     if term:
         # Name matches first. An editor typing `A007_C012` or a filename
@@ -734,3 +736,17 @@ async def export_fcp7(body: ExportRequest, _user: PanelPrincipal, db: DbDep) -> 
         "xml": build_bin(body.sequence_name, clips),
         "clips": len(clips),
     }
+
+
+@router.post("/export/selects", dependencies=[require_panel_scope("export")])
+async def export_selects(body: SelectsRequest, _user: PanelPrincipal, db: DbDep) -> SelectsResult:
+    """A selects reel for Premiere: a bin of the clips with a marker at each
+    chosen moment, and a sequence of those moments with handles
+    (api/v1/selects.py). The same builder the web UI and Claude use; the
+    panel gets it with the `export` scope, like the bin export above."""
+    from framefound.api.v1.selects import SelectsError, assemble
+
+    try:
+        return await assemble(db, body)
+    except SelectsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

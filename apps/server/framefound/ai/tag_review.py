@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from framefound.ai import recipe_picker
 from framefound.ai.recipe_picker import RecipePickUnavailable, post_messages, thinks
 from framefound.ai.tagging import slugify
-from framefound.db.models import Asset, AssetTag, Derivative, Tag
+from framefound.db.models import Asset, AssetTag, Derivative, Tag, catalogued
 
 log = structlog.get_logger()
 
@@ -381,6 +381,7 @@ def _untagged_filter() -> Any:
     )
     return (
         Asset.availability == "online",
+        catalogued(),
         Asset.media_type.in_(("image", "video")),
         has_thumbnail,
         ~has_opinion,

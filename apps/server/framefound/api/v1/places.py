@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from framefound.auth.deps import CurrentUser, DbDep, require_admin
-from framefound.db.models import Asset, Derivative
+from framefound.db.models import Asset, Derivative, catalogued
 from framefound.media import places as places_lib
 from framefound.media.geocoding import cache_key as geocode_key
 from framefound.media.geocoding import reverse_geocode_many
@@ -79,6 +79,7 @@ async def list_places(
         Asset.gps_lat.is_not(None),
         Asset.gps_lon.is_not(None),
         Asset.availability == "online",
+        catalogued(),
     )
     if library_id is not None:
         query = query.where(Asset.library_id == library_id)

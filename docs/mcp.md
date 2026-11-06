@@ -100,6 +100,13 @@ sixty-second rough cut I can open in Premiere on this Mac." Claude:
    sampled frame as a picture. The signed `frame_url` links are for you:
    Claude Desktop fetches the web from Anthropic's side, which cannot reach
    a server on your network;
+   For material to review rather than an edit — "selects of the
+   superintendent talking about the mainline, for the Mac mini" — Claude
+   calls `build_selects` with the query (or the moments it picked) and your
+   profile: a bin whose clips carry a marker on each moment, the reason in
+   its comment, and a sequence stringing the moments out with a second of
+   handle either side. Premiere's `Proxies/…_Proxy` files never appear; the
+   originals do;
 4. calls `build_rough_cut` with the pieces and your profile, and saves the
    XML it returns. *File → Import* in Premiere Pro, or *File → Import →
    Timeline* in DaVinci Resolve, opens it as a timeline whose clips point
@@ -141,6 +148,7 @@ not fit its platform.
 | `get_transcript` | Every timed cue of what was said, optionally between two times | read |
 | `get_scenes` | A video's shots as start/end ranges, one per detected cut, with the moments to pass to `view_media` (and a signed link for you) | read |
 | `build_rough_cut` | Chosen pieces laid end to end as an FCP7 XML timeline for Premiere Pro or DaVinci Resolve (Final Cut Pro only via a converter such as 7toX) | read |
+| `build_selects` | A search (or chosen moments) as selects for Premiere: a bin with a marker on each moment and a `<title> selects` string-out with handles; whole sentences for speech, the detected shot for pictures | read |
 
 `find_media` and `search_media` also take `profile` (adds `local_path`, the
 original as that computer opens it) and `search_media` takes `media_type`

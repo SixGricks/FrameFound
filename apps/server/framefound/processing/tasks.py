@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from framefound.celery_app import celery_app
 from framefound.config import get_settings
-from framefound.db.models import Asset, Job, Library
+from framefound.db.models import PAIRED_PROXY_STATUS, Asset, Job, Library
 from framefound.processing import derivatives as deriv
 from framefound.processing.probe import probe_media
 from framefound.scanner.paths import PathValidationError, safe_join
@@ -129,6 +129,14 @@ async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandle
                 if library is None:
                     job.status = "skipped"
                     job.error = "Library no longer exists"
+                    return
+                if asset.proxy_of_id is not None:
+                    # A paired editing proxy is decoded on its original's
+                    # behalf (_sample_frames) and is never a subject itself:
+                    # no second transcript, embedding or tag pass.
+                    asset.processing_status = PAIRED_PROXY_STATUS
+                    job.status = "skipped"
+                    job.error = "Editing proxy of another asset"
                     return
                 try:
                     path = safe_join(Path(library.root_path), asset.relative_path)
@@ -390,6 +398,36 @@ def generate_proxy(asset_id: str) -> None:
         raise
 
 
+async def _editing_proxy_path(db: AsyncSession, asset: Asset, library: Library) -> Path | None:
+    """The paired Premiere proxy of an original, if one is on the share.
+
+    Not registered as a derivative, deliberately: derivatives live on the data
+    volume and are deleted and rebuilt at will, a proxy preset may be ProRes
+    a browser cannot play, and this file belongs to the editor. It is only
+    ever read, like every original."""
+    from sqlalchemy import select
+
+    proxy = (
+        (
+            await db.execute(
+                select(Asset)
+                .where(Asset.proxy_of_id == asset.id, Asset.availability == "online")
+                .order_by(Asset.relative_path)
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if proxy is None:
+        return None
+    try:
+        found = safe_join(Path(library.root_path), proxy.relative_path)
+    except PathValidationError:
+        return None
+    return found if found.is_file() else None
+
+
 async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
     from sqlalchemy import delete
 
@@ -420,6 +458,14 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
         proxy_rel = deriv.derivative_relpath(asset.id, "proxy", "mp4")
         proxy = data_dir / proxy_rel
         has_proxy = proxy.is_file()
+        if not has_proxy:
+            # The editor's own proxy, when Premiere made one, stands in for
+            # ours: a fraction of the 4K original's bytes over the share, and
+            # frame-for-frame the same timeline, so the scene times hold.
+            editing_proxy = await _editing_proxy_path(db, asset, library)
+            if editing_proxy is not None:
+                proxy, has_proxy = editing_proxy, True
+                log.info("frames.from_editing_proxy", asset_id=str(asset.id))
         decode_from = proxy if has_proxy else path
 
         scene_times: list[float] = []
