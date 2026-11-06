@@ -3,6 +3,38 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-05 (night) — bulk tag review
+
+Asked for: a way to review tag suggestions in bulk.
+
+- **The Tags page answers many at once**, the way face review already did:
+  the queue is strongest first, so **↑ down to here** draws the line,
+  **shift-click** takes a range, **Select all** takes the queue; a bar pinned
+  to the foot of the screen answers the selection — **Yes**, **No**, or
+  **Yes to these, no to the other N** — and **Y / N / Esc** work from the
+  keyboard. The whole queue is listed (up to 200), not the first sixty.
+- **One request, one re-learn.** `POST /tags/{id}/decide` takes lists to
+  accept and reject. Answering tile by tile queued a re-learn per answer —
+  and since this evening a re-learn scores the whole library, so a sixty-tile
+  queue was sixty library passes. Only suggestions still waiting change;
+  anything answered elsewhere in the meantime, or tagged by hand, is left
+  alone and reported as skipped.
+- **Claude can too:** `decide_tags` on the MCP connector records many answers
+  on one tag ("yes to all of these except the third") with the same rules.
+- Reviewed adversarially (three reviewers, three skeptics a finding): four
+  confirmed, all fixed. The "still waiting" check and the write are one
+  conditional `UPDATE` (reading first let an answer made at the same moment
+  elsewhere be overturned); a single Yes no longer wipes a bulk selection
+  being built; shift-click anchors on a file, not a position that shifts as
+  tiles leave; a slow answer cannot land on the next tag opened; Esc that
+  closes the Manage menu no longer clears the selection.
+- Seen in the browser on the seeded catalogue: down-to-here then **Y**
+  confirmed four and they left the queue; shift-click then **N** rejected a
+  range of three; a single Yes kept a three-tile selection; nothing wider
+  than 375 px. Server suite green (1088; VM gate on lint, types and the tag
+  and MCP suites). Docs: [tagging.md](tagging.md) "Answer them in bulk",
+  [mcp.md](mcp.md).
+
 ### 2026-11-05 (evening) — QA, security and UI review; video for Cowork; every talking clip transcribed
 
 Asked for: a QA, security and UI review; faster, better search for client

@@ -188,6 +188,14 @@ class DecideResult(BaseModel):
     note: str
 
 
+class BulkDecideResult(BaseModel):
+    tag: str
+    accepted: int
+    rejected: int
+    skipped: int = Field(description="Named but not waiting for an answer; left as they were")
+    note: str
+
+
 class ReviewStatus(BaseModel):
     configured: bool
     model: str
@@ -906,6 +914,56 @@ def build_server() -> MCPServer:
             source=source,
             note="Recorded; the learner re-runs with this as "
             + ("a positive example." if accept else "negative evidence."),
+        )
+
+    @server.tool()
+    async def decide_tags(
+        tag: str, accept: list[str] | None = None, reject: list[str] | None = None
+    ) -> BulkDecideResult:
+        """Record the operator's answers on many suggestions of ONE tag at
+        once — "yes to all of these except the third and fifth". `accept` and
+        `reject` are asset ids from review_queue. Only suggestions still
+        waiting change; anything already decided is left alone. The learner
+        re-runs once afterwards. Only do this with the operator's own
+        answers. Needs the 'tag' scope."""
+        from framefound.api.v1.tags import MAX_BULK_DECISIONS, decide_many
+
+        who = principal()
+        _require_tag_scope(who)
+        ids: dict[str, list[uuid.UUID]] = {"accept": [], "reject": []}
+        for key, given in (("accept", accept or []), ("reject", reject or [])):
+            if len(given) > MAX_BULK_DECISIONS:
+                raise ToolError(f"At most {MAX_BULK_DECISIONS} ids in {key}")
+            for raw in given:
+                try:
+                    ids[key].append(uuid.UUID(raw))
+                except ValueError:
+                    raise ToolError(f"{raw!r} is not an asset id") from None
+        async with open_session() as db:
+            found = await _tag_by_name(db, tag)
+            if found is None:
+                raise ToolError(f"No tag called {tag!r}. list_tags shows the vocabulary.")
+            try:
+                result = await decide_many(db, found.id, ids["accept"], ids["reject"], who.user_id)
+            except (LookupError, ValueError) as err:
+                raise ToolError(str(err)) from None
+            name = found.name
+        log.info(
+            "mcp.decided_many",
+            tag=name,
+            accepted=result.accepted,
+            rejected=result.rejected,
+            by=who.token_name,
+        )
+        note = f"{result.accepted} confirmed, {result.rejected} rejected."
+        if result.skipped:
+            note += f" {result.skipped} were not waiting for an answer and were left alone."
+        return BulkDecideResult(
+            tag=name,
+            accepted=result.accepted,
+            rejected=result.rejected,
+            skipped=result.skipped,
+            note=note,
         )
 
     @server.tool()

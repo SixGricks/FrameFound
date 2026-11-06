@@ -240,6 +240,7 @@ async def test_the_tools_are_what_the_docs_promise(env: dict) -> None:
         "review_queue",
         "propose_tags",
         "decide_tag",
+        "decide_tags",
         "api_review_status",
         "start_api_review",
         # Making video (framefound/mcp/video.py; test_mcp_video.py).

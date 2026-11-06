@@ -21,6 +21,24 @@ example. No records a rejection, and the same wrong guess is never offered
 again. The **Tags** page has a review queue if you would rather work through
 them in bulk than one asset at a time.
 
+**Answer them in bulk.** On the Tags page, press **Review** beside a tag. The
+queue is strongest first, so there is usually one line between right and
+wrong — draw it, then answer everything above it at once:
+
+- **↑ down to here** on a tile selects it and every stronger one above it;
+  **shift-click** selects a range; a plain click adds or removes one;
+  **Select all** takes the whole queue.
+- The bar at the foot of the screen answers the selection: **Yes**, **No**,
+  or **Yes to these, no to the other N** — the whole queue in one go, the
+  selected tiles yes and every other tile *shown* no. **Y** and **N** on the
+  keyboard do the same; **Esc** clears the selection.
+
+One request answers them all and the tag re-learns once. Only suggestions
+still waiting change: anything already answered elsewhere — on the asset
+page, in another tab, by Claude in chat — is left exactly as it was. Claude
+can do the same through the MCP connector (`decide_tags`), when you tell it
+your answers.
+
 **Correcting it is the feature**, not a workaround. The match gets sharper each
 time you answer.
 

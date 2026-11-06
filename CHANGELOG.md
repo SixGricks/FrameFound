@@ -6,6 +6,12 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (2026-11-05, night)
+- Bulk tag review on the Tags page: down-to-here, shift-click ranges,
+  select all, a pinned Yes / No / "yes to these, no to the rest" bar and
+  Y / N / Esc keys. `POST /tags/{id}/decide` answers many suggestions in one
+  request and re-learns the tag once; `decide_tags` on the MCP connector.
+
 ### Changed (2026-11-05 QA, security and UI review)
 - Search: one fused, ranked *Best matches* list (tag, picture, speech,
   name) with reasons, the moment to open and the matched video frame;

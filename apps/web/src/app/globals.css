@@ -1584,3 +1584,71 @@ small a {
     flex-wrap: wrap;
   }
 }
+
+/* ---- 2026-11-05 bulk tag review ------------------------------------------ */
+
+/* The Tags review grid selects like the face grid (people/[id]): the frame
+   is a button that toggles the tile, "down to here" draws the line under a
+   ranked queue, and the bar above answers the whole selection at once. */
+.tagpick[data-selected="true"] {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber), var(--shadow);
+}
+.tagpick[data-selected="true"] .tile-meta {
+  background: var(--amber-soft);
+}
+.tagpick-frame {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.tagpick-frame:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
+/* Sits at the foot of the picture, clear of the match % in the top corner;
+   hidden until the tile is hovered or the control has keyboard focus. */
+.tagpick-downto {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius);
+  background: rgba(11, 10, 9, 0.82);
+  color: var(--paper);
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.tagpick:hover .tagpick-downto,
+.tagpick-downto:focus-visible {
+  opacity: 1;
+}
+/* The answer bar is pinned to the foot of the screen while a selection
+   exists: pinned to the top it slid under the sticky site header (62 px on
+   a desktop, taller on a phone), and the foot is where a thumb is. */
+.tagreview-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  background: rgba(18, 16, 14, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+/* Touch: nothing hovers, so the control is shown outright — never an
+   invisible button over the picture that a tap could hit by accident. */
+@media (hover: none) {
+  .tagpick-downto {
+    opacity: 1;
+  }
+}

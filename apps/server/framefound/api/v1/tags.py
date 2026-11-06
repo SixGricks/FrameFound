@@ -14,7 +14,7 @@ from datetime import datetime
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.ai.tagging import slugify
@@ -53,6 +53,29 @@ class AddTagRequest(BaseModel):
 
 class TagDecision(BaseModel):
     accept: bool
+
+
+# The most assets one bulk answer may name. A tag's queue holds at most a
+# few hundred (MAX_PENDING_PER_TAG plus arrivals), so this is never the
+# thing that stops a real review — only a runaway client.
+MAX_BULK_DECISIONS = 500
+
+
+class BulkDecision(BaseModel):
+    """Many answers about one tag at once: the assets that are it, and the
+    assets that are not. Either list may be empty, not both."""
+
+    accept: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_BULK_DECISIONS)
+    reject: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_BULK_DECISIONS)
+
+
+class BulkDecisionResult(BaseModel):
+    accepted: int
+    rejected: int
+    # Named but not waiting for an answer: answered elsewhere in the
+    # meantime (another tab, the asset page, Claude in chat), or never a
+    # suggestion of this tag. Left exactly as they were.
+    skipped: int
 
 
 class PendingSuggestion(BaseModel):
@@ -297,6 +320,88 @@ async def decide_suggestion(
     await db.commit()
     _relearn(tag_id)
     return await tags_for_asset(asset_id, user, db)
+
+
+async def decide_many(
+    db: AsyncSession,
+    tag_id: uuid.UUID,
+    accept: list[uuid.UUID],
+    reject: list[uuid.UUID],
+    user_id: uuid.UUID | None,
+) -> BulkDecisionResult:
+    """Answer many suggestions of one tag in one transaction, then re-learn
+    the tag once.
+
+    Shared by the Tags page and the MCP connector. Answering one at a time
+    queued a full re-learn per answer — and a re-learn now scores the whole
+    library — so sixty answers were sixty library passes for one decision's
+    worth of change.
+
+    Only rows still waiting (`source == "suggested"`) change. Anything the
+    operator already settled — a manual tag, a yes, a no — is left alone even
+    if a stale page names it, because a bulk click must never overturn a
+    decision someone made one at a time.
+    """
+    both = set(accept) & set(reject)
+    if both:
+        raise ValueError(f"{len(both)} item(s) are in both lists; answer each once")
+    if not accept and not reject:
+        raise ValueError("Nothing to decide: give assets to accept or reject")
+    if await db.get(Tag, tag_id) is None:
+        raise LookupError("No such tag")
+
+    named = len(set(accept) | set(reject))
+
+    async def settle(ids: list[uuid.UUID], **values: object) -> int:
+        """One conditional UPDATE: the "still waiting" check and the write are
+        the same statement. Reading the rows first and writing them by id
+        let an answer committed in between (the asset page, another tab,
+        Claude) be overwritten; under READ COMMITTED Postgres re-checks this
+        WHERE after any row lock it waits on, so a row settled meanwhile is
+        simply not matched — and counted as skipped."""
+        if not ids:
+            return 0
+        result = await db.execute(
+            update(AssetTag)
+            .where(
+                AssetTag.tag_id == tag_id,
+                AssetTag.asset_id.in_(ids),
+                AssetTag.source == "suggested",
+            )
+            .values(created_by=user_id, **values)
+            .returning(AssetTag.asset_id)
+            .execution_options(synchronize_session=False)
+        )
+        return len(result.all())
+
+    accepted = await settle(list(set(accept)), source="confirmed")
+    rejected = await settle(list(set(reject)), source="rejected", confidence=None)
+    await db.commit()
+    if accepted or rejected:
+        _relearn(tag_id)
+    skipped = named - accepted - rejected
+    log.info(
+        "tagging.bulk_decided",
+        tag_id=str(tag_id),
+        accepted=accepted,
+        rejected=rejected,
+        skipped=skipped,
+    )
+    return BulkDecisionResult(accepted=accepted, rejected=rejected, skipped=skipped)
+
+
+@router.post("/{tag_id}/decide", response_model=BulkDecisionResult)
+async def decide_suggestions_in_bulk(
+    tag_id: uuid.UUID, body: BulkDecision, user: CurrentUser, db: DbDep
+) -> BulkDecisionResult:
+    """Answer many of one tag's suggestions at once (the Tags page's bulk
+    review). Both answers teach; the tag is re-learned once."""
+    try:
+        return await decide_many(db, tag_id, body.accept, body.reject, user.id)
+    except LookupError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
 
 
 @router.get("/{tag_id}/pending", response_model=list[PendingSuggestion])

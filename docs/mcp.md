@@ -133,6 +133,7 @@ not fit its platform.
 | `review_queue` | Suggestions awaiting your judgement, strongest first, by tag or by who suggested | read |
 | `propose_tags` | Queue tag suggestions for one item, marked as Claude's | tag |
 | `decide_tag` | Record *your* yes or no on one tag for one item; the learner re-runs | tag |
+| `decide_tags` | Record many answers on one tag at once ("yes to all of these except the third"); only suggestions still waiting change; the learner re-runs once | tag |
 | `api_review_status` | The server-side reviewer: key, budget, what is left, last run | read |
 | `start_api_review` | Have the server review a batch with the Claude API, under the budget (admin accounts only) | tag |
 | `path_profiles` | Each computer's path profile (Windows PC, Mac) and where it sees each library | read |

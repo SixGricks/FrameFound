@@ -1067,8 +1067,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accept }),
     }),
-  pendingForTag: (tagId: string) =>
-    request<PendingSuggestion[]>(`/tags/${tagId}/pending`),
+  /** The whole queue: a tag holds at most a couple of hundred waiting. */
+  pendingForTag: (tagId: string, limit = 200) =>
+    request<PendingSuggestion[]>(`/tags/${tagId}/pending?limit=${limit}`),
+  /** Many answers about one tag in one request; the tag re-learns once. */
+  decideTags: (tagId: string, body: { accept: string[]; reject: string[] }) =>
+    request<{ accepted: number; rejected: number; skipped: number }>(`/tags/${tagId}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   relearnTag: (tagId: string) =>
     request<{ status: string }>(`/tags/${tagId}/relearn`, { method: "POST" }),
   claudeReviewStatus: () => request<ClaudeReviewStatus>("/tags/review/claude"),

@@ -126,7 +126,12 @@ export default function Shell({ children }: { children: ReactNode }) {
       }
     }
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") {
+        // Marked as used, so a page listening for Esc (the Tags review
+        // clears its selection on it) leaves this one to the menu.
+        event.preventDefault();
+        setMenuOpen(false);
+      }
     }
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKey);
