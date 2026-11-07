@@ -20,7 +20,14 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from test_scan import db  # noqa: F401 - fixture
 
-from framefound.api.v1.selects import MomentIn, SelectsError, SelectsRequest, assemble
+from framefound.api.v1.selects import (
+    TITLE_MAX,
+    MomentIn,
+    SelectsError,
+    SelectsRequest,
+    assemble,
+    short_title,
+)
 from framefound.db.models import (
     Asset,
     Frame,
@@ -425,3 +432,16 @@ def test_the_subclip_probe_fixture_is_well_formed() -> None:
     root = ET.parse(found[0]).getroot()  # noqa: S314 - our own fixture
     names = [clip.findtext("name") for clip in root.iter("clip")]
     assert names == ["C master MVI_4513", "A plain in-out 10-20s", "B subclip of C 10-20s"]
+
+
+def test_a_long_search_still_makes_a_reel() -> None:
+    """The search page titles the reel with the query, and a search may be
+    200 characters where a title may be 120. The title is shortened at a word,
+    never refused (Codex review, PR 41)."""
+    query = "golfer lines up a long putt on the eighteenth green at sunset " * 3
+    request = SelectsRequest(title=query.strip(), query=query.strip()[:200])
+    assert len(request.title) <= TITLE_MAX
+    assert request.title.endswith("…")
+    assert query.startswith(request.title.removesuffix("…")), "cut at a word, not mid-word"
+    assert short_title("  Ledge   Rock  ") == "Ledge Rock"
+    assert short_title("x" * 300) == "x" * (TITLE_MAX - 1) + "…"

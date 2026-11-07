@@ -308,3 +308,35 @@ async def test_a_crop_box_is_returned_rather_than_an_image(env: dict) -> None:
 async def test_people_requires_a_session(env: dict) -> None:
     await env["client"].post("/api/v1/auth/logout")
     assert (await env["client"].get("/api/v1/people")).status_code == 401
+
+
+async def test_faces_on_a_paired_proxy_are_neither_shown_nor_counted(env: dict) -> None:
+    """A proxy processed before it was paired keeps its faces, which are the
+    original's faces again. The grid hides them, so the counts, the cover and
+    bulk confirm must leave them out too — or the person advertises a queue
+    the page cannot clear (Codex review, PR 41)."""
+    async with env["factory"]() as db:
+        assets = (await db.execute(select(Asset).order_by(Asset.relative_path))).scalars().all()
+        await db.execute(
+            sql_update(Asset).where(Asset.id == assets[0].id).values(proxy_of_id=assets[1].id)
+        )
+        # The proxy's face is the detector's most confident: the cover pick
+        # would take it first if proxies were not left out.
+        await db.execute(
+            sql_update(Face).where(Face.asset_id == assets[0].id).values(detection_score=0.99)
+        )
+        await db.commit()
+    url = f"/api/v1/people/{env['person_id']}"
+
+    listing = (await env["client"].get("/api/v1/people")).json()
+    assert listing[0]["pending_count"] == 2
+    assert listing[0]["cover"]["face_id"] != env["faces"][0]
+
+    detail = (await env["client"].get(url)).json()
+    assert detail["pending_count"] == 2
+    assert {face["face_id"] for face in detail["faces"]} == set(env["faces"][1:])
+
+    await env["client"].post(f"{url}/confirm-above", json={"min_similarity": 0.0})
+    async with env["factory"]() as db:
+        proxy_face = await db.get(Face, uuidlib.UUID(env["faces"][0]))
+        assert proxy_face is not None and proxy_face.source == "detected"

@@ -95,6 +95,15 @@ class FaceSettingsUpdate(BaseModel):
     suggest_across_libraries: bool | None = None
 
 
+def _reviewable() -> Any:
+    """Faces not on a paired Premiere proxy (ADR-0021). A proxy processed
+    before it was paired keeps its face rows, but they are the original's
+    faces again and the person's grid never shows them; every count, cover,
+    suggestion and bulk action uses this so they describe the faces the
+    page can actually show."""
+    return Face.asset_id.not_in(select(Asset.id).where(Asset.proxy_of_id.is_not(None)))
+
+
 def _rows(result: object) -> int:
     """Affected-row count. SQLAlchemy types execute() as Result, which has no
     rowcount; an UPDATE actually returns a CursorResult."""
@@ -139,7 +148,7 @@ async def list_people(
     """
     totals = (
         select(Face.person_id.label("pid"), func.count().label("total"))
-        .where(Face.person_id.is_not(None), Face.source != "rejected")
+        .where(Face.person_id.is_not(None), Face.source != "rejected", _reviewable())
         .group_by(Face.person_id)
         .subquery()
     )
@@ -161,7 +170,7 @@ async def list_people(
         for pid, source, n in (
             await db.execute(
                 select(Face.person_id, Face.source, func.count())
-                .where(Face.person_id.in_(ids))
+                .where(Face.person_id.in_(ids), _reviewable())
                 .group_by(Face.person_id, Face.source)
             )
         ).all()
@@ -206,7 +215,7 @@ async def _cover_faces(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, F
     )
     ranked = (
         select(Face.id.label("face_id"), rank)
-        .where(Face.person_id.in_(missing), Face.source != "rejected")
+        .where(Face.person_id.in_(missing), Face.source != "rejected", _reviewable())
         .subquery()
     )
     rows = (
@@ -301,7 +310,7 @@ async def _confirmed_counts(db: DbDep, ids: list[uuid.UUID]) -> dict[uuid.UUID, 
     rows = (
         await db.execute(
             select(Face.person_id, func.count())
-            .where(Face.person_id.in_(ids), Face.source == "confirmed")
+            .where(Face.person_id.in_(ids), Face.source == "confirmed", _reviewable())
             .group_by(Face.person_id)
         )
     ).all()
@@ -320,7 +329,11 @@ async def _covers(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, FaceOu
         await db.execute(
             select(Face, Asset)
             .join(Asset, Asset.id == Face.asset_id)
-            .where(Face.id.in_({face_id for _, face_id in pairs}), Face.source != "rejected")
+            .where(
+                Face.id.in_({face_id for _, face_id in pairs}),
+                Face.source != "rejected",
+                _reviewable(),
+            )
         )
     ).all()
     faces = {face.id: (face, asset) for face, asset in rows}
@@ -374,7 +387,11 @@ async def get_person(
         await db.execute(
             select(func.count())
             .select_from(Face)
-            .where(Face.suggested_person_id == person_id, Face.suggestion_state == "pending")
+            .where(
+                Face.suggested_person_id == person_id,
+                Face.suggestion_state == "pending",
+                _reviewable(),
+            )
         )
     ).scalar_one()
     # Totals over every face, not the page: counting the limited, possibly
@@ -385,7 +402,7 @@ async def get_person(
         for source_name, count in (
             await db.execute(
                 select(Face.source, func.count())
-                .where(Face.person_id == person_id)
+                .where(Face.person_id == person_id, _reviewable())
                 .group_by(Face.source)
             )
         ).all()
@@ -535,6 +552,7 @@ async def confirm_above(
             Face.person_id == person_id,
             Face.source == "detected",
             body.restrict(Face.id, Face.similarity),
+            _reviewable(),
         )
         .values(source="confirmed")
     )
@@ -597,6 +615,7 @@ async def discover_more(
     unnamed = select(Person.id).where(Person.name == "").scalar_subquery()
     eligible = (
         Face.embedding.is_not(None),
+        _reviewable(),
         # Only faces that are nobody yet: loose, or in a cluster no one has
         # named. A face already attributed to a *named* person is somebody
         # else's answer and is not up for grabs here.
@@ -644,6 +663,7 @@ async def discover_more(
             .select_from(Face)
             .where(
                 Face.embedding.is_not(None),
+                _reviewable(),
                 or_(Face.person_id.is_(None), Face.person_id.in_(unnamed)),
             )
         )
@@ -722,6 +742,7 @@ async def accept_suggestions(
             Face.suggested_person_id == person_id,
             Face.suggestion_state == "pending",
             body.restrict(Face.id, Face.suggested_similarity),
+            _reviewable(),
         )
         .values(
             person_id=person_id,

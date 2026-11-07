@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,8 +58,23 @@ class MomentIn(BaseModel):
     reason: str = Field(default="", max_length=500, description="Becomes the marker comment")
 
 
+TITLE_MAX = 120
+
+
+def short_title(raw: str, limit: int = TITLE_MAX) -> str:
+    """A title that fits: cut at the last word before `limit`, with an
+    ellipsis. The search page titles a reel with its query, which may be
+    longer than a bin name should be."""
+    text = " ".join(raw.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    head = cut.rsplit(" ", 1)[0] if " " in cut else cut
+    return head.rstrip(" ,;:-–") + "…"
+
+
 class SelectsRequest(BaseModel):
-    title: str = Field(default="FrameFound", max_length=120)
+    title: str = Field(default="FrameFound", max_length=TITLE_MAX)
     profile: str = Field(default="", max_length=100)
     query: str = Field(default="", max_length=200)
     library_id: uuid.UUID | None = None
@@ -70,6 +85,11 @@ class SelectsRequest(BaseModel):
     still_s: float = Field(default=nle.DEFAULT_STILL_S, ge=0.5, le=60)
     order: nle.Order = "rank"
     limit: int = Field(default=25, ge=1, le=MAX_SEARCH_RESULTS)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _fit_title(cls, value: Any) -> Any:
+        return short_title(value) if isinstance(value, str) else value
 
 
 class SelectOut(BaseModel):
