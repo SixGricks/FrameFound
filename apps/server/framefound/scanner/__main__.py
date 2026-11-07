@@ -30,6 +30,8 @@ from framefound.db.engine import session_factory
 from framefound.db.models import Asset, Derivative, Face, Frame, Job, Library, Scan, Transcript
 from framefound.logging import configure_logging
 from framefound.scanner import scan as scan_engine
+from framefound.scanner.proxies import is_proxy_path
+from framefound.scanner.proxies import reconcile as reconcile_proxies
 from framefound.scanner.stability import is_file_stable
 from framefound.scanner.watcher import WatchQueue, observe_file, start_observer
 from framefound.storage.reachability import unreachable_reason
@@ -231,9 +233,17 @@ async def _drain_watch_queue(
         else:
             asset = await scan_engine._apply_change(db, root, existing, st, now)
             action = "changed" if asset else "deferred"
+        queue_ids = [asset.id] if asset is not None else []
+        if asset is not None and (
+            asset.proxy_of_id is not None or is_proxy_path(asset.relative_path, library)
+        ):
+            # An editing proxy pairs now if its original is already here;
+            # one that arrived first waits for the next scan to be paired,
+            # and is processed meanwhile only because it may be the only copy.
+            _plan, queue_ids = await reconcile_proxies(db, library, [asset])
         await db.commit()
-        if asset is not None:
-            enqueue(asset.id)
+        for asset_id in queue_ids:
+            enqueue(asset_id)
         log.info("watcher.processed", path=candidate.relative_path, action=action)
 
 
@@ -284,7 +294,7 @@ async def _queue_busy(name: str) -> bool:
 
         from framefound.config import get_settings
 
-        client = aioredis.from_url(  # type: ignore[no-untyped-call]
+        client = aioredis.from_url(  # type: ignore[no-untyped-call, unused-ignore]
             get_settings().redis_url, socket_connect_timeout=2
         )
         try:

@@ -168,6 +168,13 @@ class Library(Base):
     generate_proxies: Mapped[bool] = mapped_column(Boolean, default=True)
     proxy_resolution: Mapped[int] = mapped_column(default=1080)
     transcribe_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Where an editing application writes its proxies, relative to the
+    # original's folder: Premiere's ingest writes `Proxies/<stem>_Proxy.<ext>`.
+    # A file matching it beside an original is that original's proxy, not a
+    # second asset (scanner/proxies.py, migration 0028). Empty turns pairing off.
+    proxy_pattern: Mapped[str] = mapped_column(
+        String(200), default="Proxies/{stem}_Proxy", server_default="Proxies/{stem}_Proxy"
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -263,7 +270,26 @@ class Asset(Base):
     description: Mapped[str | None] = mapped_column(Text, default=None)
     custom_fields: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    # Set on an editing proxy (Premiere's `Proxies/<stem>_Proxy.mp4`) whose
+    # original is catalogued: the row records the pairing, so the original can
+    # be decoded from the smaller file, and is otherwise out of the catalogue —
+    # not searched, tagged, transcribed or embedded. Cleared when the original
+    # goes, because then the proxy is the only copy (scanner/proxies.py).
+    proxy_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"), default=None, index=True
+    )
+
     library: Mapped[Library] = relationship(back_populates="assets")
+
+
+# processing_status of a paired proxy. The maintenance sweeps select on
+# "pending" and "ready", so a paired proxy is never re-queued by them.
+PAIRED_PROXY_STATUS = "paired_proxy"
+
+
+def catalogued() -> Any:
+    """The condition every catalogue listing applies: not a paired proxy."""
+    return Asset.proxy_of_id.is_(None)
 
 
 DERIVATIVE_KINDS = ("thumbnail", "preview", "poster", "proxy", "waveform")

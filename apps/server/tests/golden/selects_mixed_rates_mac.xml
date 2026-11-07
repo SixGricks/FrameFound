@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <project>
+    <name>Irrigation selects</name>
+    <children>
+      <bin>
+        <name>Irrigation selects</name>
+        <children>
+          <clip id="clip-1">
+            <name>MVI_4513.MP4</name>
+            <duration>3596</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>TRUE</ntsc>
+            </rate>
+            <in>-1</in>
+            <out>-1</out>
+            <file id="file-1">
+              <name>MVI_4513.MP4</name>
+              <pathurl>file://localhost/Volumes/GELCO/Pete%20Dye/2025%2010%2028/MVI_4513.MP4</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>TRUE</ntsc>
+              </rate>
+              <duration>3596</duration>
+              <media>
+                <video>
+                  <duration>3596</duration>
+                  <samplecharacteristics>
+                    <width>1920</width>
+                    <height>1080</height>
+                  </samplecharacteristics>
+                </video>
+                <audio>
+                  <channelcount>2</channelcount>
+                </audio>
+              </media>
+            </file>
+            <marker>
+              <name>Pete Dye 2025-10-28 – The mainline was the first thing…</name>
+              <comment>The mainline was the first thing we replaced this fall.</comment>
+              <in>299</in>
+              <out>-1</out>
+            </marker>
+          </clip>
+          <clip id="clip-2">
+            <name>DJI_0042.MP4</name>
+            <duration>1438</duration>
+            <rate>
+              <timebase>24</timebase>
+              <ntsc>TRUE</ntsc>
+            </rate>
+            <in>-1</in>
+            <out>-1</out>
+            <file id="file-2">
+              <name>DJI_0042.MP4</name>
+              <pathurl>file://localhost/Volumes/GELCO/Pete%20Dye/2025%2010%2028/DJI_0042.MP4</pathurl>
+              <rate>
+                <timebase>24</timebase>
+                <ntsc>TRUE</ntsc>
+              </rate>
+              <duration>1438</duration>
+              <media>
+                <video>
+                  <duration>1438</duration>
+                  <samplecharacteristics>
+                    <width>3840</width>
+                    <height>2160</height>
+                  </samplecharacteristics>
+                </video>
+              </media>
+            </file>
+            <marker>
+              <name>Pete Dye 2025-10-28 – visual: mainline irrigation</name>
+              <comment>visual: mainline irrigation</comment>
+              <in>719</in>
+              <out>-1</out>
+            </marker>
+          </clip>
+        </children>
+      </bin>
+      <sequence id="sequence-1">
+        <name>Irrigation selects</name>
+        <duration>539</duration>
+        <rate>
+          <timebase>30</timebase>
+          <ntsc>TRUE</ntsc>
+        </rate>
+        <media>
+          <video>
+            <format>
+              <samplecharacteristics>
+                <width>1920</width>
+                <height>1080</height>
+                <rate>
+                  <timebase>30</timebase>
+                  <ntsc>TRUE</ntsc>
+                </rate>
+              </samplecharacteristics>
+            </format>
+            <track>
+              <clipitem id="clipitem-v1">
+                <name>MVI_4513.MP4</name>
+                <duration>3596</duration>
+                <rate>
+                  <timebase>30</timebase>
+                  <ntsc>TRUE</ntsc>
+                </rate>
+                <start>0</start>
+                <end>239</end>
+                <in>269</in>
+                <out>508</out>
+                <file id="file-1" />
+                <marker>
+                  <name>Pete Dye 2025-10-28 – The mainline was the first thing…</name>
+                  <comment>The mainline was the first thing we replaced this fall.</comment>
+                  <in>299</in>
+                  <out>-1</out>
+                </marker>
+              </clipitem>
+              <clipitem id="clipitem-v2">
+                <name>DJI_0042.MP4</name>
+                <duration>1438</duration>
+                <rate>
+                  <timebase>24</timebase>
+                  <ntsc>TRUE</ntsc>
+                </rate>
+                <start>239</start>
+                <end>539</end>
+                <in>599</in>
+                <out>839</out>
+                <file id="file-2" />
+                <marker>
+                  <name>Pete Dye 2025-10-28 – visual: mainline irrigation</name>
+                  <comment>visual: mainline irrigation</comment>
+                  <in>719</in>
+                  <out>-1</out>
+                </marker>
+              </clipitem>
+            </track>
+          </video>
+          <audio>
+            <track>
+              <clipitem id="clipitem-a1-1">
+                <name>MVI_4513.MP4</name>
+                <duration>3596</duration>
+                <rate>
+                  <timebase>30</timebase>
+                  <ntsc>TRUE</ntsc>
+                </rate>
+                <start>0</start>
+                <end>239</end>
+                <in>269</in>
+                <out>508</out>
+                <file id="file-1" />
+                <marker>
+                  <name>Pete Dye 2025-10-28 – The mainline was the first thing…</name>
+                  <comment>The mainline was the first thing we replaced this fall.</comment>
+                  <in>299</in>
+                  <out>-1</out>
+                </marker>
+                <sourcetrack>
+                  <mediatype>audio</mediatype>
+                  <trackindex>1</trackindex>
+                </sourcetrack>
+              </clipitem>
+            </track>
+            <track>
+              <clipitem id="clipitem-a2-1">
+                <name>MVI_4513.MP4</name>
+                <duration>3596</duration>
+                <rate>
+                  <timebase>30</timebase>
+                  <ntsc>TRUE</ntsc>
+                </rate>
+                <start>0</start>
+                <end>239</end>
+                <in>269</in>
+                <out>508</out>
+                <file id="file-1" />
+                <marker>
+                  <name>Pete Dye 2025-10-28 – The mainline was the first thing…</name>
+                  <comment>The mainline was the first thing we replaced this fall.</comment>
+                  <in>299</in>
+                  <out>-1</out>
+                </marker>
+                <sourcetrack>
+                  <mediatype>audio</mediatype>
+                  <trackindex>2</trackindex>
+                </sourcetrack>
+              </clipitem>
+            </track>
+          </audio>
+        </media>
+      </sequence>
+    </children>
+  </project>
+</xmeml>

@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from sqlalchemy import Select, func, literal, or_, select, text
 
 from framefound.auth.deps import CurrentUser, DbDep
-from framefound.db.models import Asset, AssetTag, Tag, Transcript, TranscriptSegment
+from framefound.db.models import Asset, AssetTag, Tag, Transcript, TranscriptSegment, catalogued
 from framefound.search.ranking import fuse
 
 log = structlog.get_logger()
@@ -200,7 +200,7 @@ def _filtered(
 ) -> Any:  # a Select; typed loosely: SQLAlchemy 2.0 and 2.1 spell its generics differently
     """The filters every retriever shares. Offline assets never appear: a
     result the operator cannot open is worse than no result."""
-    stmt = stmt.where(Asset.availability == "online")
+    stmt = stmt.where(Asset.availability == "online", catalogued())
     if library_id is not None:
         stmt = stmt.where(Asset.library_id == library_id)
     if media_type is not None:
@@ -804,8 +804,10 @@ async def similar_assets(
     scored: list[tuple[int, Asset, float]] = []
     if db.get_bind().dialect.name == "postgresql":
         distance = Frame.embedding.cosine_distance(reference.embedding).label("distance")
-        nearest_frames = select(Frame.asset_id, Frame.ts_ms, distance).where(
-            Frame.embedding.is_not(None), Frame.asset_id != asset_id
+        nearest_frames = (
+            select(Frame.asset_id, Frame.ts_ms, distance)
+            .join(Asset, Asset.id == Frame.asset_id)
+            .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id, catalogued())
         )
         scored = await _nearest_assets_pg(db, nearest_frames, limit)
     else:
@@ -813,7 +815,7 @@ async def similar_assets(
             await db.execute(
                 select(Frame, Asset)
                 .join(Asset, Asset.id == Frame.asset_id)
-                .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id)
+                .where(Frame.embedding.is_not(None), Frame.asset_id != asset_id, catalogued())
             )
         ).all()
         ranked = sorted(

@@ -434,6 +434,39 @@ h2 {
   object-fit: cover;
   display: block;
 }
+/* Best matches with a tick box, for Send to Premiere. The box sits outside
+   the link so ticking a row never opens it. */
+.hit-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.hit-row > .hit {
+  flex: 1;
+  min-width: 0;
+}
+.hit-pick {
+  flex: none;
+  display: flex;
+  padding: 18px 2px 0 4px;
+  cursor: pointer;
+}
+.hit-pick input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ember);
+  cursor: pointer;
+}
+.selectbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.selectbar .select {
+  max-width: 100%;
+}
 .hit-body {
   min-width: 0;
   flex: 1;

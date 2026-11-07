@@ -3,6 +3,49 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-06 — Premiere proxies paired; selects to Premiere
+
+Asked for: stop cataloguing Premiere's proxies as footage, and hand Premiere
+editable selects from a search — never a rendered video. ADR-0021.
+
+- **Proxies are paired, not catalogued.** `Proxies/<stem>_Proxy.<ext>` beside
+  an online original (a per-library `proxy_pattern`, any case, any video
+  extension) keeps its row with `proxy_of_id` and leaves search, Browse,
+  tagging, the review queues, People, Places and every processing sweep. A
+  proxy with no original stays an asset and is released again if its original
+  goes. Scans pair as they go and a rescan changes nothing. Frame sampling and
+  scene detection decode the paired proxy instead of the 4K original when
+  FrameFound has no proxy of its own. Migration 0028.
+- **Existing rows** (33 in GELCO, one tag suggestion among them): `python -m
+  framefound.ops.pair_proxies` reports per library with sample pairs and
+  their wrong proxy dates; `--apply` links them in one transaction. Tag
+  decisions follow the footage to the original. Nothing is deleted.
+- **Selects.** One FCP7 XML: a bin of the clips with a marker at each moment
+  (the sentence said, `tag: …`, `visual: <query>`), and a `<title> selects`
+  sequence of the moments with 1 s handles clamped to the clip. Whole
+  sentences up to 20 s for speech, the detected shot up to 8 s for pictures
+  (±3 s without scene data), 4 s for a photo; overlaps merge; search or
+  shooting order; named `<Course> <date> – <reason>`. Built on `fcp7.py`
+  (now a `<project>` with a bin and sequence sharing file ids). MCP
+  `build_selects`, *Send to Premiere* on the search page (tick rows, pick
+  the computer's profile), `POST /panel/export/selects`. The web bin export
+  takes a profile too.
+- **Not confirmed: subclips.** No way to check Premiere's FCP7 subclip import
+  from here; markers plus the string-out ship, and
+  `fixtures/premiere/subclip-probe.xml` answers it in one import.
+- **Part 0:** the VM was already on `main` (1f9e721) and its MCP server lists
+  all 17 tools; the Mac mini's Claude client was holding a tool list from
+  before the 2026-11-06 00:50 UTC rebuild. `manage.sh update` pulls
+  registry images this VM does not use, so it is not the update path here.
+- Seen in the browser on the seeded catalogue: ticked a photo and a drone
+  clip, Send to Premiere produced `golf course selects.xml` at `Y:\` paths with
+  the tag on each marker; the bar wraps at 375 px. Migration 0028 up, down,
+  up on SQLite. Golden XML for a 29.97 interview with 23.976 drone, clamped
+  handles and a merge, at Windows and Mac paths.
+- **Needs the operator:** a Mac mini path profile for GELCO (none exists;
+  Libraries → GELCO → path profiles), the backfill, and the import in
+  Premiere.
+
 ### 2026-11-05 (night) — bulk tag review
 
 Asked for: a way to review tag suggestions in bulk.

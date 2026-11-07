@@ -18,6 +18,7 @@ from framefound.auth import service as auth_service
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, client_ip, require_admin
 from framefound.db.models import Asset, Library, PathMapping, Scan
 from framefound.scanner.paths import PathValidationError, validate_library_root
+from framefound.scanner.proxies import DEFAULT_PATTERN, ProxyPattern
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -89,6 +90,15 @@ class LibraryUpdate(BaseModel):
     generate_proxies: bool | None = None
     proxy_resolution: int | None = Field(default=None, ge=360, le=2160)
     transcribe_enabled: bool | None = None
+    # Where editors' proxies sit beside an original; "" turns pairing off.
+    proxy_pattern: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _proxy_pattern_parses(self) -> "LibraryUpdate":
+        if self.proxy_pattern is not None:
+            ProxyPattern.parse(self.proxy_pattern)  # ValueError -> 422 with the reason
+            self.proxy_pattern = self.proxy_pattern.strip().strip("/")
+        return self
 
 
 class LibraryOut(BaseModel):
@@ -104,6 +114,7 @@ class LibraryOut(BaseModel):
     generate_proxies: bool
     proxy_resolution: int
     transcribe_enabled: bool
+    proxy_pattern: str = DEFAULT_PATTERN
     last_scan_at: datetime | None
     asset_count: int = 0
 

@@ -15,7 +15,10 @@ cut a sixty-second piece" to a timeline an editor opens:
    *looks* at a shot with `view_media(id, ts_ms=...)`, which returns the
    picture itself; a signed `frame_url` is only a link for a person, since
    Claude Desktop's own fetching runs off-machine and cannot reach the LAN.
-4. **Something to edit.** `build_rough_cut` writes an FCP7 XML *sequence*
+4. **Selects to review.** `build_selects` turns a search (or chosen moments)
+   into a bin with a marker on each moment and a "Selects" string-out with
+   handles — the step between a pile of clips and an edit.
+5. **Something to edit.** `build_rough_cut` writes an FCP7 XML *sequence*
    (Premiere Pro and DaVinci Resolve open it; Final Cut Pro 10/11 reads only
    FCPXML and needs a converter such as 7toX) referencing the originals
    through the profile, in the order and with the in/out points chosen.
@@ -34,6 +37,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from framefound.api.v1.selects import MomentIn, SelectsResult
 from framefound.db.models import (
     Asset,
     Derivative,
@@ -44,6 +48,14 @@ from framefound.db.models import (
     TranscriptSegment,
 )
 from framefound.mcp.auth import open_session, principal
+from framefound.nle.selects import (
+    DEFAULT_HANDLES_S,
+    DEFAULT_MAX_PICTURE_S,
+    DEFAULT_MAX_SPEECH_S,
+    Order,
+    scene_groups,
+    scene_ranges,
+)
 
 log = structlog.get_logger()
 
@@ -382,39 +394,22 @@ def register(server: MCPServer) -> None:
                 )
             ).all()
         duration = asset.duration_s
-        numbered = any(scene is not None for _, scene in rows)
-        # With scene detection, a range starts only at a detected cut (and at
-        # the first frame, the opening shot before any cut); the interval
-        # ticks extract_frames stores between cuts with scene_number None
-        # fall inside the shot they were sampled from. Keying ticks by row
-        # index instead, in the same set as the scene numbers, let the tick
-        # at row 3 take key 3 and swallow scene 3 — one "scene" ran straight
-        # across a hard cut. Without detection, each sampled frame stands for
-        # the stretch up to the next one.
-        groups: list[list[int]] = []
-        for ts_ms, scene in rows:
-            if not groups or not numbered or scene is not None:
-                groups.append([int(ts_ms)])
-            else:
-                groups[-1].append(int(ts_ms))
-        scenes = []
-        for position, sampled in enumerate(groups):
-            ts_ms = sampled[0]
-            end_ms = (
-                groups[position + 1][0]
-                if position + 1 < len(groups)
-                else int((duration or ts_ms / 1000) * 1000)
+        # One grouping for this tool and for build_selects (nle/selects.py),
+        # so "the scene holding this frame" means the same in both.
+        groups, numbered = scene_groups((int(ts), scene) for ts, scene in rows)
+        scenes = [
+            Scene(
+                scene=position + 1,
+                start_s=start_s,
+                end_s=end_s,
+                frame_ms=sampled[0],
+                sampled_ms=sampled,
+                frame_url=_signed(who.base_url, asset.id, "frame", f"ts={sampled[0]}"),
             )
-            scenes.append(
-                Scene(
-                    scene=position + 1,
-                    start_s=ts_ms / 1000,
-                    end_s=max(end_ms, ts_ms) / 1000,
-                    frame_ms=ts_ms,
-                    sampled_ms=sampled,
-                    frame_url=_signed(who.base_url, asset.id, "frame", f"ts={ts_ms}"),
-                )
+            for position, (sampled, (start_s, end_s)) in enumerate(
+                zip(groups, scene_ranges(groups, duration), strict=True)
             )
+        ]
         note = (
             "Scene changes as detected."
             if numbered
@@ -518,3 +513,61 @@ def register(server: MCPServer) -> None:
             unmapped=unmapped,
             note=note,
         )
+
+    @server.tool()
+    async def build_selects(
+        title: str,
+        query: str | None = None,
+        moments: list[MomentIn] | None = None,
+        library: str | None = None,
+        profile: str | None = None,
+        handles_s: float = DEFAULT_HANDLES_S,
+        max_moment_s: float = DEFAULT_MAX_PICTURE_S,
+        max_speech_s: float = DEFAULT_MAX_SPEECH_S,
+        still_s: float = DEFAULT_STILL_S,
+        order: Order = "rank",
+        limit: int = 25,
+    ) -> SelectsResult:
+        """A selects reel for Premiere Pro: one FCP7 XML with a bin of the
+        source clips (a marker at each selected moment, its comment saying why:
+        the sentence said, the tag, or "visual: <query>") and a "Selects"
+        sequence stringing the moments end to end with handles. Use it when
+        the person wants material to review and cut from, not a finished edit
+        (that is build_rough_cut).
+
+        Give `query` to select from a search (what was said gives each whole
+        sentence, up to max_speech_s; what it shows gives the detected shot,
+        up to max_moment_s; photos hold for still_s), or `moments` you chose
+        (asset id plus at_s, or in_s/out_s). Pass the `profile` of the
+        computer that will open it (path_profiles) — without it every clip
+        imports offline. order="captured" runs it by shooting date (year-end
+        videos). Save the xml as the returned filename and import it with
+        File > Import. Tell the person about anything in `unmapped` or
+        `offline`."""
+        from framefound.api.v1.selects import SelectsError, SelectsRequest, assemble
+
+        who = principal()
+        async with open_session() as db:
+            from framefound.mcp.server import _library_id
+
+            if profile and profile.strip():
+                await _profile_map(db, profile)  # a clear error for a wrong name
+            try:
+                request = SelectsRequest(
+                    title=title,
+                    profile=(profile or "").strip(),
+                    query=(query or "").strip(),
+                    library_id=await _library_id(db, library),
+                    moments=moments or [],
+                    handles_s=min(max(handles_s, 0.0), 10.0),
+                    max_moment_s=min(max(max_moment_s, 1.0), 120.0),
+                    max_speech_s=min(max(max_speech_s, 2.0), 120.0),
+                    still_s=min(max(still_s, 0.5), 60.0),
+                    order=order,
+                    limit=min(max(limit, 1), 60),
+                )
+                result = await assemble(db, request)
+            except SelectsError as exc:
+                raise ToolError(str(exc)) from exc
+        log.info("mcp.selects", selects=len(result.selects), by=who.token_name)
+        return result

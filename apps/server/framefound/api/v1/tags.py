@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.ai.tagging import slugify
 from framefound.auth.deps import CurrentUser, DbDep, require_admin
-from framefound.db.models import Asset, AssetTag, Library, Tag
+from framefound.db.models import Asset, AssetTag, Library, Tag, catalogued
 
 log = structlog.get_logger()
 
@@ -416,7 +416,7 @@ async def pending_for_tag(
         await db.execute(
             select(AssetTag, Asset)
             .join(Asset, Asset.id == AssetTag.asset_id)
-            .where(AssetTag.tag_id == tag_id, AssetTag.source == "suggested")
+            .where(AssetTag.tag_id == tag_id, AssetTag.source == "suggested", catalogued())
             .order_by(AssetTag.confidence.desc().nullslast())
             .limit(limit)
         )
@@ -582,6 +582,9 @@ async def relearn_tag(tag_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> dict[
 class ExportRequest(BaseModel):
     asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
     name: str = Field(default="FrameFound results", max_length=120)
+    # The workstation's path profile (Libraries page). Without one the bin
+    # carries the server's /media/... paths and imports offline everywhere.
+    profile: str = Field(default="", max_length=100)
 
 
 @router.post("/export/fcp7")
@@ -591,6 +594,7 @@ async def export_fcp7(body: ExportRequest, _user: CurrentUser, db: DbDep) -> Res
     Deliberately not Premiere-specific: `.prproj` is undocumented, while FCP7
     XML is understood by every NLE the target users actually run. See ADR-0019.
     """
+    from framefound.api.v1.panel import _profiles, _translate_for
     from framefound.nle.fcp7 import Clip, build_bin
 
     rows = (
@@ -598,7 +602,7 @@ async def export_fcp7(body: ExportRequest, _user: CurrentUser, db: DbDep) -> Res
             await db.execute(
                 select(Asset)
                 .join(Library, Library.id == Asset.library_id)
-                .where(Asset.id.in_(body.asset_ids), Asset.availability == "online")
+                .where(Asset.id.in_(body.asset_ids), Asset.availability == "online", catalogued())
             )
         )
         .scalars()
@@ -610,12 +614,14 @@ async def export_fcp7(body: ExportRequest, _user: CurrentUser, db: DbDep) -> Res
     libraries = {
         library.id: library for library in (await db.execute(select(Library))).scalars().all()
     }
+    profiles = await _profiles(db, body.profile)
     clips = [
         Clip(
             name=asset.filename,
-            # The path this server sees. A workstation mapping belongs here
-            # eventually; until then the export is honest about what it wrote.
-            path=f"{libraries[asset.library_id].root_path}/{asset.relative_path}",
+            # The workstation's path when the profile covers the library, as
+            # the panel's export does; the server's otherwise, honestly.
+            path=_translate_for(asset, profiles)
+            or f"{libraries[asset.library_id].root_path}/{asset.relative_path}",
             duration_s=asset.duration_s,
             fps=asset.fps,
             width=asset.width,

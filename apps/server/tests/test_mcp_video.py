@@ -121,6 +121,7 @@ async def test_the_video_tools_are_listed(env: dict) -> None:  # noqa: F811
         "get_transcript",
         "get_scenes",
         "build_rough_cut",
+        "build_selects",
     } <= names
 
 
@@ -478,3 +479,35 @@ def test_a_sequence_keeps_ntsc_timing_and_audio() -> None:
     assert item.find("./rate/ntsc").text == "TRUE"
     assert len(root.findall("./sequence/media/audio/track/clipitem")) == 2
     assert root.find(".//pathurl").text == "file://localhost/Z%3A/Shoot/a.mov"
+
+
+async def test_selects_mark_the_words_and_string_them_out(env: dict) -> None:  # noqa: F811
+    """Claude's route to a selects reel: moments in, one document out, at
+    the Mac's paths, with the sentence as the marker comment."""
+    video = await _video(env)
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        result = await session.call_tool(
+            "build_selects",
+            {
+                "title": "Ledgerock",
+                "moments": [{"id": str(video), "at_s": 30.5}],
+                "profile": "Mac Mini",
+            },
+        )
+        wrong = await session.call_tool(
+            "build_selects", {"title": "x", "moments": [{"id": str(video)}], "profile": "Nope"}
+        )
+    assert not result.is_error, result.content
+    body = result.structured_content
+    assert body["filename"] == "Ledgerock selects.xml"
+    assert [s["reason"] for s in body["selects"]] == ["Starting bid is ten."]
+    assert (body["selects"][0]["in_s"], body["selects"][0]["out_s"]) == (30.0, 33.25)
+    root = ET.fromstring(body["xml"].split("\n", 2)[2])  # noqa: S314 - our own output
+    assert root.find("./project/children/bin/children/clip/marker/comment").text == (
+        "Starting bid is ten."
+    )
+    assert [p.text for p in root.iter("pathurl")] == [
+        "file://localhost/Volumes/Intel/Ledgerock/DJI_0042.MP4"
+    ]
+    assert body["unmapped"] == [] and body["offline"] == []
+    assert wrong.is_error and "No path profile called" in wrong.content[0].text

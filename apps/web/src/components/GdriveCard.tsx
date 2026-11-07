@@ -76,7 +76,7 @@ export default function GdriveCard() {
           placeholder={
             settings.configured
               ? "Paste a new key file to replace the stored one…"
-              : '{ "type": "service_account", … } — paste the JSON key file'
+              : "Paste the service account's JSON key file"
           }
           value={draft}
           disabled={busy}

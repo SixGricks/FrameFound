@@ -12,9 +12,11 @@ import { usePageTitle } from "@/lib/hooks";
 import Thumb from "@/components/Thumb";
 import {
   api,
+  type FusedResult,
   type Library,
   type MediaType,
   type SearchResponse,
+  type SelectMoment,
   type VisualStatus,
 } from "@/lib/api";
 import { highlight, shortDate, timecode } from "@/lib/format";
@@ -46,6 +48,44 @@ const REASONS: Record<string, { label: string; tone?: "ok" | "warn" }> = {
   name: { label: "name" },
 };
 
+const PROFILE_KEY = "framefound.premiereProfile";
+
+/** A ticked best match as a moment for the selects reel. The server widens
+ * it: a quote to its whole sentence, a picture to its detected shot. */
+function momentFor(hit: FusedResult, query: string): SelectMoment {
+  if (hit.media_type === "image") {
+    return { id: hit.asset_id, reason: hit.tag ? `tag: ${hit.tag}` : `visual: ${query}` };
+  }
+  if (hit.reasons.includes("transcript") && hit.ts_ms !== null) {
+    return { id: hit.asset_id, at_s: hit.ts_ms / 1000, kind: "speech" };
+  }
+  if (hit.reasons.includes("visual") && hit.frame_ms !== null) {
+    return {
+      id: hit.asset_id,
+      at_s: hit.frame_ms / 1000,
+      kind: "visual",
+      reason: `visual: ${query}`,
+    };
+  }
+  if (hit.tag) {
+    return {
+      id: hit.asset_id,
+      at_s: (hit.frame_ms ?? 0) / 1000,
+      kind: "tag",
+      reason: `tag: ${hit.tag}`,
+    };
+  }
+  return { id: hit.asset_id, at_s: 0, kind: "name", reason: `name: ${query}` };
+}
+
+function readProfile(): string {
+  try {
+    return window.localStorage.getItem(PROFILE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function SearchPage() {
   const router = useRouter();
   const params = useSearchParams();
@@ -59,10 +99,77 @@ function SearchPage() {
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Send to Premiere: the ticked rows, this computer's path profile, and
+  // what the last send said (files it could not map, files offline).
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [profile, setProfile] = useState("");
+  const [byDate, setByDate] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
 
   useEffect(() => {
     api.libraries().then(setLibraries).catch(() => undefined);
+    api
+      .pathProfiles()
+      .then((rows) => {
+        const names = Array.from(new Set(rows.map((row) => row.profile_name))).sort();
+        setProfiles(names);
+        const saved = readProfile();
+        setProfile(names.includes(saved) ? saved : (names[0] ?? ""));
+      })
+      .catch(() => undefined);
   }, []);
+
+  // A new result set starts with nothing ticked.
+  useEffect(() => {
+    setPicked(new Set());
+    setSent(null);
+  }, [results]);
+
+  function toggle(assetId: string) {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  }
+
+  async function sendToPremiere() {
+    if (!results) return;
+    const rows = results.results.filter((hit) => picked.has(hit.asset_id));
+    if (rows.length === 0) return;
+    setSending(true);
+    setSent(null);
+    try {
+      try {
+        window.localStorage.setItem(PROFILE_KEY, profile);
+      } catch {
+        // Remembering the profile is a convenience; private windows refuse it.
+      }
+      const made = await api.selects({
+        title: results.query,
+        profile,
+        query: results.query,
+        moments: rows.map((hit) => momentFor(hit, results.query)),
+        order: byDate ? "captured" : "rank",
+      });
+      const url = URL.createObjectURL(new Blob([made.xml], { type: "application/xml" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = made.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setSent(`${made.filename}: ${made.note} In Premiere, File → Import.`);
+    } catch (err) {
+      setSent(err instanceof Error ? err.message : "Could not build the selects");
+    } finally {
+      setSending(false);
+    }
+  }
 
   // Only the newest request may write to the page. Once the results follow
   // the URL (below), a slow "drone" response landing after Back to `/` would
@@ -135,6 +242,8 @@ function SearchPage() {
 
   const hasResults = results !== null;
   const bestMatches = results?.results ?? [];
+  // A select is a picture on V1: audio-only files are not offered.
+  const selectable = bestMatches.filter((hit) => hit.media_type !== "audio");
   const transcriptHits = results?.transcript_hits ?? [];
   const filenameHits = results?.filename_hits ?? [];
   const visualHits = results?.visual_hits ?? [];
@@ -241,6 +350,56 @@ function SearchPage() {
             <h2>Best matches</h2>
             <span className="faint mono">tags, pictures, words and names together</span>
           </div>
+          <div className="selectbar">
+            <label className="faint" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={picked.size > 0 && picked.size === selectable.length}
+                onChange={(e) =>
+                  setPicked(
+                    e.target.checked ? new Set(selectable.map((hit) => hit.asset_id)) : new Set(),
+                  )
+                }
+              />
+              {picked.size ? `${picked.size} selected` : "Select all"}
+            </label>
+            <select
+              className="select"
+              value={profile}
+              onChange={(e) => setProfile(e.target.value)}
+              aria-label="This computer's path profile"
+              title="Paths in the file are written for this computer"
+            >
+              {profiles.length === 0 && <option value="">No path profiles yet</option>}
+              {profiles.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <label className="faint" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={byDate}
+                onChange={(e) => setByDate(e.target.checked)}
+              />
+              In shooting order
+            </label>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={picked.size === 0 || sending}
+              onClick={sendToPremiere}
+              title="A bin with a marker on each moment, and a Selects sequence with handles"
+            >
+              {sending ? "Building…" : "Send to Premiere"}
+            </button>
+          </div>
+          {sent && (
+            <p className="faint" style={{ margin: "0 0 12px", fontSize: "0.86rem" }}>
+              {sent}
+            </p>
+          )}
           {bestMatches.map((hit, index) => {
             const at = hit.ts_ms ?? 0;
             // The matched frame, not the poster: the drone shot is at 0:42,
@@ -248,8 +407,17 @@ function SearchPage() {
             const kind =
               hit.media_type === "video" && hit.frame_ms ? `frame?ts=${hit.frame_ms}` : "thumbnail";
             return (
-              <Link
-                key={hit.asset_id}
+              <div key={hit.asset_id} className="hit-row">
+                <label className="hit-pick" title="Select for Premiere">
+                  <input
+                    type="checkbox"
+                    checked={picked.has(hit.asset_id)}
+                    onChange={() => toggle(hit.asset_id)}
+                    aria-label={`Select ${hit.filename}`}
+                    disabled={hit.media_type === "audio"}
+                  />
+                </label>
+                <Link
                 className="hit"
                 href={`/assets/${hit.asset_id}${at > 0 ? `?t=${Math.floor(at / 1000)}` : ""}`}
                 style={{ animationDelay: `${Math.min(index, 12) * 28}ms` }}
@@ -286,6 +454,7 @@ function SearchPage() {
                   )}
                 </div>
               </Link>
+              </div>
             );
           })}
         </section>
