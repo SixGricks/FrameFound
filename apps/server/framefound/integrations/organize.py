@@ -70,7 +70,7 @@ async def catalogue_embedding(db: AsyncSession, stem: str, tokens: set[str]) -> 
     if not rows:
         return None
     if len(rows) == 1:
-        return list(rows[0][1])
+        return list(rows[0][1] or ())
 
     def overlap(path: str) -> int:
         lowered = path.lower()
@@ -79,4 +79,4 @@ async def catalogue_embedding(db: AsyncSession, stem: str, tokens: set[str]) -> 
     best = max(rows, key=lambda r: overlap(r[0]))
     if tokens and overlap(best[0]) == 0:
         return None
-    return list(best[1])
+    return list(best[1] or ())

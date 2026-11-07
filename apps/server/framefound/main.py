@@ -121,7 +121,7 @@ def create_app() -> FastAPI:
         try:
             import redis.asyncio as aioredis
 
-            client = aioredis.from_url(  # type: ignore[no-untyped-call]
+            client = aioredis.from_url(  # type: ignore[no-untyped-call, unused-ignore]
                 settings.redis_url, socket_connect_timeout=2
             )
             try:

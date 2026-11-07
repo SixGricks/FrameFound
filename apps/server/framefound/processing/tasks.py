@@ -2102,7 +2102,7 @@ def collect_training_pairs() -> None:
         engine = create_async_engine(settings.db_url)
         try:
             async with async_sessionmaker(engine, expire_on_commit=False)() as db:
-                rows = [
+                rows: list[tuple[str, str, str | None]] = [
                     (str(asset_id), relative_path, thumbnail)
                     for asset_id, relative_path, thumbnail in (
                         await db.execute(
