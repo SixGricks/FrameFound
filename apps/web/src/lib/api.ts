@@ -534,6 +534,38 @@ export interface FusedResult {
   tag: string | null;
 }
 
+/** A workstation's view of one library (Libraries -> path profiles). */
+export interface PathProfile {
+  profile_name: string;
+  platform: "windows" | "macos" | "linux";
+  library_id: string;
+  library_name: string;
+  server_prefix: string;
+  mapped_prefix: string;
+}
+
+/** One moment to put in a selects reel: a hit (`at_s`) FrameFound widens to
+ * the sentence or the shot around it. */
+export interface SelectMoment {
+  id: string;
+  at_s?: number | null;
+  kind?: "speech" | "visual" | "tag" | "name" | null;
+  reason?: string;
+}
+
+export interface SelectsResult {
+  title: string;
+  filename: string;
+  profile: string | null;
+  xml: string;
+  selects: Array<{ name: string; filename: string; in_s: number; out_s: number; reason: string }>;
+  clips: number;
+  duration_s: number;
+  unmapped: string[];
+  offline: string[];
+  note: string;
+}
+
 export interface SearchResponse {
   query: string;
   transcript_hits: Array<{
@@ -1038,6 +1070,19 @@ export const api = {
       `/search${query({ q, library_id: libraryId, media_type: mediaType, limit: 40 })}`,
     ),
   similar: (assetId: string) => request<VisualHit[]>(`/search/similar/${assetId}`),
+  pathProfiles: () => request<PathProfile[]>("/panel/profiles"),
+  selects: (body: {
+    title: string;
+    profile: string;
+    query: string;
+    moments: SelectMoment[];
+    order?: "rank" | "captured";
+  }) =>
+    request<SelectsResult>("/selects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   scenes: (assetId: string) => request<SceneFrame[]>(`/assets/${assetId}/scenes`),
 
   places: (radiusKm: number, includeInferred: boolean) =>

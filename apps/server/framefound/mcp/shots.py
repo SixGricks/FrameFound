@@ -32,7 +32,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.config import get_settings
-from framefound.db.models import Asset, Cut, CutPiece, Frame, Library, ShotWindow
+from framefound.db.models import (
+    Asset,
+    Cut,
+    CutPiece,
+    Frame,
+    Library,
+    ShotWindow,
+    catalogued,
+)
 from framefound.mcp import compact
 from framefound.mcp.auth import open_session, principal
 from framefound.media import motion
@@ -499,7 +507,7 @@ def register(server: MCPServer) -> None:
             query = (
                 select(ShotWindow, Asset)
                 .join(Asset, Asset.id == ShotWindow.asset_id)
-                .where(Asset.availability == "online", Asset.media_type == "video")
+                .where(Asset.availability == "online", Asset.media_type == "video", catalogued())
             )
             if library_id is not None:
                 query = query.where(Asset.library_id == library_id)
@@ -532,7 +540,10 @@ def register(server: MCPServer) -> None:
                     await db.execute(
                         select(func.count(func.distinct(ShotWindow.asset_id)))
                         .join(Asset, Asset.id == ShotWindow.asset_id)
-                        .where(*([Asset.library_id == library_id] if library_id else []))
+                        .where(
+                            catalogued(),
+                            *([Asset.library_id == library_id] if library_id else []),
+                        )
                     )
                 ).scalar_one()
             )

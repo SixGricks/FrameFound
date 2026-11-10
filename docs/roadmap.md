@@ -3,6 +3,33 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-10 — proxy pairing and selects brought up to date with shot intelligence
+
+PR #41 (2026-11-06 entry below) merged with `main` after PR #42 landed
+first. Both features are kept whole; where they meet:
+
+- **Migrations:** shot intelligence keeps 0028; proxy pairing is now
+  **0029** (`down_revision` 0028). A database at 0027 runs both on start.
+- `get_scenes` uses the shared scene grouping from the selects work *and*
+  lists each scene's shot windows.
+- **Paired proxies stay out of shots too.** `find_shots` and
+  `ops.shots backfill` apply `catalogued()`, so a Premiere proxy analysed
+  before it was paired is never offered as a shot, and `--make-proxies`
+  does not make a proxy of a proxy.
+- `build_selects` takes the short ids the compact answers print, like every
+  other tool.
+- The connector lists 21 tools (both sides' additions; the docs table and
+  `test_mcp`'s pinned list agree); the changelog keeps both entries, newest first.
+- Checks: `mypy framefound` clean under SQLAlchemy 2.1.8 and 2.0.51; ruff
+  check and format clean; local suite 1190 passed (the one failure is the
+  known Windows-only slideshow path test); VM gate 1185 passed, 13 skipped.
+  Not deployed.
+
+**Needs the operator** (in order): deploy (migrations 0028 and 0029 run on
+start); then the shot-intelligence steps (2026-11-09) and the proxy-pairing
+steps (2026-11-06) below — run `pair_proxies --apply` *before* the shots
+backfill, so the backfill never spends a night on proxies.
+
 ### 2026-11-09 — shot intelligence for editing (motion, light, shot type, cheaper looking)
 
 Asked for after the Brookside Quick 30 for GELCO, cut through the connector
@@ -91,6 +118,50 @@ the Brookside cut — `docker compose exec api python -m framefound.ops.shots
 import-cut "/media/gelco/Brookside Country Club/2026/Premiere/Brookside
 Quick 30 - Finished Work - Rev 2.xml" --library GELCO`; then from Claude
 Desktop, the two queries and `recent_cuts` on GELCO.
+
+### 2026-11-06 — Premiere proxies paired; selects to Premiere
+
+Asked for: stop cataloguing Premiere's proxies as footage, and hand Premiere
+editable selects from a search — never a rendered video. ADR-0021.
+
+- **Proxies are paired, not catalogued.** `Proxies/<stem>_Proxy.<ext>` beside
+  an online original (a per-library `proxy_pattern`, any case, any video
+  extension) keeps its row with `proxy_of_id` and leaves search, Browse,
+  tagging, the review queues, People, Places and every processing sweep. A
+  proxy with no original stays an asset and is released again if its original
+  goes. Scans pair as they go and a rescan changes nothing. Frame sampling and
+  scene detection decode the paired proxy instead of the 4K original when
+  FrameFound has no proxy of its own. Migration 0029 (written as 0028;
+  renumbered when shot intelligence took 0028 on main first).
+- **Existing rows** (33 in GELCO, one tag suggestion among them): `python -m
+  framefound.ops.pair_proxies` reports per library with sample pairs and
+  their wrong proxy dates; `--apply` links them in one transaction. Tag
+  decisions follow the footage to the original. Nothing is deleted.
+- **Selects.** One FCP7 XML: a bin of the clips with a marker at each moment
+  (the sentence said, `tag: …`, `visual: <query>`), and a `<title> selects`
+  sequence of the moments with 1 s handles clamped to the clip. Whole
+  sentences up to 20 s for speech, the detected shot up to 8 s for pictures
+  (±3 s without scene data), 4 s for a photo; overlaps merge; search or
+  shooting order; named `<Course> <date> – <reason>`. Built on `fcp7.py`
+  (now a `<project>` with a bin and sequence sharing file ids). MCP
+  `build_selects`, *Send to Premiere* on the search page (tick rows, pick
+  the computer's profile), `POST /panel/export/selects`. The web bin export
+  takes a profile too.
+- **Not confirmed: subclips.** No way to check Premiere's FCP7 subclip import
+  from here; markers plus the string-out ship, and
+  `fixtures/premiere/subclip-probe.xml` answers it in one import.
+- **Part 0:** the VM was already on `main` (1f9e721) and its MCP server lists
+  all 17 tools; the Mac mini's Claude client was holding a tool list from
+  before the 2026-11-06 00:50 UTC rebuild. `manage.sh update` pulls
+  registry images this VM does not use, so it is not the update path here.
+- Seen in the browser on the seeded catalogue: ticked a photo and a drone
+  clip, Send to Premiere produced `golf course selects.xml` at `Y:\` paths with
+  the tag on each marker; the bar wraps at 375 px. Migration 0028 (now 0029) up, down,
+  up on SQLite. Golden XML for a 29.97 interview with 23.976 drone, clamped
+  handles and a merge, at Windows and Mac paths.
+- **Needs the operator:** a Mac mini path profile for GELCO (none exists;
+  Libraries → GELCO → path profiles), the backfill, and the import in
+  Premiere.
 
 ### 2026-11-05 (night) — bulk tag review
 

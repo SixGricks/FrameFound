@@ -171,6 +171,27 @@ async def test_find_shots_answers_in_compact_lines(env: dict) -> None:  # noqa: 
         assert leak not in text
 
 
+async def test_a_paired_editing_proxy_is_not_offered_as_a_shot(env: dict) -> None:  # noqa: F811
+    """A Premiere proxy analysed before it was paired (ADR-0021) is the
+    original's footage again: find_shots leaves it out, like every listing."""
+    from sqlalchemy import update
+
+    ids = await _course(env)
+    async with env["factory"]() as db:
+        await db.execute(
+            update(Asset)
+            .where(Asset.id == ids["DJI_20261103051509_0639_D.MP4"])
+            .values(proxy_of_id=ids["DJI_20261103035806_0495_D.MP4"])
+        )
+        await db.commit()
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        result = await session.call_tool("find_shots", {"folder": "brookside"})
+    assert not result.is_error, _text(result)
+    text = _text(result)
+    assert text.splitlines()[0].startswith("3 of 3 shots")
+    assert "DJI_0639" not in text
+
+
 async def test_twenty_shots_fit_in_two_kilobytes(env: dict) -> None:  # noqa: F811
     """The prompt's budget: a 20-shot list under about 2 KB."""
     ids = await _course(env)

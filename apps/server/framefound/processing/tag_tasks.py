@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from framefound.celery_app import celery_app
 from framefound.config import get_settings
-from framefound.db.models import Asset, AssetTag, Frame, Tag
+from framefound.db.models import Asset, AssetTag, Frame, Tag, catalogued
 
 log = structlog.get_logger()
 
@@ -242,7 +242,7 @@ async def _score_library(db: AsyncSession, tag: Tag) -> None:
         await db.execute(
             select(Frame.asset_id, Frame.embedding)
             .join(Asset, Asset.id == Frame.asset_id)
-            .where(Frame.embedding.is_not(None), Asset.availability == "online")
+            .where(Frame.embedding.is_not(None), Asset.availability == "online", catalogued())
         )
     ).all()
     grouped: dict[uuid.UUID, list[list[float]]] = {}

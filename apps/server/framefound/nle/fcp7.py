@@ -180,12 +180,47 @@ def build_bin(name: str, clips: list[Clip]) -> str:
     would be presuming to know what they intend to do with it.
     """
     root = ET.Element("xmeml", {"version": "5"})
-    bin_el = ET.SubElement(root, "bin")
+    bin_el, _files = _bin_element(name, clips)
+    root.append(bin_el)
+    return _document(root)
+
+
+def _bin_element(name: str, clips: list[Clip]) -> tuple[ET.Element, dict[str, str]]:
+    """A <bin> of clips, and the file id each clip's path was given — so a
+    sequence in the same document can refer to those files instead of
+    defining them a second time under ids that collide."""
+    bin_el = ET.Element("bin")
     ET.SubElement(bin_el, "name").text = name
     children = ET.SubElement(bin_el, "children")
+    files: dict[str, str] = {}
     for index, clip in enumerate(clips, start=1):
         children.append(_clip_element(clip, index))
+        files.setdefault(clip.path, f"file-{index}")
+    return bin_el, files
 
+
+def build_project(
+    name: str,
+    bin_name: str,
+    clips: list[Clip],
+    sequence_name: str,
+    cuts: list["Cut"],
+) -> str:
+    """One document holding a bin and a sequence cut from it: the selects
+    hand-off (nle/selects.py). Premiere imports a <project> as a bin named
+    after it, with the clips bin and the sequence inside.
+
+    The sequence's clipitems refer to the bin's <file> elements by id. File
+    ids are global to the document, and writing each file twice — once in
+    the bin, once in the sequence, both as `file-1` — is the kind of thing an
+    importer resolves by keeping whichever it read first."""
+    root = ET.Element("xmeml", {"version": "5"})
+    project = ET.SubElement(root, "project")
+    ET.SubElement(project, "name").text = name
+    children = ET.SubElement(project, "children")
+    bin_el, files = _bin_element(bin_name, clips)
+    children.append(bin_el)
+    children.append(_sequence_element(sequence_name, cuts, files_written=files))
     return _document(root)
 
 
@@ -210,6 +245,11 @@ class Cut:
     out_s: float
     is_still: bool = False
     note: str = ""
+    # Where the note's marker goes, in seconds of the source. None puts it on
+    # the cut's first frame; a select with handles puts it on the moment
+    # itself, a second in, where the words start.
+    marker_s: float | None = None
+    marker_name: str | None = None
 
 
 def build_sequence(
@@ -232,9 +272,22 @@ def build_sequence(
     sequence's rate for where the piece sits on the timeline — the two
     differ when 23.976 drone footage meets a 29.97 interview.
     """
-    seq_fps = fps or next((c.clip.fps for c in cuts if c.clip.fps and not c.is_still), None)
     root = ET.Element("xmeml", {"version": "5"})
-    sequence = ET.SubElement(root, "sequence", {"id": "sequence-1"})
+    root.append(_sequence_element(name, cuts, fps=fps, width=width, height=height))
+    return _document(root)
+
+
+def _sequence_element(
+    name: str,
+    cuts: list[Cut],
+    *,
+    fps: float | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    files_written: dict[str, str] | None = None,
+) -> ET.Element:
+    seq_fps = fps or next((c.clip.fps for c in cuts if c.clip.fps and not c.is_still), None)
+    sequence = ET.Element("sequence", {"id": "sequence-1"})
     ET.SubElement(sequence, "name").text = name
     duration_el = ET.SubElement(sequence, "duration")
     _rate_element(sequence, seq_fps)
@@ -251,7 +304,7 @@ def build_sequence(
     audio = ET.SubElement(media, "audio")
     audio_tracks = [ET.SubElement(audio, "track"), ET.SubElement(audio, "track")]
 
-    files_written: dict[str, str] = {}
+    files_written = {} if files_written is None else dict(files_written)
     # Placed from running *seconds*, not by adding frame counts: each cut's
     # length truncates to whole frames, and summing those lost up to a frame
     # per cut — on a two-hundred-cut piece, several seconds of drift from
@@ -324,7 +377,7 @@ def build_sequence(
                 track_el.append(item)
 
     duration_el.text = str(position)
-    return _document(root)
+    return sequence
 
 
 @dataclass(frozen=True)
@@ -373,9 +426,15 @@ def _clipitem(
             file_audio = ET.SubElement(file_media, "audio")
             ET.SubElement(file_audio, "channelcount").text = "2"
     if cut.note:
+        at = place.source_in
+        if cut.marker_s is not None and not cut.is_still:
+            # Inside the cut whatever rounding did to its ends.
+            at = min(
+                max(frames(cut.marker_s, place.source_rate), place.source_in), place.source_out - 1
+            )
         marker = ET.SubElement(item, "marker")
-        ET.SubElement(marker, "name").text = cut.note[:60]
+        ET.SubElement(marker, "name").text = (cut.marker_name or cut.note)[:60]
         ET.SubElement(marker, "comment").text = cut.note
-        ET.SubElement(marker, "in").text = str(place.source_in)
+        ET.SubElement(marker, "in").text = str(at)
         ET.SubElement(marker, "out").text = "-1"
     return item

@@ -56,6 +56,29 @@ versioning: [Semantic Versioning](https://semver.org/).
   tags unless `verbose` or `fields` asks. Every tool accepts the short id.
   The REST API, web UI and panels are unchanged.
 
+### Added (2026-11-06)
+- Send selects to Premiere: one FCP7 XML with a bin of the source clips (a
+  marker at each moment, its comment the sentence said, the tag or
+  `visual: <query>`) and a `<title> selects` sequence of the moments with
+  1 s handles. Soundbites widen to whole sentences (≤ 20 s), pictures to
+  their detected shot (≤ 8 s, ±3 s without scene data), photos hold 4 s;
+  overlapping moments merge; search or shooting order. MCP tool
+  `build_selects`, *Send to Premiere* on the search page,
+  `POST /panel/export/selects` (`export` scope). ADR-0021.
+- The web FCP7 bin export (`POST /tags/export/fcp7`) takes `profile` and
+  writes workstation paths, like the panel's.
+- `fixtures/premiere/subclip-probe.xml`: import it to learn whether Premiere
+  takes FCP7 in/out clips as subclips.
+
+### Changed (2026-11-06)
+- Premiere proxies (`Proxies/<stem>_Proxy.<ext>`, a per-library
+  `proxy_pattern`) are paired with their original instead of catalogued:
+  out of search, Browse, tagging, the review queues and the processing
+  sweeps, and decoded in the original's place for frame sampling and scene
+  detection. A proxy with no original stays an asset. Migration 0029;
+  existing rows: `python -m framefound.ops.pair_proxies` (report), then
+  `--apply`. Tag decisions on a proxy move to its original.
+
 ### Added (2026-11-05, night)
 - Bulk tag review on the Tags page: down-to-here, shift-click ranges,
   select all, a pinned Yes / No / "yes to these, no to the rest" bar and

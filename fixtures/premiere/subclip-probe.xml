@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<!--
+  Does Premiere Pro import an FCP7 <clip> with real in/out values as a subclip?
+  FrameFound could not confirm it without Premiere (docs/adr/0021). Import this
+  file (File > Import) and look at the bin "Subclip probe":
+
+    A  plain clip, in 10 s / out 20 s       -> subclip icon, 10 s long?
+    B  the same, marked as a subclip of C   -> subclip icon, 10 s long?
+    C  the master clip, in/out -1            -> a normal clip, 2:00 long
+
+  If A or B comes in as a 10-second subclip, say which, and build_selects can
+  offer subclips. If both arrive as whole clips (or as clips with in/out marks
+  only), markers plus the Selects sequence is the right hand-off.
+
+  The path is the GELCO interview on the Windows profile (Y:\). On the Mac it
+  will import offline; that does not change the answer (the icon and duration
+  show regardless), or right-click > Link Media to point it at the share.
+-->
+<xmeml version="5">
+  <bin>
+    <name>Subclip probe</name>
+    <children>
+      <clip id="masterclip-1">
+        <name>C master MVI_4513</name>
+        <duration>3596</duration>
+        <rate>
+          <timebase>30</timebase>
+          <ntsc>TRUE</ntsc>
+        </rate>
+        <in>-1</in>
+        <out>-1</out>
+        <ismasterclip>TRUE</ismasterclip>
+        <file id="file-1">
+          <name>MVI_4513.MP4</name>
+          <pathurl>file://localhost/Y%3A/Pete%20Dye/2025%2010%2028/MVI_4513.MP4</pathurl>
+          <rate>
+            <timebase>30</timebase>
+            <ntsc>TRUE</ntsc>
+          </rate>
+          <duration>3596</duration>
+          <media>
+            <video>
+              <duration>3596</duration>
+              <samplecharacteristics>
+                <width>1920</width>
+                <height>1080</height>
+              </samplecharacteristics>
+            </video>
+            <audio>
+              <channelcount>2</channelcount>
+            </audio>
+          </media>
+        </file>
+      </clip>
+      <clip id="clip-a">
+        <name>A plain in-out 10-20s</name>
+        <duration>3596</duration>
+        <rate>
+          <timebase>30</timebase>
+          <ntsc>TRUE</ntsc>
+        </rate>
+        <in>299</in>
+        <out>599</out>
+        <file id="file-1" />
+      </clip>
+      <clip id="clip-b">
+        <name>B subclip of C 10-20s</name>
+        <duration>300</duration>
+        <rate>
+          <timebase>30</timebase>
+          <ntsc>TRUE</ntsc>
+        </rate>
+        <in>299</in>
+        <out>599</out>
+        <ismasterclip>FALSE</ismasterclip>
+        <masterclipid>masterclip-1</masterclipid>
+        <file id="file-1" />
+      </clip>
+    </children>
+  </bin>
+</xmeml>

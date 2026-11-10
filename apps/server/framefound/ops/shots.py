@@ -37,7 +37,7 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from framefound.config import get_settings
-from framefound.db.models import Asset, Derivative, Library, ShotWindow
+from framefound.db.models import Asset, Derivative, Library, ShotWindow, catalogued
 from framefound.media import motion
 
 
@@ -57,6 +57,8 @@ def _scope(library: Library, folder: str | None) -> list[Any]:
         Asset.media_type == "video",
         Asset.availability == "online",
         Asset.extension != "braw",
+        # A paired editing proxy is the original's footage again (ADR-0021).
+        catalogued(),
     ]
     if folder:
         conditions.append(func.lower(Asset.relative_path).contains(folder.lower(), autoescape=True))

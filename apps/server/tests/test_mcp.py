@@ -249,6 +249,7 @@ async def test_the_tools_are_what_the_docs_promise(env: dict) -> None:
         "get_transcript",
         "get_scenes",
         "build_rough_cut",
+        "build_selects",
         # Choosing shots (framefound/mcp/shots.py; test_mcp_shots.py).
         "find_shots",
         "contact_sheet",
