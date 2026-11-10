@@ -298,7 +298,8 @@ async def _people_for(db: DbDep, asset_ids: list[uuid.UUID]) -> dict[uuid.UUID, 
     ).all()
     out: dict[uuid.UUID, list[uuid.UUID]] = {}
     for asset_id, person_id in rows:
-        out.setdefault(asset_id, []).append(person_id)
+        if person_id is not None:
+            out.setdefault(asset_id, []).append(person_id)
     return out
 
 

@@ -96,6 +96,8 @@ async def list_places(
             inferred=row[5] == "inferred",
         )
         for row in rows
+        # The query already excludes NULLs; this narrows the type.
+        if row[1] is not None and row[2] is not None
     ]
     # Pure-Python haversine over every located asset × every place found so
     # far: seconds on a drone-heavy catalogue, and it ran on the event loop.

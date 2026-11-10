@@ -83,6 +83,31 @@ Postgres at 0% CPU. Twelve samples is enough to see a real tail and few enough
 that one cold page-cache miss moves p95. Two consecutive runs disagreeing means
 the number is noise; two agreeing means it is not.
 
+## Shot analysis throughput — 2026-11-09
+
+The motion pass (`analyze_motion`, framefound/processing/shots.py) decodes a
+video's 1080p proxy at 320 px and runs the block phase correlation over every
+frame. Measured on the reference VM with `python -m framefound.ops.shots
+inspect`, in a container capped at **two cores**, beside the live workers:
+
+| Source | Footage | Taken | Real time |
+|---|---|---|---|
+| 1080p proxies of three DJI 59.94 fps clips (Intel) | 78 s | 55 s | **1.42×** (1.28–1.53) |
+| GELCO Brookside 4K 59.94 originals over SMB (validation only) | 317 s | 2,290 s | 0.14× |
+
+From a proxy the analysis is faster than real time even at 60 fps; Brookside's
+48 minutes of video would take about 35 minutes. From a 4K original it is
+**decode-bound** — FFmpeg held both cores while Python sat at 8% waiting for
+frames — which is why production never reads an original. The same 4K decode
+is the cost of *making* the proxy, so for a library with proxies off (GELCO)
+the proxies, not the analysis, set the pace: at the rate above, about 6–8 h
+for Brookside and 12–16 h for Conestoga (95 min), an overnight job per
+course with `ops.shots backfill --make-proxies`. On a desktop CPU (the
+operator's PC) the pure analysis runs at about 135 frames a second.
+
+Per clip the analysis writes a ~10 KB motion track, its windows (one row
+each), and three 480 px stills per window.
+
 ## Known scaling limits
 
 Honest about where this will bend first:

@@ -51,7 +51,7 @@ def queued(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
         class Task:
             @staticmethod
             def delay(asset_id: str) -> None:
-                sent[bucket].append(asset_id)
+                sent.setdefault(bucket, []).append(asset_id)
 
         return Task
 
@@ -59,6 +59,7 @@ def queued(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
     module.generate_derivatives = fake("thumbs")  # type: ignore[attr-defined]
     module.sample_frames = fake("frames")  # type: ignore[attr-defined]
     module.embed_frames = fake("vectors")  # type: ignore[attr-defined]
+    module.analyze_motion = fake("motion")  # type: ignore[attr-defined]
     monkeypatch.setitem(__import__("sys").modules, "framefound.processing.tasks", module)
 
     async def idle(_name: str) -> bool:
@@ -244,3 +245,29 @@ async def test_the_batch_is_bounded(
 
     await scanner._requeue_missing_visuals(db)
     assert len(queued["thumbs"]) == scanner.VISUALS_BATCH
+
+
+async def test_a_video_with_a_proxy_and_no_motion_track_is_analysed(
+    db: AsyncSession, queued: dict[str, list[str]], tmp_path: Path
+) -> None:
+    """Shot windows follow the proxy; a lost enqueue must not leave a clip
+    out of find_shots for good. Without a proxy there is nothing to read
+    (the analysis never touches an original), so nothing is queued."""
+    library = await _library(db, tmp_path / "lib")
+    with_proxy = await _asset(db, library, "DJI_0639.MP4", media_type="video")
+    without = await _asset(db, library, "DJI_0640.MP4", media_type="video")
+    for asset in (with_proxy, without):
+        db.add(_thumb(asset))
+        db.add(Frame(asset_id=asset.id, ts_ms=0, relative_path="f.jpg", embedding=[0.1] * 4))
+    db.add(
+        Derivative(
+            asset_id=with_proxy.id,
+            kind="proxy",
+            relative_path="p.mp4",
+            media_format="mp4",
+            status="ready",
+        )
+    )
+    await db.commit()
+    await scanner._requeue_missing_visuals(db)
+    assert queued.get("motion") == [str(with_proxy.id)]

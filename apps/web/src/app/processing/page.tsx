@@ -23,6 +23,8 @@ const TASK_LABELS: Record<string, string> = {
   generate_derivatives: "Thumbnails",
   generate_proxy: "Video preview",
   transcribe_asset: "Transcribe",
+  analyze_motion: "Shot motion",
+  describe_shots: "Shot descriptors",
 };
 
 export default function ProcessingPage() {

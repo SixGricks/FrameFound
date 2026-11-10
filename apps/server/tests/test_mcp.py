@@ -249,6 +249,10 @@ async def test_the_tools_are_what_the_docs_promise(env: dict) -> None:
         "get_transcript",
         "get_scenes",
         "build_rough_cut",
+        # Choosing shots (framefound/mcp/shots.py; test_mcp_shots.py).
+        "find_shots",
+        "contact_sheet",
+        "recent_cuts",
     }
 
 
@@ -271,10 +275,15 @@ async def test_the_overview_names_the_library_and_what_the_token_may_do(env: dic
 
 async def test_find_media_by_tags_all_and_any(env: dict) -> None:
     async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
-        both = await session.call_tool("find_media", {"tags": ["barn", "Silo"], "match": "all"})
-        either = await session.call_tool("find_media", {"tags": ["barn", "silo"], "match": "any"})
+        both = await session.call_tool(
+            "find_media", {"tags": ["barn", "Silo"], "match": "all", "verbose": True}
+        )
+        either = await session.call_tool(
+            "find_media", {"tags": ["barn", "silo"], "match": "any", "verbose": True}
+        )
         with_guesses = await session.call_tool(
-            "find_media", {"tags": ["silo"], "match": "any", "include_suggested": True}
+            "find_media",
+            {"tags": ["silo"], "match": "any", "include_suggested": True, "verbose": True},
         )
         unknown = await session.call_tool("find_media", {"tags": ["tractor"]})
     assert [i["filename"] for i in both.structured_content["items"]] == ["barn-and-silo.jpg"]
@@ -296,7 +305,7 @@ async def test_the_preview_link_opens_without_a_session(env: dict) -> None:
     """A signed link: the same mechanism the panels use, so Claude can hand
     the operator a link that works in a browser that is not signed in."""
     async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
-        page = await session.call_tool("find_media", {"tags": ["silo"]})
+        page = await session.call_tool("find_media", {"tags": ["silo"], "verbose": True})
     url = page.structured_content["items"][0]["preview_url"]
     fresh = AsyncClient(transport=ASGITransport(app=env["app"]), base_url="http://t")
     async with fresh:
@@ -317,7 +326,7 @@ async def test_view_media_returns_the_picture_and_its_tags(env: dict) -> None:
 
 async def test_search_merges_tag_and_name_hits(env: dict) -> None:
     async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
-        result = await session.call_tool("search_media", {"query": "barn"})
+        result = await session.call_tool("search_media", {"query": "barn", "verbose": True})
     hits = result.structured_content["hits"]
     by_name = {hit["filename"]: hit for hit in hits}
     assert set(by_name) == {"barn-wide.jpg", "barn-and-silo.jpg"}

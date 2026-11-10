@@ -233,7 +233,11 @@ def descriptor(image: Any) -> Any:
     grey = np.asarray(
         image.convert("L").resize((32, 32), Image.Resampling.BOX), dtype=np.float64
     ).ravel()
-    ranks = np.argsort(np.argsort(grey)).astype(np.float64).reshape(32, 32)
+    # Tied pixels share their average rank. A 32x32 thumbnail of flat walls
+    # has few distinct greys, and ranking ties by sort order (argsort is not
+    # stable) gave two edits of one frame different ranks for the same wall.
+    _, inverse, counts = np.unique(grey, return_inverse=True, return_counts=True)
+    ranks = (np.cumsum(counts) - (counts + 1) / 2.0)[inverse].reshape(32, 32)
     gy, gx = np.gradient(ranks)
     parts = []
     for part in (ranks, np.hypot(gx, gy)):

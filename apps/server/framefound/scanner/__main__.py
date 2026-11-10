@@ -284,7 +284,7 @@ async def _queue_busy(name: str) -> bool:
 
         from framefound.config import get_settings
 
-        client = aioredis.from_url(  # type: ignore[no-untyped-call]
+        client = aioredis.from_url(  # type: ignore[no-untyped-call, unused-ignore]
             get_settings().redis_url, socket_connect_timeout=2
         )
         try:
@@ -568,11 +568,27 @@ async def _requeue_missing_visuals(db: AsyncSession) -> None:
     # frame for video no decoder here can read.
     need_frames = await ids(has_thumb, ~has_frames, settled("sample_frames"))
     need_vectors = await ids(unembedded, settled("embed_frames"))
-    if not (need_thumb or need_frames or need_vectors):
+    # Shot windows follow the proxy: a video with one and no motion track
+    # (a lost enqueue, a worker restart) is analysed again.
+    has_proxy = exists().where(
+        Derivative.asset_id == Asset.id, Derivative.kind == "proxy", Derivative.status == "ready"
+    )
+    has_motion = exists().where(
+        Derivative.asset_id == Asset.id, Derivative.kind == "motion", Derivative.status == "ready"
+    )
+    need_motion = await ids(
+        Asset.media_type == "video", has_proxy, ~has_motion, settled("analyze_motion")
+    )
+    if not (need_thumb or need_frames or need_vectors or need_motion):
         return
 
     try:
-        from framefound.processing.tasks import embed_frames, generate_derivatives, sample_frames
+        from framefound.processing.tasks import (
+            analyze_motion,
+            embed_frames,
+            generate_derivatives,
+            sample_frames,
+        )
     except Exception:
         log.warning("scanner.visuals_unavailable")
         return
@@ -582,11 +598,14 @@ async def _requeue_missing_visuals(db: AsyncSession) -> None:
         sample_frames.delay(str(asset_id))
     for asset_id in need_vectors:
         embed_frames.delay(str(asset_id))
+    for asset_id in need_motion:
+        analyze_motion.delay(str(asset_id))
     log.info(
         "scanner.visuals_requeued",
         thumbnails=len(need_thumb),
         frames=len(need_frames),
         vectors=len(need_vectors),
+        motion=len(need_motion),
     )
 
 

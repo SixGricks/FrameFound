@@ -29,6 +29,7 @@ from typing import Any, Literal
 import structlog
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,7 @@ from framefound.db.models import (
     Transcript,
     TranscriptSegment,
 )
+from framefound.mcp import compact
 from framefound.mcp.auth import Principal, open_session, principal
 from framefound.media.signing import SigningError, sign_media_url
 
@@ -84,7 +86,21 @@ Timeline in Resolve). Final Cut Pro 10/11 cannot open it without a converter to
 FCPXML such as 7toX — say so if the person edits in Final Cut. Paths depend on the
 computer: call path_profiles and pass the person's profile (their Windows PC or
 their Mac) so the paths and the timeline open there. Originals are never changed or
-downloaded."""
+downloaded.
+
+Choosing shots: every analysed video is split into windows where the camera does one
+thing. find_shots filters them across a library: by course or folder, move (orbit,
+push-in, lateral glide ...), smoothness judged at a playback speed (at_speed 50 for
+slow motion, 400 for sped up; jitter that ruins 50% can vanish at 400%), length at that
+speed, subject energy, light (golden hour, overcast ...) and subjects. It answers one
+line per shot. contact_sheet shows many shots in one picture (paste find_shots lines);
+prefer it to many view_media calls. recent_cuts summarises the last cuts for a client
+so the next one can differ on purpose. These describe the footage; they never decide a
+style: fast or slow, sped up or floaty, is the edit's choice.
+
+List answers (find_media, search_media, find_shots) are compact text lines by default,
+ids shortened to 8 characters, which every tool accepts. Ask for `verbose` (or
+`fields`) only when you need links or paths."""
 
 
 # --- shapes ------------------------------------------------------------------
@@ -314,14 +330,45 @@ def _item(
 
 
 async def _asset(db: AsyncSession, asset_id: str) -> Asset:
+    """An asset by its UUID, or by the short id the compact answers print
+    (the first eight or more hex characters), when that is unambiguous."""
+    raw = asset_id.strip()
     try:
-        key = uuid.UUID(asset_id)
+        key = uuid.UUID(raw)
     except ValueError:
-        raise ToolError(f"{asset_id!r} is not an asset id") from None
+        key = None
+    if key is None:
+        prefix = raw.replace("-", "").lower()
+        if len(prefix) < 8 or any(ch not in "0123456789abcdef" for ch in prefix):
+            raise ToolError(f"{asset_id!r} is not an asset id") from None
+        # A range rather than a string match: it works on PostgreSQL's uuid
+        # and SQLite's hex text alike, and uses the primary key.
+        low = uuid.UUID(prefix.ljust(32, "0"))
+        high = uuid.UUID(prefix.ljust(32, "f"))
+        found = (
+            (await db.execute(select(Asset).where(Asset.id >= low, Asset.id <= high).limit(2)))
+            .scalars()
+            .all()
+        )
+        if not found:
+            raise ToolError(f"No asset {asset_id}")
+        if len(found) > 1:
+            raise ToolError(f"{asset_id!r} matches more than one asset; give more of the id")
+        return found[0]
     asset = await db.get(Asset, key)
     if asset is None:
         raise ToolError(f"No asset {asset_id}")
     return asset
+
+
+async def _asset_key(db: AsyncSession, asset_id: str) -> uuid.UUID:
+    """The UUID behind a full or short asset id. A full UUID passes
+    straight through (the bulk tools report unknown ids themselves); a
+    short one is resolved like `_asset` does."""
+    try:
+        return uuid.UUID(asset_id.strip())
+    except ValueError:
+        return uuid.UUID(str((await _asset(db, asset_id)).id))
 
 
 async def _tag_by_name(db: AsyncSession, name: str) -> Tag | None:
@@ -349,6 +396,68 @@ def _relearn(tag_id: uuid.UUID) -> None:
     from framefound.api.v1.tags import _relearn as queue_relearn
 
     queue_relearn(tag_id)
+
+
+MEDIA_COLUMNS = (
+    "id",
+    "filename",
+    "type",
+    "library",
+    "captured",
+    "duration",
+    "size",
+    "tags",
+    "suggested",
+    "path",
+    "local_path",
+    "preview_url",
+)
+SEARCH_COLUMNS = (*MEDIA_COLUMNS, "matched", "at", "transcript")
+DEFAULT_MEDIA = ["id", "filename", "type", "captured", "duration", "tags"]
+DEFAULT_SEARCH = ["id", "filename", "type", "matched", "at", "transcript"]
+
+
+def _columns(fields: list[str] | None, profile: str | None, search: bool = False) -> list[str]:
+    allowed = SEARCH_COLUMNS if search else MEDIA_COLUMNS
+    if fields:
+        chosen = [f.strip().lower() for f in fields if f.strip()]
+        unknown = [f for f in chosen if f not in allowed]
+        if unknown:
+            raise ToolError(f"Unknown field(s) {', '.join(unknown)}. Fields: {', '.join(allowed)}")
+        return chosen
+    columns = list(DEFAULT_SEARCH if search else DEFAULT_MEDIA)
+    if profile and profile.strip():
+        columns.append("local_path")
+    return columns
+
+
+def _media_line(item: dict[str, Any], columns: list[str]) -> str:
+    row = {
+        "id": compact.short_id(item["id"]),
+        "filename": item["filename"],
+        "type": item["media_type"],
+        "library": item.get("library"),
+        "captured": (item.get("captured_at") or "")[:10],
+        "duration": f"{item['duration_s']:.1f}s" if item.get("duration_s") else None,
+        "size": f"{item['width']}x{item['height']}"
+        if item.get("width") and item.get("height")
+        else None,
+        "tags": item.get("tags"),
+        "suggested": item.get("suggested"),
+        "path": item.get("path"),
+        "local_path": item.get("local_path"),
+        "preview_url": item.get("preview_url"),
+        "matched": item.get("matched"),
+        "at": f"@{item['at_ms'] / 1000:.1f}s" if item.get("at_ms") is not None else None,
+        "transcript": item.get("transcript"),
+    }
+    formats = {
+        "tags": lambda v: "tags:" + ",".join(v),
+        "suggested": lambda v: "suggested:" + ",".join(v),
+        "matched": lambda v: "[" + ",".join(v) + "]",
+        "transcript": lambda v: '"' + (v if len(v) <= 90 else v[:89] + "…") + '"',
+    }
+    return compact.pick(row, columns, formats)
 
 
 # --- the server --------------------------------------------------------------
@@ -458,12 +567,19 @@ def build_server() -> MCPServer:
         limit: int = 25,
         page: int = 1,
         profile: str | None = None,
-    ) -> MediaPage:
+        verbose: bool = False,
+        fields: list[str] | None = None,
+    ) -> CallToolResult:
         """Media carrying tags. `match` "all" needs every tag, "any" needs one.
         Confirmed tags only unless `include_suggested`. No tags: the newest
         media, filtered by type, library and capture dates (ISO, e.g.
         2026-09-01). `library` is a name or id. `profile` (see path_profiles)
-        adds each original's path on that computer."""
+        adds each original's path on that computer.
+
+        Answers with one compact line per item (short id, name, type, date,
+        length, confirmed tags). `fields` picks the columns (id, filename,
+        type, library, captured, duration, size, tags, suggested, path,
+        local_path, preview_url); `verbose` returns everything, as JSON."""
         who = principal()
         limit = max(1, min(limit, MAX_RESULTS))
         page = max(1, page)
@@ -544,11 +660,24 @@ def build_server() -> MCPServer:
             libraries = await _libraries(db)
             on = await _tags_on(db, [asset.id for asset in rows])
             profiles = await _profile_map(db, profile)
-        return MediaPage(
+        result = MediaPage(
             total=total,
             page=page,
             page_size=limit,
             items=[_item(asset, libraries, on, who.base_url, profiles) for asset in rows],
+        )
+        if verbose:
+            return compact.structured(result)
+        start = (page - 1) * limit
+        header = (
+            f"{len(result.items)} of {total} (items {start + 1}-{start + len(result.items)})"
+            if result.items
+            else f"0 of {total}"
+        )
+        columns = _columns(fields, profile)
+        return compact.table(
+            header + " · " + " ".join(columns),
+            [_media_line(item.model_dump(), columns) for item in result.items],
         )
 
     @server.tool()
@@ -558,13 +687,17 @@ def build_server() -> MCPServer:
         limit: int = 20,
         media_type: Literal["image", "video", "audio"] | None = None,
         profile: str | None = None,
-    ) -> SearchResult:
+        verbose: bool = False,
+        fields: list[str] | None = None,
+    ) -> CallToolResult:
         """Search by words: tags, what the pictures look like (visual search),
         what was said (transcripts) and file names, ranked into one list.
         A `matched` of "visual" is CLIP's opinion; "tag" is the operator's.
         `at_ms` is the best moment in a video or recording; for a video, look
         at it with view_media(id, ts_ms=at_ms). `media_type` narrows to photos, video
-        or audio; `profile` (see path_profiles) adds local paths."""
+        or audio; `profile` (see path_profiles) adds local paths. One compact
+        line per hit (`fields` picks columns, as in find_media, plus
+        matched, at, transcript); `verbose` returns everything."""
         from framefound.api.v1.search import run_search
 
         who = principal()
@@ -621,22 +754,32 @@ def build_server() -> MCPServer:
             if asset is None:
                 continue
             base = _item(asset, libraries, on, who.base_url, profiles).model_dump()
-            fields = extra.get(asset_id, {})
+            found_extra = extra.get(asset_id, {})
             # A photo's one Frame row sits at ts_ms 0, so a visual hit on it
             # carried at_ms 0 — and Claude, told to pass at_ms to view_media,
             # got "ts_ms is for a moment in a video" and had to retry. A photo
             # has no moment to point at.
-            at_ms = fields.get("at_ms") if asset.media_type in ("video", "audio") else None
+            at_ms = found_extra.get("at_ms") if asset.media_type in ("video", "audio") else None
             hits.append(
                 SearchHit(
                     **base,
                     matched=matched[asset_id],
-                    transcript=fields.get("transcript"),
+                    transcript=found_extra.get("transcript"),
                     at_ms=at_ms,
-                    similarity=fields.get("similarity"),
+                    similarity=found_extra.get("similarity"),
                 )
             )
-        return SearchResult(query=term, hits=hits, visual_search_available=found.visual_available)
+        result = SearchResult(query=term, hits=hits, visual_search_available=found.visual_available)
+        if verbose:
+            return compact.structured(result)
+        columns = _columns(fields, profile, search=True)
+        header = f"{len(hits)} hits for {term!r}"
+        if not found.visual_available:
+            header += " (visual search unavailable)"
+        return compact.table(
+            header + " · " + " ".join(columns),
+            [_media_line(hit.model_dump(), columns) for hit in hits],
+        )
 
     @server.tool()
     async def get_media(id: str) -> MediaDetail:
@@ -930,16 +1073,12 @@ def build_server() -> MCPServer:
 
         who = principal()
         _require_tag_scope(who)
-        ids: dict[str, list[uuid.UUID]] = {"accept": [], "reject": []}
-        for key, given in (("accept", accept or []), ("reject", reject or [])):
-            if len(given) > MAX_BULK_DECISIONS:
+        given = {"accept": accept or [], "reject": reject or []}
+        for key, raws in given.items():
+            if len(raws) > MAX_BULK_DECISIONS:
                 raise ToolError(f"At most {MAX_BULK_DECISIONS} ids in {key}")
-            for raw in given:
-                try:
-                    ids[key].append(uuid.UUID(raw))
-                except ValueError:
-                    raise ToolError(f"{raw!r} is not an asset id") from None
         async with open_session() as db:
+            ids = {key: [await _asset_key(db, raw) for raw in raws] for key, raws in given.items()}
             found = await _tag_by_name(db, tag)
             if found is None:
                 raise ToolError(f"No tag called {tag!r}. list_tags shows the vocabulary.")
@@ -1004,16 +1143,16 @@ def build_server() -> MCPServer:
         from framefound.api.v1.tags import queue_claude_review
 
         async with open_session() as db:
+            keys = [await _asset_key(db, a) for a in (asset_ids or [])]
             try:
-                queued, message = await queue_claude_review(
-                    db, [uuid.UUID(a) for a in (asset_ids or [])], limit
-                )
+                queued, message = await queue_claude_review(db, keys, limit)
             except ValueError as err:
                 raise ToolError(str(err)) from None
         log.info("mcp.review_started", queued=queued, by=who.token_name)
         return ReviewStarted(queued=queued, message=message)
 
-    from framefound.mcp import video
+    from framefound.mcp import shots, video
 
     video.register(server)
+    shots.register(server)
     return server
