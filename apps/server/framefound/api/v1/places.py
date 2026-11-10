@@ -96,7 +96,7 @@ async def list_places(
             inferred=row[5] == "inferred",
         )
         for row in rows
-        # Already filtered in the query; SQLAlchemy 2.1 types the columns nullable.
+        # The query already excludes NULLs; this narrows the type.
         if row[1] is not None and row[2] is not None
     ]
     # Pure-Python haversine over every located asset × every place found so

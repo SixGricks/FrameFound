@@ -76,7 +76,12 @@ and telling an orbit from a push-in or ordering by time of day by eye.
   key, now reworded. Lint, typecheck and build pass locally. Codex's review
   found two real gaps, both fixed with tests: the bulk tag tools refused the
   short ids the compact answers print, and `contact_sheet` could read a
-  dated clip name as the shot's time range.
+  dated clip name as the shot's time range. The last red test,
+  `test_compare` (also `test_training_pairs`), was unstable ranking of tied
+  greys in `compare.descriptor`; the fix already sat on the unmerged
+  Premiere proxy-pairing branch (96156f7) and is copied here hunk for hunk,
+  with the CI fixes above matched to that branch's byte for byte, so the
+  fixes the two PRs share merge cleanly in either order.
 
 **Needs the operator** (in order): deploy (migration 0028 runs on start);
 proxies and analysis for Brookside, then Conestoga —
