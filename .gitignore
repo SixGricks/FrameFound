@@ -21,6 +21,7 @@ dist/
 # Node
 node_modules/
 .next/
+next-env.d.ts
 out/
 *.tsbuildinfo
 npm-debug.log*
