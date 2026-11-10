@@ -4,6 +4,7 @@ from sqlalchemy import select
 from test_mcp import connect, env, serving  # noqa: F401 - pytest fixture
 
 from framefound.db.models import AssetTag, Tag
+from framefound.mcp import compact
 
 
 async def test_claude_records_many_answers_at_once(env: dict) -> None:  # noqa: F811
@@ -27,6 +28,18 @@ async def test_claude_records_many_answers_at_once(env: dict) -> None:  # noqa: 
     assert rows[kitchen] == "rejected"
     assert rows[barn] == "manual", "a hand tag is never overturned in bulk"
     assert env["learned"] == [str(silo.id)], "one re-learn for the batch"
+
+
+async def test_the_short_ids_from_find_media_work_in_bulk(env: dict) -> None:  # noqa: F811
+    """find_media and search_media print eight-character ids; decide_tags
+    takes them as they are."""
+    kitchen = env["ids"]["kitchen.jpg"]
+    async with serving(env["app"]), connect(env["app"], env["tagger"]) as session:
+        result = await session.call_tool(
+            "decide_tags", {"tag": "silo", "reject": [compact.short_id(kitchen)]}
+        )
+    assert not result.is_error, result.content
+    assert result.structured_content["rejected"] == 1
 
 
 async def test_a_read_only_token_cannot_decide_in_bulk(env: dict) -> None:  # noqa: F811

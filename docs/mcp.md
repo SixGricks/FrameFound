@@ -146,17 +146,97 @@ not fit its platform.
 | `path_profiles` | Each computer's path profile (Windows PC, Mac) and where it sees each library | read |
 | `get_media_files` | One item's original path on each computer, and signed links to its proxy, poster and captions | read |
 | `get_transcript` | Every timed cue of what was said, optionally between two times | read |
-| `get_scenes` | A video's shots as start/end ranges, one per detected cut, with the moments to pass to `view_media` (and a signed link for you) | read |
-| `build_rough_cut` | Chosen pieces laid end to end as an FCP7 XML timeline for Premiere Pro or DaVinci Resolve (Final Cut Pro only via a converter such as 7toX) | read |
+| `get_scenes` | A video's shots as start/end ranges, one per detected cut, with the moments to pass to `view_media` (and a signed link for you), and each scene's shot windows as compact lines | read |
+| `build_rough_cut` | Chosen pieces laid end to end as an FCP7 XML timeline for Premiere Pro or DaVinci Resolve (Final Cut Pro only via a converter such as 7toX); records the cut in cut history (`record: false` for a draft; `client` names who it is for) | read |
 | `build_selects` | A search (or chosen moments) as selects for Premiere: a bin with a marker on each moment and a `<title> selects` string-out with handles; whole sentences for speech, the detected shot for pictures | read |
+| `find_shots` | Shot windows across a library — move, smoothness *at a playback speed*, timeline length at that speed, subject energy, light, subjects, already used — one compact line each | read |
+| `contact_sheet` | One JPEG of many moments: find_shots lines, `(id, ts_ms)` pairs or one clip's windows; `strip` shows start, middle and end of each shot side by side | read |
+| `recent_cuts` | The last cuts for a library or client: shot count, average shot length, speed, move, light and subject mix | read |
 
 `find_media` and `search_media` also take `profile` (adds `local_path`, the
 original as that computer opens it) and `search_media` takes `media_type`
 (`image`, `video`, `audio`).
 
-Every result carries a signed link to the preview, valid for twelve hours,
+**Answers are compact.** `find_media`, `search_media` and `find_shots`
+answer with one short line per item — an 8-character id, the name, and only
+the fields that hold something — instead of a JSON object carrying signed
+links, server paths and suggested tags. Every tool accepts the short id.
+`fields` picks the columns (`find_media`/`search_media`: id, filename, type,
+library, captured, duration, size, tags, suggested, path, local_path,
+preview_url, and for search matched, at, transcript); `verbose: true`
+returns the full structure as before. Local paths appear only when a
+`profile` is given. The web UI and the panels are unchanged — they use the
+REST API.
+
+Verbose results carry a signed link to the preview, valid for twelve hours,
 built from the address you connected on — so a link Claude hands you opens
 from the same place, without signing in, exactly as the panels' links do.
+
+### Choosing shots
+
+Every video with a proxy is analysed once at ingest (the `frames` queue,
+after the proxy): the 1080p proxy is decoded at 320 px — never the original
+— and split into **windows**, stretches where the camera keeps doing one
+thing. Each window has:
+
+- **move** — static, pan, tilt, push-in, pull-out, orbit, rise, descend,
+  lateral glide, top-down drift — and the camera's direction and speed;
+- **smoothness per playback speed** (25, 50, 100, 200, 400, 800%). Shake is
+  judged where it lands on screen: jitter that ruins a shot slowed to 50%
+  plays too fast to see at 400%, and a hesitation nobody notices at 100%
+  becomes a stutter at 400%;
+- **subject energy** (low, medium, high): what moves once the camera's own
+  motion is taken out — a machine digging, a crew, water;
+- **light**: the sun's elevation from the clip's place and time (the NOAA
+  formula; a clip without GPS borrows its folder's photographs' position)
+  as night, blue hour, golden hour, low/mid/high sun, and the measured look
+  — overcast or direct, warmth, brightness — which catches haze and rain
+  the sun's position cannot;
+- **framing** (aerial or ground; top-down, oblique or near the horizon;
+  wide, medium or close) and **subjects** (bunker, green, pump station,
+  trench, machine operating …) from CLIP. Descriptors, not tags: none of it
+  enters the review queue. The subject list is data — another client's
+  vocabulary is a JSON file in `<data_dir>/vocabularies/`, applied by
+  `python -m framefound.ops.shots describe` with no deploy.
+
+**It describes; it never prescribes.** Nothing ranks a shot as good or bad
+for an edit, and nothing assumes a look — not "sunset last", not "always
+50%", not "drone only". find_shots returns what matches the filters you
+give it; the edit's pace and music decide.
+
+Ask in plain words — "find smooth golden-hour orbits at Brookside that hold
+6 s at 50%":
+
+```
+find_shots(folder="Brookside", moves=["orbit"], light=["golden"],
+           at_speed=50, min_smooth=0.8, min_length_s=6)
+
+1 of 1 shots at 50% (->timeline length) | id clip in-out move smooth energy light subjects
+3f2a9c1e DJI_0639 2.0-14.0s orbit right smooth@50% .92 energy low golden green,bunker ->24.0s
+```
+
+`->24.0s` is how long the window runs on the timeline at that speed. A
+window from a 29.97 source slowed to 50% in a 29.97 sequence is flagged
+`dup` (every frame shown twice); `real_frames_only` leaves those out. A
+window an earlier cut used is flagged `used`; `exclude_used` leaves those
+out. Then `contact_sheet(shots=[…the lines…])` shows them all in one image,
+and `build_rough_cut` takes the id and an in/out inside the range.
+
+**Variety, on purpose.** Every `build_rough_cut` is recorded (title, date,
+client, each piece with its in/out, speed and the window it came from).
+`recent_cuts(library="GELCO")` summarises the last few — shot count,
+average shot length, speed mix, move mix, light mix, subjects — so an
+editor can choose something different rather than repeat the last video.
+A timeline cut before history existed can be imported:
+`python -m framefound.ops.shots import-cut "<timeline>.xml" --library GELCO`.
+
+**Getting a library analysed.** New video is analysed as its proxy is made.
+For a library with proxies switched off (GELCO), proxies are made per
+course when one is about to be edited:
+
+```bash
+docker compose exec worker-media python -m framefound.ops.shots backfill --library GELCO --folder "Brookside" --make-proxies
+```
 
 ### Two ways to get a second opinion
 
@@ -205,6 +285,8 @@ cross it. [tagging.md](tagging.md) has the details.
 | `propose_tags` says the token cannot write tags | Create a token with **Allow tagging** ticked, from an account that is not read-only. |
 | `view_media`: *No thumbnail has been generated* | The picture has not been through processing yet; the Processing page shows the backlog. |
 | `view_media` with `ts_ms`: *No frames have been sampled* | The video's frames have not been extracted yet (same backlog); its poster still works without `ts_ms`. |
+| `find_shots`: *No analysed shots match* and few clips analysed | Shot analysis reads proxies; the library has none yet. Run the backfill above with `--make-proxies` for the course. |
+| A short id is refused as *matches more than one asset* | Two assets share the first eight characters; give more of the id (the verbose answer has it whole). |
 | The API log says `mcp.unavailable` | The server was installed without the `mcp` extra: `pip install 'framefound[mcp]'` (the Docker image includes it). |
 
 ---
@@ -213,8 +295,9 @@ cross it. [tagging.md](tagging.md) has the details.
 
 | | |
 |---|---|
-| Tools | `framefound/mcp/server.py` |
+| Tools | `framefound/mcp/server.py`, `video.py`, `shots.py`; compact answers `compact.py` |
+| Shot analysis | `framefound/media/motion.py`, `sun.py`, `shot_vocabulary.py`; `framefound/processing/shots.py`; `python -m framefound.ops.shots` |
 | Token gate | `framefound/mcp/auth.py` |
 | Mount | `framefound/main.py` (`/api/mcp`, stateless streamable HTTP) |
 | Decision | [ADR-0020](adr/0020-mcp-connector.md) |
-| Tests | `tests/test_mcp.py` — a real MCP client over the real transport, in process |
+| Tests | `tests/test_mcp.py` — a real MCP client over the real transport, in process; `test_mcp_video.py`, `test_mcp_shots.py`, `test_motion.py`, `test_shots_ffmpeg.py` |

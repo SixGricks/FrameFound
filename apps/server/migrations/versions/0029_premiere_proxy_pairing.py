@@ -11,15 +11,15 @@ where each library's editors put their proxies.
 Schema only. Existing duplicates are linked by
 `python -m framefound.ops.pair_proxies` after its dry-run report.
 
-Revision ID: 0028
-Revises: 0027
+Revision ID: 0029
+Revises: 0028
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0028"
-down_revision: str | None = "0027"
+revision: str = "0029"
+down_revision: str | None = "0028"
 branch_labels: str | None = None
 depends_on: str | None = None
 

@@ -89,7 +89,8 @@ one first-hand report found says marked FCP7 subclips do not come over.
 
 ## Consequences
 
-- Migration 0028: `libraries.proxy_pattern`, `assets.proxy_of_id`. A
+- Migration 0029 (written as 0028; renumbered after shot intelligence took
+  0028): `libraries.proxy_pattern`, `assets.proxy_of_id`. A
   pattern change takes effect at the library's next scan.
 - Every new catalogue listing must apply `catalogued()`; a listing that
   forgets shows proxies again. The places that list assets were updated, and

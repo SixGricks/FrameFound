@@ -4,7 +4,7 @@
     python -m framefound.ops.pair_proxies --library GELCO    # one library
     python -m framefound.ops.pair_proxies --apply            # do it
 
-Before migration 0028 the scanner indexed Premiere's
+Before migration 0029 the scanner indexed Premiere's
 `Proxies/<stem>_Proxy.<ext>` files as assets of their own. New scans pair
 them as they go (scanner/proxies.py); this is for the rows already there.
 

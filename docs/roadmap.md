@@ -3,6 +3,122 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-10 — proxy pairing and selects brought up to date with shot intelligence
+
+PR #41 (2026-11-06 entry below) merged with `main` after PR #42 landed
+first. Both features are kept whole; where they meet:
+
+- **Migrations:** shot intelligence keeps 0028; proxy pairing is now
+  **0029** (`down_revision` 0028). A database at 0027 runs both on start.
+- `get_scenes` uses the shared scene grouping from the selects work *and*
+  lists each scene's shot windows.
+- **Paired proxies stay out of shots too.** `find_shots` and
+  `ops.shots backfill` apply `catalogued()`, so a Premiere proxy analysed
+  before it was paired is never offered as a shot, and `--make-proxies`
+  does not make a proxy of a proxy.
+- `build_selects` takes the short ids the compact answers print, like every
+  other tool.
+- The connector lists 21 tools (both sides' additions; the docs table and
+  `test_mcp`'s pinned list agree); the changelog keeps both entries, newest first.
+- Checks: `mypy framefound` clean under SQLAlchemy 2.1.8 and 2.0.51; ruff
+  check and format clean; local suite 1190 passed (the one failure is the
+  known Windows-only slideshow path test); VM gate 1185 passed, 13 skipped.
+  Not deployed.
+
+**Needs the operator** (in order): deploy (migrations 0028 and 0029 run on
+start); then the shot-intelligence steps (2026-11-09) and the proxy-pairing
+steps (2026-11-06) below — run `pair_proxies --apply` *before* the shots
+backfill, so the backfill never spends a night on proxies.
+
+### 2026-11-09 — shot intelligence for editing (motion, light, shot type, cheaper looking)
+
+Asked for after the Brookside Quick 30 for GELCO, cut through the connector
+on 11-09: most of its time and tokens went on work FrameFound should do once
+at ingest — optical-flow scripts on the Mac to score drone clips for shake
+(twice, when Rev 1 was not smooth enough), a jq-trimmed 100-item
+`find_media`, a dozen `view_media` calls and hand-made ffmpeg contact sheets,
+and telling an orbit from a push-in or ordering by time of day by eye.
+**Design rule: describe the footage, never prescribe a style.**
+
+- **Motion per shot**, from the proxy only, on the `frames` queue after the
+  proxy (`analyze_motion`): 24-block phase correlation and an affine fit in
+  numpy (no OpenCV), camera and subject motion separately, a 10 Hz motion
+  track as a derivative, and **windows** — move, direction, speed, subject
+  energy, and smoothness *per playback speed* (25–800%), with the timeline
+  length and a duplicate-frames flag computed per query from the source and
+  sequence frame rates. Stills at each window's start, middle and end.
+- **Light and shot descriptors**: NOAA sun position from GPS and capture
+  time (a clip without GPS borrows its folder's photographs' position; the
+  Brookside drone clips have none), the measured look (overcast or direct,
+  warmth), framing and golf-construction subjects from CLIP against a
+  vocabulary kept as data. Not tags; nothing enters the review queue.
+- **Cheaper looking**: `find_media`, `search_media` and the new `find_shots`
+  answer in compact lines (20 shots in under 2 KB), short ids everywhere;
+  `contact_sheet` puts up to 24 moments, or start/middle/end strips, in one
+  image; `get_scenes` lists each scene's windows.
+- **Variety**: `build_rough_cut` records every cut; `recent_cuts` summarises
+  the last ones (shot count, average length, speed, move, light and subject
+  mix); `find_shots` flags or skips windows already used;
+  `ops.shots import-cut` brings in a timeline cut before history existed.
+- Migration 0028 (`shot_windows`, `cuts`, `cut_pieces`).
+  `python -m framefound.ops.shots backfill | describe | import-cut | inspect`.
+- **The Brookside check passes, on the real clips.** Decoded once from the 4K
+  originals on the VM (read-only, nothing deployed): at 50% every window
+  Rev 1 used and DJ found not smooth enough scores below every window Rev 2
+  kept — 0495 0.40 and 0598 0.58 against 0.72–0.93 (on just the pieces'
+  own seconds, 0.62–0.66 against 0.82–0.95). What separates them is shake in
+  the band that slowed down lands where the eye sees it: 0.00010–0.00011 of
+  a frame width against 0.00004–0.00007, a fifth of a pixel at 1080p. The
+  ordering is the raw measurement's; only the scale that maps it to 0–1 was
+  set from these ten clips. An exact sub-pixel pan scores ≥ 0.99 at every
+  speed tested, so it is not estimator bias on the faster clips. And
+  "smooth golden-hour orbits that hold 6 s at 50%" finds 0619 (the clubhouse)
+  and 0633 (the sunset) — Rev 2's two golden orbits.
+- **What real footage corrected.** Synthetic tests alone had the shake scale
+  ten times too lenient; a slow "roll" term measured perspective and yaw in
+  forward flights, not the horizon (DJI gimbals hold it), so roll now counts
+  only as shake; hesitation ignores steady speed ramps; subject energy no
+  longer reads a forward flight's perspective as a busy subject; measured
+  warmth is not a golden-hour signal (Brookside's golden clips measured
+  cooler than its 11° ones — autumn leaves); Brookside is on Cape Cod
+  (41.73 N, 70.59 W, from 219 located photos), not where a guess put it.
+- Throughput ([benchmarks.md](benchmarks.md)): 1.3–1.5× real time from 1080p
+  proxies on two Westmere cores; making GELCO's proxies from 4K is the long
+  pole (an overnight job per course).
+- Server suite: 1146 passed locally; the four failures are the known
+  Windows/local ones (`test_compare`, `test_training_pairs`, the slideshow
+  path test, and one transcription test that only runs with the bundled
+  ffmpeg build) — none in code this change touches. Not deployed; GELCO has
+  no shot windows until the steps below run.
+
+- GitHub CI (2026-11-10, PR #42) was red on `main` too, from two causes
+  this branch now fixes. **backend**: 11 mypy errors only under the
+  SQLAlchemy 2.1 / newer redis that CI resolves; the VM's pinned image
+  passed, so the gate missed them. Fixed to pass on both: explicit
+  `is not None` narrowing on rows the query already filters, and
+  `[no-untyped-call, unused-ignore]` on the four `aioredis.from_url` calls.
+  **docker-build (web)**: Trivy blocked Next.js 15.5.22 (three critical
+  remote-code-execution advisories), now 15.5.29; and it read the Google
+  Drive card's placeholder (`{ "type": "service_account", … }`) as a leaked
+  key, now reworded. Lint, typecheck and build pass locally. Codex's review
+  found two real gaps, both fixed with tests: the bulk tag tools refused the
+  short ids the compact answers print, and `contact_sheet` could read a
+  dated clip name as the shot's time range. The last red test,
+  `test_compare` (also `test_training_pairs`), was unstable ranking of tied
+  greys in `compare.descriptor`; the fix already sat on the unmerged
+  Premiere proxy-pairing branch (96156f7) and is copied here hunk for hunk,
+  with the CI fixes above matched to that branch's byte for byte, so the
+  fixes the two PRs share merge cleanly in either order.
+
+**Needs the operator** (in order): deploy (migration 0028 runs on start);
+proxies and analysis for Brookside, then Conestoga —
+`docker compose exec worker-media python -m framefound.ops.shots backfill
+--library GELCO --folder "Brookside Country Club" --make-proxies`; import
+the Brookside cut — `docker compose exec api python -m framefound.ops.shots
+import-cut "/media/gelco/Brookside Country Club/2026/Premiere/Brookside
+Quick 30 - Finished Work - Rev 2.xml" --library GELCO`; then from Claude
+Desktop, the two queries and `recent_cuts` on GELCO.
+
 ### 2026-11-06 — Premiere proxies paired; selects to Premiere
 
 Asked for: stop cataloguing Premiere's proxies as footage, and hand Premiere
@@ -15,7 +131,8 @@ editable selects from a search — never a rendered video. ADR-0021.
   proxy with no original stays an asset and is released again if its original
   goes. Scans pair as they go and a rescan changes nothing. Frame sampling and
   scene detection decode the paired proxy instead of the 4K original when
-  FrameFound has no proxy of its own. Migration 0028.
+  FrameFound has no proxy of its own. Migration 0029 (written as 0028;
+  renumbered when shot intelligence took 0028 on main first).
 - **Existing rows** (33 in GELCO, one tag suggestion among them): `python -m
   framefound.ops.pair_proxies` reports per library with sample pairs and
   their wrong proxy dates; `--apply` links them in one transaction. Tag
@@ -39,7 +156,7 @@ editable selects from a search — never a rendered video. ADR-0021.
   registry images this VM does not use, so it is not the update path here.
 - Seen in the browser on the seeded catalogue: ticked a photo and a drone
   clip, Send to Premiere produced `golf course selects.xml` at `Y:\` paths with
-  the tag on each marker; the bar wraps at 375 px. Migration 0028 up, down,
+  the tag on each marker; the bar wraps at 375 px. Migration 0028 (now 0029) up, down,
   up on SQLite. Golden XML for a 29.97 interview with 23.976 drone, clamped
   handles and a merge, at Windows and Mac paths.
 - **Needs the operator:** a Mac mini path profile for GELCO (none exists;
@@ -555,6 +672,11 @@ the day it was made, never used) redacted.
 6. claude.ai's browser connector: Tailscale Funnel plus an OAuth layer that
    issues tokens bound to panel tokens — only if the laptop clients turn out
    not to be enough.
+7. (2026-11-09) Shot windows for GELCO, course by course, starting with
+   Brookside and Conestoga (the 2026-11-09 entry's operator steps); then the
+   Premiere XML fixes held out of that change — frame rate (the clip items
+   declare 30 for 59.94 files), stereo music, speed per cut and extra
+   tracks in `build_rough_cut`.
 
 ## Where things stand — 2026-09-24 (system review)
 

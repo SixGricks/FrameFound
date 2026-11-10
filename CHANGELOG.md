@@ -6,6 +6,56 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (2026-11-10)
+- Next.js 15.5.22 → 15.5.29: fixes three critical remote-code-execution
+  advisories (CVE-2026-75604, GHSA-2464-fhr4-w9xw, GHSA-2xp9-vwfh-vxw4)
+  that failed the web image scan.
+
+### Fixed (2026-11-10)
+- Backend type check passes under SQLAlchemy 2.0 and 2.1 alike (CI resolves
+  2.1; the VM image is pinned to 2.0).
+- The Google Drive key box's placeholder no longer looks like a service
+  account key to the image's secret scan.
+- MCP `decide_tags` and `start_api_review` take the short ids that
+  `find_media` and `search_media` print, like every other tool.
+- `contact_sheet` reads a `find_shots` line's time range from its own field,
+  so a clip named `2026-11-03_course` no longer seeks to 2026 s.
+
+### Added (2026-11-09) — shot intelligence for editing
+- Motion analysis per video, from the proxy (never the original), on the
+  `frames` queue after the proxy: block phase correlation and an affine fit
+  in numpy (no new dependency), camera and subject motion separately, a
+  10 Hz motion track (derivative kind `motion`), and **shot windows** —
+  move (static, pan, tilt, push-in, pull-out, orbit, rise, descend, lateral
+  glide, top-down drift), direction, speed, subject energy, and smoothness
+  per playback speed (25–800%). Start/middle/end stills per window.
+- Light per window: sun elevation from GPS (or the folder's photographs')
+  and capture time with the NOAA formula, as night / blue hour / golden
+  hour / low, mid, high sun; and the measured look (overcast or direct,
+  warmth). Framing and subjects from CLIP against a vocabulary kept as data
+  (golf-course construction built in; JSON files in `<data_dir>/vocabularies`).
+  Descriptors, not tags: nothing enters the review queue.
+- MCP: `find_shots` (filter windows across a library by folder, dates, move,
+  smoothness at a speed, timeline length at that speed, energy, light,
+  subjects, already used; flags slow motion that would duplicate frames),
+  `contact_sheet` (one JPEG of up to 24 moments, or start/middle/end strips),
+  `recent_cuts` (shot count, average length, speed, move, light and subject
+  mix of the last cuts). `get_scenes` lists each scene's windows.
+- Cut history: `build_rough_cut` records every cut it builds (new `client`
+  and `record` parameters); `python -m framefound.ops.shots import-cut`
+  reads an FCP7 XML timeline into history.
+- `python -m framefound.ops.shots backfill` (with `--make-proxies` for a
+  library whose proxies are off, and `--inline` to time it), `describe`,
+  `inspect`. The scanner's visual sweep re-queues videos with a proxy and no
+  motion track. Migration 0028 (`shot_windows`, `cuts`, `cut_pieces`).
+
+### Changed (2026-11-09)
+- MCP list answers are compact by default: `find_media`, `search_media` and
+  `find_shots` return one line per item with an 8-character id and only the
+  fields that hold something — no signed URLs, server paths or suggested
+  tags unless `verbose` or `fields` asks. Every tool accepts the short id.
+  The REST API, web UI and panels are unchanged.
+
 ### Added (2026-11-06)
 - Send selects to Premiere: one FCP7 XML with a bin of the source clips (a
   marker at each moment, its comment the sentence said, the tag or
@@ -25,7 +75,7 @@ versioning: [Semantic Versioning](https://semver.org/).
   `proxy_pattern`) are paired with their original instead of catalogued:
   out of search, Browse, tagging, the review queues and the processing
   sweeps, and decoded in the original's place for frame sampling and scene
-  detection. A proxy with no original stays an asset. Migration 0028;
+  detection. A proxy with no original stays an asset. Migration 0029;
   existing rows: `python -m framefound.ops.pair_proxies` (report), then
   `--apply`. Tag decisions on a proxy move to its original.
 

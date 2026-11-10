@@ -1,4 +1,4 @@
-"""Editing proxies paired with their originals (migration 0028, ADR-0021).
+"""Editing proxies paired with their originals (migration 0029, ADR-0021).
 
 Premiere's ingest writes a proxy beside each clip it imports:
 `Pete Dye/2025 10 28/Proxies/MVI_4513_Proxy.mp4` for
