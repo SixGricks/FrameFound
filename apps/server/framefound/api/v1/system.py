@@ -84,7 +84,7 @@ async def system_health(_user: CurrentUser, db: DbDep, settings: SettingsDep) ->
     try:
         import redis.asyncio as aioredis
 
-        client = aioredis.from_url(  # type: ignore[no-untyped-call]
+        client = aioredis.from_url(  # type: ignore[no-untyped-call, unused-ignore]
             settings.redis_url, socket_connect_timeout=2
         )
         try:
@@ -380,7 +380,7 @@ async def processing_report(
     try:
         import redis.asyncio as aioredis
 
-        client = aioredis.from_url(  # type: ignore[no-untyped-call]
+        client = aioredis.from_url(  # type: ignore[no-untyped-call, unused-ignore]
             settings.redis_url, socket_connect_timeout=2
         )
         try:

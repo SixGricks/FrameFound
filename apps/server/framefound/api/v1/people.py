@@ -305,7 +305,7 @@ async def _confirmed_counts(db: DbDep, ids: list[uuid.UUID]) -> dict[uuid.UUID, 
             .group_by(Face.person_id)
         )
     ).all()
-    return {row[0]: row[1] for row in rows}
+    return {row[0]: row[1] for row in rows if row[0] is not None}
 
 
 async def _covers(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, FaceOut]:

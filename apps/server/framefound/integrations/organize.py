@@ -70,7 +70,7 @@ async def catalogue_embedding(db: AsyncSession, stem: str, tokens: set[str]) -> 
     if not rows:
         return None
     if len(rows) == 1:
-        return list(rows[0][1])
+        return _vector(rows[0][1])
 
     def overlap(path: str) -> int:
         lowered = path.lower()
@@ -79,4 +79,10 @@ async def catalogue_embedding(db: AsyncSession, stem: str, tokens: set[str]) -> 
     best = max(rows, key=lambda r: overlap(r[0]))
     if tokens and overlap(best[0]) == 0:
         return None
-    return list(best[1])
+    return _vector(best[1])
+
+
+def _vector(embedding: list[float] | None) -> list[float] | None:
+    # The query already excludes rows without an embedding; SQLAlchemy 2.1
+    # still types the column as nullable.
+    return list(embedding) if embedding is not None else None

@@ -64,6 +64,20 @@ and telling an orbit from a push-in or ordering by time of day by eye.
   ffmpeg build) — none in code this change touches. Not deployed; GELCO has
   no shot windows until the steps below run.
 
+- GitHub CI (2026-11-10, PR #42) was red on `main` too, from two causes
+  this branch now fixes. **backend**: 11 mypy errors only under the
+  SQLAlchemy 2.1 / newer redis that CI resolves; the VM's pinned image
+  passed, so the gate missed them. Fixed to pass on both: explicit
+  `is not None` narrowing on rows the query already filters, and
+  `[no-untyped-call, unused-ignore]` on the four `aioredis.from_url` calls.
+  **docker-build (web)**: Trivy blocked Next.js 15.5.22 (three critical
+  remote-code-execution advisories), now 15.5.29; and it read the Google
+  Drive card's placeholder (`{ "type": "service_account", … }`) as a leaked
+  key, now reworded. Lint, typecheck and build pass locally. Codex's review
+  found two real gaps, both fixed with tests: the bulk tag tools refused the
+  short ids the compact answers print, and `contact_sheet` could read a
+  dated clip name as the shot's time range.
+
 **Needs the operator** (in order): deploy (migration 0028 runs on start);
 proxies and analysis for Brookside, then Conestoga —
 `docker compose exec worker-media python -m framefound.ops.shots backfill

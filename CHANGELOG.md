@@ -6,6 +6,21 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (2026-11-10)
+- Next.js 15.5.22 → 15.5.29: fixes three critical remote-code-execution
+  advisories (CVE-2026-75604, GHSA-2464-fhr4-w9xw, GHSA-2xp9-vwfh-vxw4)
+  that failed the web image scan.
+
+### Fixed (2026-11-10)
+- Backend type check passes under SQLAlchemy 2.0 and 2.1 alike (CI resolves
+  2.1; the VM image is pinned to 2.0).
+- The Google Drive key box's placeholder no longer looks like a service
+  account key to the image's secret scan.
+- MCP `decide_tags` and `start_api_review` take the short ids that
+  `find_media` and `search_media` print, like every other tool.
+- `contact_sheet` reads a `find_shots` line's time range from its own field,
+  so a clip named `2026-11-03_course` no longer seeks to 2026 s.
+
 ### Added (2026-11-09) — shot intelligence for editing
 - Motion analysis per video, from the proxy (never the original), on the
   `frames` queue after the proxy: block phase correlation and an affine fit

@@ -361,6 +361,16 @@ async def _asset(db: AsyncSession, asset_id: str) -> Asset:
     return asset
 
 
+async def _asset_key(db: AsyncSession, asset_id: str) -> uuid.UUID:
+    """The UUID behind a full or short asset id. A full UUID passes
+    straight through (the bulk tools report unknown ids themselves); a
+    short one is resolved like `_asset` does."""
+    try:
+        return uuid.UUID(asset_id.strip())
+    except ValueError:
+        return uuid.UUID(str((await _asset(db, asset_id)).id))
+
+
 async def _tag_by_name(db: AsyncSession, name: str) -> Tag | None:
     slug = slugify(name)
     if not slug:
@@ -1063,16 +1073,12 @@ def build_server() -> MCPServer:
 
         who = principal()
         _require_tag_scope(who)
-        ids: dict[str, list[uuid.UUID]] = {"accept": [], "reject": []}
-        for key, given in (("accept", accept or []), ("reject", reject or [])):
-            if len(given) > MAX_BULK_DECISIONS:
+        given = {"accept": accept or [], "reject": reject or []}
+        for key, raws in given.items():
+            if len(raws) > MAX_BULK_DECISIONS:
                 raise ToolError(f"At most {MAX_BULK_DECISIONS} ids in {key}")
-            for raw in given:
-                try:
-                    ids[key].append(uuid.UUID(raw))
-                except ValueError:
-                    raise ToolError(f"{raw!r} is not an asset id") from None
         async with open_session() as db:
+            ids = {key: [await _asset_key(db, raw) for raw in raws] for key, raws in given.items()}
             found = await _tag_by_name(db, tag)
             if found is None:
                 raise ToolError(f"No tag called {tag!r}. list_tags shows the vocabulary.")
@@ -1137,10 +1143,9 @@ def build_server() -> MCPServer:
         from framefound.api.v1.tags import queue_claude_review
 
         async with open_session() as db:
+            keys = [await _asset_key(db, a) for a in (asset_ids or [])]
             try:
-                queued, message = await queue_claude_review(
-                    db, [uuid.UUID(a) for a in (asset_ids or [])], limit
-                )
+                queued, message = await queue_claude_review(db, keys, limit)
             except ValueError as err:
                 raise ToolError(str(err)) from None
         log.info("mcp.review_started", queued=queued, by=who.token_name)

@@ -284,7 +284,7 @@ async def _queue_busy(name: str) -> bool:
 
         from framefound.config import get_settings
 
-        client = aioredis.from_url(  # type: ignore[no-untyped-call]
+        client = aioredis.from_url(  # type: ignore[no-untyped-call, unused-ignore]
             get_settings().redis_url, socket_connect_timeout=2
         )
         try:

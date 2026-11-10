@@ -400,25 +400,37 @@ async def _still(db: AsyncSession, asset: Asset, ts_ms: int) -> tuple[Any, int]:
     return blank, -1
 
 
-_RANGE = re.compile(r"(\d+(?:\.\d+)?)\s*[–\-]\s*(\d+(?:\.\d+)?)\s*s?")
+_NUMBER = r"(\d+(?:\.\d+)?)"
+# "12.0-19.5" after an "@", and "12.0-19.5s" as its own word in a find_shots
+# line; a whole word with the trailing "s", so a clip named
+# "2026-11-03_course" is never read as a time range.
+_EXPLICIT = re.compile(rf"@\s*{_NUMBER}(?:\s*[–\-]\s*{_NUMBER})?\s*s?")
+_RANGE_WORD = re.compile(rf"{_NUMBER}[–\-]{_NUMBER}s")
+_MOMENT_WORD = re.compile(rf"{_NUMBER}s")
 _ID = re.compile(r"\b([0-9a-fA-F]{8}(?:[0-9a-fA-F-]{0,28}))\b")
 
 
 def parse_shot(line: str) -> tuple[str, float, float | None]:
     """An asset id and a time range from a find_shots line ("ab12cd34
-    DJI_0639 12.0–19.5s orbit …"), from "ab12cd34@12.0-19.5", or from
+    DJI_0639 12.0-19.5s orbit …"), from "ab12cd34@12.0-19.5", or from
     "ab12cd34@12.0" (a single moment)."""
     text = line.strip()
     found = _ID.search(text)
     if not found:
         raise ToolError(f"No asset id in {line!r}")
     rest = text[found.end() :]
-    span = _RANGE.search(rest)
-    if span:
-        return found.group(1), float(span.group(1)), float(span.group(2))
-    moment = re.search(r"(\d+(?:\.\d+)?)\s*s?", rest)
-    if moment:
-        return found.group(1), float(moment.group(1)), None
+    explicit = _EXPLICIT.match(rest)
+    if explicit:
+        end = explicit.group(2)
+        return found.group(1), float(explicit.group(1)), float(end) if end else None
+    for word in rest.split():
+        span = _RANGE_WORD.fullmatch(word)
+        if span:
+            return found.group(1), float(span.group(1)), float(span.group(2))
+    for word in rest.split():
+        moment = _MOMENT_WORD.fullmatch(word)
+        if moment:
+            return found.group(1), float(moment.group(1)), None
     raise ToolError(f"No time range in {line!r}; give it as id@start-end")
 
 

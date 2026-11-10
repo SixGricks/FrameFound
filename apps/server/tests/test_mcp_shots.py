@@ -17,6 +17,7 @@ from test_mcp import connect, env, serving  # noqa: F401 - pytest fixture
 from framefound.config import get_settings
 from framefound.db.models import Asset, Frame, Library, ShotWindow
 from framefound.mcp import compact
+from framefound.mcp.shots import parse_shot
 from framefound.ops.shots import parse_timeline
 
 BASE = datetime(2026, 11, 2, 20, 0, tzinfo=UTC)
@@ -426,6 +427,23 @@ async def test_every_tool_takes_the_short_id(env: dict) -> None:  # noqa: F811
         bogus = await session.call_tool("get_media", {"id": "zz12"})
     assert found.structured_content["id"] == str(kitchen)
     assert bogus.is_error
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("ab12cd34 DJI_0639 12.0-19.5s orbit left .91", ("ab12cd34", 12.0, 19.5)),
+        # Numbers in the clip name are not the shot's time range.
+        ("ab12cd34 2026-11-03_course 12.0-19.5s orbit", ("ab12cd34", 12.0, 19.5)),
+        ("ab12cd34 Hole 7-8 tee 3.5s static", ("ab12cd34", 3.5, None)),
+        ("ab12cd34@12.0-19.5", ("ab12cd34", 12.0, 19.5)),
+        ("ab12cd34@40.2", ("ab12cd34", 40.2, None)),
+    ],
+)
+def test_a_shot_line_gives_its_id_and_time_range(
+    line: str, expected: tuple[str, float, float | None]
+) -> None:
+    assert parse_shot(line) == expected
 
 
 def test_a_premiere_timeline_reads_back_into_pieces() -> None:
