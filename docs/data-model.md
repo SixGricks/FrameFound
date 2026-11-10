@@ -73,6 +73,25 @@ embedding vector(512) HNSW (CLIP space), caption (nullable), ocr_text
 (nullable), labels JSONB with confidences. Images get exactly one row
 (ts_ms = 0), unifying image and video-frame vector search in one table.
 
+### `shot_windows` (migration 0028)
+One row per stretch of a video where the camera keeps doing one thing,
+written by the motion pass from the proxy (`processing/shots.py`): asset_id,
+idx, start_ms/end_ms, move, direction, speed (frame widths/s), smooth and
+smooth_by_speed (JSON, "25" … "800"), energy and energy_score, source_fps,
+features (the mean motion terms, so a move can be re-labelled without a
+decode), sun_elevation, light, look (JSON: brightness, saturation, warmth,
+contrast, sky), framing and subjects (JSON, from CLIP), analysis_version,
+described_at. Rebuilt whole on re-analysis. Descriptors, not tags. The
+motion track itself is a derivative of kind `motion` (JSON, 10 Hz).
+
+### `cuts` / `cut_pieces` (migration 0028)
+Every rough cut built through `build_rough_cut` (or imported from an FCP7
+XML): title, client, library_id, source (mcp|import), profile, duration_s,
+piece_count, created_by, created_at. Pieces: position, asset_id (SET NULL),
+filename, in_ms/out_ms, speed, and `shot` — a JSON snapshot of the window the
+piece came from (move, light, subjects, smoothness at its speed), so history
+does not shift when a clip is re-analysed.
+
 ### `tags` / `asset_tags`
 tags: name, parent_id (hierarchy), source (user|ai|system|imported).
 asset_tags: asset_id, tag_id, confidence, source_model, reviewed.

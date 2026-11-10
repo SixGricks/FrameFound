@@ -41,33 +41,44 @@ def _font(size: int) -> Any:
         return ImageFont.load_default()
 
 
-def compose(tiles: list[tuple[str, Any]], title: str = "") -> Any:
-    """One sheet: up to PER_SHEET (label, thumbnail) pairs in a grid, the
-    title across the top. Rows that are not needed are not drawn."""
+def compose(
+    tiles: list[tuple[str, Any]],
+    title: str = "",
+    *,
+    columns: int = COLUMNS,
+    cell_width: int = CELL_WIDTH,
+    cell_image_height: int = CELL_IMAGE_HEIGHT,
+    per_sheet: int = PER_SHEET,
+    label_size: int = 15,
+) -> Any:
+    """One sheet: up to `per_sheet` (label, thumbnail) pairs in a grid, the
+    title across the top. Rows that are not needed are not drawn. The
+    defaults are the listing sheet's; the MCP contact sheet (mcp/shots.py)
+    sets its own grid."""
     from PIL import Image, ImageDraw
 
-    tiles = tiles[:PER_SHEET]
-    rows = max(1, -(-len(tiles) // COLUMNS))
+    tiles = tiles[:per_sheet]
+    rows = max(1, -(-len(tiles) // columns))
     header = 44 if title else 0
-    cell_height = CELL_IMAGE_HEIGHT + LABEL_HEIGHT
-    width = GUTTER + COLUMNS * (CELL_WIDTH + GUTTER)
+    cell_height = cell_image_height + LABEL_HEIGHT
+    width = GUTTER + columns * (cell_width + GUTTER)
     height = header + GUTTER + rows * (cell_height + GUTTER)
     sheet = Image.new("RGB", (width, height), BACKGROUND)
     draw = ImageDraw.Draw(sheet)
     if title:
         draw.text((GUTTER, 12), title, fill=INK, font=_font(22))
 
-    label_font = _font(15)
+    label_font = _font(label_size)
     for index, (label, tile) in enumerate(tiles):
-        column, row = index % COLUMNS, index // COLUMNS
-        x = GUTTER + column * (CELL_WIDTH + GUTTER)
+        column, row = index % columns, index // columns
+        x = GUTTER + column * (cell_width + GUTTER)
         y = header + GUTTER + row * (cell_height + GUTTER)
         # Centred in its cell, whatever its orientation.
-        offset_x = x + (CELL_WIDTH - tile.width) // 2
-        offset_y = y + (CELL_IMAGE_HEIGHT - tile.height) // 2
+        offset_x = x + (cell_width - tile.width) // 2
+        offset_y = y + (cell_image_height - tile.height) // 2
         sheet.paste(tile, (offset_x, offset_y))
         # Long names are cut rather than wrapped: the number leads, and the
         # number is what the sheet is for.
         text = label if len(label) <= 52 else label[:51] + "…"
-        draw.text((x + 2, y + CELL_IMAGE_HEIGHT + 8), text, fill=INK, font=label_font)
+        draw.text((x + 2, y + cell_image_height + 8), text, fill=INK, font=label_font)
     return sheet

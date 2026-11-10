@@ -22,7 +22,9 @@ the catalogue silently stopped gaining searchable data.
 Stage chain: extract_metadata -> generate_derivatives + generate_proxy
 (+ sample_frames for video); generate_derivatives -> sample_frames for
 stills, whose one frame is their thumbnail; sample_frames -> embed_frames +
-detect_faces. Anything the chain drops, the scanner's maintenance sweep
+detect_faces; generate_proxy -> analyze_motion (shot windows, from the
+proxy); embed_frames and analyze_motion -> describe_shots once a video has
+both windows and vectors. Anything the chain drops, the scanner's maintenance sweep
 re-queues. Every task is idempotent; each execution writes a Job history row (the
 processing dashboard's data source). Each task run creates and disposes its
 own engine — asyncpg pools are event-loop-bound and each `asyncio.run` gets a
@@ -226,12 +228,23 @@ class ProcessingPaused(Exception):
     work is picked up by a later scan or a manual reprocess."""
 
 
-async def _proxy(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+async def _proxy(
+    db: AsyncSession, asset: Asset, library: Library, path: Path, requested: bool = False
+) -> None:
     # Re-checked at run time so disabling proxies on a library immediately
-    # no-ops any jobs already sitting in the queue.
-    if asset.media_type != "video" or not library.generate_proxies:
+    # no-ops any jobs already sitting in the queue — unless this proxy was
+    # asked for by name (the shot backfill, for a course being edited).
+    if asset.media_type != "video" or not (library.generate_proxies or requested):
         return
     await deriv.generate_video_proxy(db, get_settings().data_dir, asset, library, path)
+    # The motion analysis reads only the proxy, so it follows the proxy.
+    from framefound.processing import shots
+
+    if shots.proxy_path(get_settings().data_dir, asset.id).is_file():
+        try:
+            analyze_motion.delay(str(asset.id))
+        except Exception:
+            log.warning("proxy.motion_enqueue_failed", asset_id=str(asset.id), exc_info=True)
 
 
 async def _transcribe_audio(asset: Asset, path: Path) -> "TranscriptionResult":
@@ -379,10 +392,19 @@ def generate_derivatives(asset_id: str) -> None:
     retry_backoff=True,
     retry_kwargs={"max_retries": 2},
 )
-def generate_proxy(asset_id: str) -> None:
-    """Browser-playable H.264 proxy for one video asset (idempotent)."""
+def generate_proxy(asset_id: str, requested: bool = False) -> None:
+    """Browser-playable H.264 proxy for one video asset (idempotent).
+    `requested` makes one even where the library has proxies switched off."""
+    import functools
+
     try:
-        asyncio.run(_with_asset("generate_proxy", uuid.UUID(asset_id), _proxy))
+        asyncio.run(
+            _with_asset(
+                "generate_proxy",
+                uuid.UUID(asset_id),
+                functools.partial(_proxy, requested=requested),
+            )
+        )
     except deriv.OutOfSpace as exc:
         log.warning("proxy.paused_low_disk", asset_id=asset_id, reason=str(exc))
     except Exception:
@@ -558,6 +580,11 @@ async def _embed_frames(db: AsyncSession, asset: Asset, library: Library, path: 
         from framefound.processing.tag_tasks import suggest_tags_for_asset
 
         await suggest_tags_for_asset(db, asset.id)
+        # Shot descriptors (framing, subjects) read these vectors.
+        from framefound.processing import shots
+
+        if asset.media_type == "video" and await shots.has_windows(db, asset.id):
+            describe_shots.delay(str(asset.id))
 
 
 @celery_app.task(
@@ -573,6 +600,60 @@ def embed_frames(asset_id: str) -> None:
         asyncio.run(_with_asset("embed_frames", uuid.UUID(asset_id), _embed_frames))
     except Exception:
         log.error("embeddings.failed", asset_id=asset_id, exc_info=True)
+        raise
+
+
+async def _analyze_motion(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+    from framefound.processing import shots
+
+    try:
+        await shots.analyse_motion(db, asset, library, path)
+    except shots.NoProxy:
+        # Not an error: proxies may be off for this library. The backfill
+        # asks for them by name; the sweep only picks clips that have one.
+        log.info("shots.no_proxy", asset_id=str(asset.id))
+        return
+    if await shots.has_embeddings(db, asset.id):
+        describe_shots.delay(str(asset.id))
+
+
+@celery_app.task(
+    name="framefound.analyze_motion",
+    # `frames`: decode-bound like sampling, and it reads the local proxy.
+    queue="frames",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 1},
+)
+def analyze_motion(asset_id: str) -> None:
+    """Camera and subject motion, windows and light for one video, from its
+    proxy (idempotent; rebuilds the clip's windows)."""
+    try:
+        asyncio.run(_with_asset("analyze_motion", uuid.UUID(asset_id), _analyze_motion))
+    except Exception:
+        log.error("shots.motion_failed", asset_id=asset_id, exc_info=True)
+        raise
+
+
+async def _describe_shots(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
+    from framefound.processing import shots
+
+    await shots.describe_shots(db, asset)
+
+
+@celery_app.task(
+    name="framefound.describe_shots",
+    queue="vision",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 1},
+)
+def describe_shots(asset_id: str) -> None:
+    """Framing and subjects for one video's windows, from CLIP (idempotent)."""
+    try:
+        asyncio.run(_with_asset("describe_shots", uuid.UUID(asset_id), _describe_shots))
+    except Exception:
+        log.error("shots.describe_failed", asset_id=asset_id, exc_info=True)
         raise
 
 

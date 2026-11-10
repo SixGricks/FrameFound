@@ -121,6 +121,13 @@ class Scene(BaseModel):
     frame_url: str | None = Field(
         description="Signed link to the picture, for a person on the network to open"
     )
+    windows: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The shot windows inside this scene, one compact line each: "
+            "in–out, move, smoothness, subject energy, light, subjects"
+        ),
+    )
 
 
 class ScenesResult(BaseModel):
@@ -138,6 +145,8 @@ class CutIn(BaseModel):
         default=None, description="End, seconds into the source; a photo's hold length"
     )
     note: str = Field(default="", max_length=500, description="Becomes a marker on the cut")
+    # Speed is recorded in cut history only; the XML plays every piece at
+    # 100% until speed per cut lands in the timeline itself.
 
 
 class RoughCut(BaseModel):
@@ -151,6 +160,9 @@ class RoughCut(BaseModel):
         description="Files with no path for this profile; they will import offline"
     )
     note: str
+    recorded: bool = Field(
+        default=False, description="Whether the cut was written to cut history (recent_cuts)"
+    )
 
 
 # --- helpers -----------------------------------------------------------------
@@ -381,6 +393,9 @@ def register(server: MCPServer) -> None:
                     .order_by(Frame.ts_ms)
                 )
             ).all()
+            from framefound.mcp.shots import window_line, windows_for
+
+            windows = (await windows_for(db, [asset.id])).get(asset.id, [])
         duration = asset.duration_s
         numbered = any(scene is not None for _, scene in rows)
         # With scene detection, a range starts only at a detected cut (and at
@@ -405,6 +420,11 @@ def register(server: MCPServer) -> None:
                 if position + 1 < len(groups)
                 else int((duration or ts_ms / 1000) * 1000)
             )
+            inside = [
+                window_line(w)
+                for w in windows
+                if min(w.end_ms, max(end_ms, ts_ms)) - max(w.start_ms, ts_ms) > 0
+            ]
             scenes.append(
                 Scene(
                     scene=position + 1,
@@ -413,6 +433,7 @@ def register(server: MCPServer) -> None:
                     frame_ms=ts_ms,
                     sampled_ms=sampled,
                     frame_url=_signed(who.base_url, asset.id, "frame", f"ts={ts_ms}"),
+                    windows=inside,
                 )
             )
         note = (
@@ -422,6 +443,11 @@ def register(server: MCPServer) -> None:
         )
         if not scenes:
             note = "No frames have been sampled from this video yet."
+        if windows:
+            note += (
+                " Each scene lists its shot windows (camera moves, smoothness at 100%); "
+                "find_shots searches them across clips and at other speeds."
+            )
         return ScenesResult(
             id=str(asset.id),
             filename=asset.filename,
@@ -436,6 +462,8 @@ def register(server: MCPServer) -> None:
         cuts: list[CutIn],
         profile: str | None = None,
         still_s: float = DEFAULT_STILL_S,
+        client: str | None = None,
+        record: bool = True,
     ) -> RoughCut:
         """Lay clips end to end into an FCP7 XML sequence that Premiere Pro
         and DaVinci Resolve open as a timeline (Final Cut Pro 10/11 cannot:
@@ -444,7 +472,13 @@ def register(server: MCPServer) -> None:
         id with in_s/out_s in seconds of its source (a photograph is held for
         out_s - in_s, or `still_s`). Pass the `profile` of the computer that
         will open it (path_profiles) so the clips link to the originals there.
-        Save the returned xml as a .xml file next to the project."""
+        Save the returned xml as a .xml file next to the project.
+
+        Each cut built is recorded in cut history (title, date, client,
+        every piece's in/out and the shot it came from), which recent_cuts
+        summarises and find_shots uses to flag or skip shots already used.
+        `client` defaults to the library most pieces come from; pass
+        `record: false` for a throwaway draft."""
         from framefound.nle.fcp7 import Clip, Cut, build_sequence
 
         who = principal()
@@ -499,6 +533,29 @@ def register(server: MCPServer) -> None:
 
         xml = build_sequence(title.strip() or "FrameFound rough cut", built)
         total = sum(c.out_s - c.in_s for c in built)
+        recorded = False
+        if record:
+            from framefound.mcp.shots import record_cut
+
+            pieces = [
+                (assets[cut.id], piece.in_s, piece.out_s, 1.0)
+                for cut, piece in zip(cuts, built, strict=True)
+            ]
+            try:
+                async with open_session() as db:
+                    await record_cut(
+                        db,
+                        title.strip() or "FrameFound rough cut",
+                        pieces,
+                        client=client,
+                        profile=profile,
+                        created_by=who.user_id,
+                    )
+                recorded = True
+            except Exception:
+                # History is a record, not the product: the timeline still
+                # goes back to the editor.
+                log.warning("mcp.cut_not_recorded", exc_info=True)
         safe = "".join(ch if ch.isalnum() or ch in " -_" else "-" for ch in title).strip()
         note = f"{len(built)} cuts, {total:.1f}s."
         if unmapped:
@@ -507,6 +564,8 @@ def register(server: MCPServer) -> None:
                 + (f"profile {profile!r}" if profile else "any profile (none given)")
                 + "; they use the server's path and will import offline until relinked."
             )
+        if recorded:
+            note += " Recorded in cut history."
         log.info("mcp.rough_cut", cuts=len(built), seconds=round(total, 1), by=who.token_name)
         return RoughCut(
             title=title,
@@ -517,4 +576,5 @@ def register(server: MCPServer) -> None:
             xml=xml,
             unmapped=unmapped,
             note=note,
+            recorded=recorded,
         )

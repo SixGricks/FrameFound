@@ -266,7 +266,7 @@ class Asset(Base):
     library: Mapped[Library] = relationship(back_populates="assets")
 
 
-DERIVATIVE_KINDS = ("thumbnail", "preview", "poster", "proxy", "waveform")
+DERIVATIVE_KINDS = ("thumbnail", "preview", "poster", "proxy", "waveform", "motion")
 
 
 class Job(Base):
@@ -786,3 +786,117 @@ class AiUsage(Base):
     )
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     note: Mapped[str] = mapped_column(String(200), default="")
+
+
+class ShotWindow(Base):
+    """A stretch of a video where the camera keeps doing one thing.
+
+    Written by the motion analysis (processing/shots.py) from the proxy:
+    the move, the camera's speed and direction, how steady it is at each
+    playback speed, and how busy the subject is. The descriptor pass adds
+    light, framing and subjects. All of it describes; none of it judges —
+    which speed, pace or look an edit wants is the editor's call.
+
+    Rows are rebuilt whole when a clip is re-analysed, so nothing else
+    keys on their ids for long: cut history keeps a snapshot instead.
+    Descriptors, not tags: nothing here enters the tag review queue.
+    """
+
+    __tablename__ = "shot_windows"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "idx", name="uq_shot_windows_asset_idx"),
+        Index("ix_shot_windows_move", "move"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    idx: Mapped[int] = mapped_column(default=0)
+    start_ms: Mapped[int] = mapped_column()
+    end_ms: Mapped[int] = mapped_column()
+    # static | pan | tilt | push-in | pull-out | orbit | rise | descend |
+    # lateral glide | top-down drift (media/motion.MOVES)
+    move: Mapped[str] = mapped_column(String(20))
+    # Which way the camera travels: left/right/up/down/in/out/forward/back.
+    direction: Mapped[str | None] = mapped_column(String(10), default=None)
+    # Frame widths per second.
+    speed: Mapped[float] = mapped_column(Float, default=0.0)
+    # 0-1 at real time, and per playback speed ("25" ... "800").
+    smooth: Mapped[float] = mapped_column(Float, default=0.0)
+    smooth_by_speed: Mapped[dict[str, float]] = mapped_column(JSON, default=dict)
+    energy: Mapped[str] = mapped_column(String(8), default="low")  # low | medium | high
+    energy_score: Mapped[float] = mapped_column(Float, default=0.0)
+    source_fps: Mapped[float | None] = mapped_column(Float, default=None)
+    # The window's mean motion terms, kept so a move can be re-labelled
+    # (e.g. once framing says top-down) without decoding again.
+    features: Mapped[dict[str, float]] = mapped_column(JSON, default=dict)
+    # Light: the sun's elevation at the window's moment and place, its
+    # class (media/sun.LIGHT_CLASSES), and the measured look.
+    sun_elevation: Mapped[float | None] = mapped_column(Float, default=None)
+    light: Mapped[str | None] = mapped_column(String(12), default=None, index=True)
+    look: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Framing and subjects from CLIP (media/shot_vocabulary.py); empty
+    # until the descriptor pass has run.
+    framing: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    subjects: Mapped[dict[str, float]] = mapped_column(JSON, default=dict)
+    analysis_version: Mapped[int] = mapped_column(default=1)
+    described_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Cut(Base):
+    """A cut that was built — the record that lets the next video be
+    different on purpose.
+
+    Written when build_rough_cut runs (and by importing an older timeline,
+    ops/shots.py import-cut). The pieces are kept with a snapshot of what
+    each shot was (move, light, subjects, smoothness), so the summary of a
+    past cut does not change when a clip is re-analysed.
+    """
+
+    __tablename__ = "cuts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    # Who the video is for; defaults to the library most of its pieces
+    # come from (GELCO).
+    client: Mapped[str] = mapped_column(String(200), default="", index=True)
+    library_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("libraries.id", ondelete="SET NULL"), default=None, index=True
+    )
+    source: Mapped[str] = mapped_column(String(20), default="mcp")  # mcp | import
+    profile: Mapped[str | None] = mapped_column(String(100), default=None)
+    duration_s: Mapped[float] = mapped_column(Float, default=0.0)
+    piece_count: Mapped[int] = mapped_column(default=0)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    pieces: Mapped[list["CutPiece"]] = relationship(
+        back_populates="cut", cascade="all, delete-orphan", order_by="CutPiece.position"
+    )
+
+
+class CutPiece(Base):
+    __tablename__ = "cut_pieces"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    cut_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cuts.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(default=0)
+    # SET NULL: a cut that used a since-deleted file is still history.
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"), default=None, index=True
+    )
+    filename: Mapped[str] = mapped_column(String(512), default="")
+    in_ms: Mapped[int] = mapped_column(default=0)
+    out_ms: Mapped[int] = mapped_column(default=0)
+    speed: Mapped[float] = mapped_column(Float, default=1.0)
+    # The window the piece came from, as it was described then: move,
+    # direction, light, subjects, smoothness at this speed, idx.
+    shot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    cut: Mapped[Cut] = relationship(back_populates="pieces")

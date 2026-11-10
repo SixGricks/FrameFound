@@ -31,6 +31,7 @@ _CONTENT_TYPES = {
     "png": "image/png",
     "mp4": "video/mp4",
     "vtt": "text/vtt",
+    "json": "application/json",
 }
 
 

@@ -6,6 +6,41 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (2026-11-09) — shot intelligence for editing
+- Motion analysis per video, from the proxy (never the original), on the
+  `frames` queue after the proxy: block phase correlation and an affine fit
+  in numpy (no new dependency), camera and subject motion separately, a
+  10 Hz motion track (derivative kind `motion`), and **shot windows** —
+  move (static, pan, tilt, push-in, pull-out, orbit, rise, descend, lateral
+  glide, top-down drift), direction, speed, subject energy, and smoothness
+  per playback speed (25–800%). Start/middle/end stills per window.
+- Light per window: sun elevation from GPS (or the folder's photographs')
+  and capture time with the NOAA formula, as night / blue hour / golden
+  hour / low, mid, high sun; and the measured look (overcast or direct,
+  warmth). Framing and subjects from CLIP against a vocabulary kept as data
+  (golf-course construction built in; JSON files in `<data_dir>/vocabularies`).
+  Descriptors, not tags: nothing enters the review queue.
+- MCP: `find_shots` (filter windows across a library by folder, dates, move,
+  smoothness at a speed, timeline length at that speed, energy, light,
+  subjects, already used; flags slow motion that would duplicate frames),
+  `contact_sheet` (one JPEG of up to 24 moments, or start/middle/end strips),
+  `recent_cuts` (shot count, average length, speed, move, light and subject
+  mix of the last cuts). `get_scenes` lists each scene's windows.
+- Cut history: `build_rough_cut` records every cut it builds (new `client`
+  and `record` parameters); `python -m framefound.ops.shots import-cut`
+  reads an FCP7 XML timeline into history.
+- `python -m framefound.ops.shots backfill` (with `--make-proxies` for a
+  library whose proxies are off, and `--inline` to time it), `describe`,
+  `inspect`. The scanner's visual sweep re-queues videos with a proxy and no
+  motion track. Migration 0028 (`shot_windows`, `cuts`, `cut_pieces`).
+
+### Changed (2026-11-09)
+- MCP list answers are compact by default: `find_media`, `search_media` and
+  `find_shots` return one line per item with an 8-character id and only the
+  fields that hold something — no signed URLs, server paths or suggested
+  tags unless `verbose` or `fields` asks. Every tool accepts the short id.
+  The REST API, web UI and panels are unchanged.
+
 ### Added (2026-11-05, night)
 - Bulk tag review on the Tags page: down-to-here, shift-click ranges,
   select all, a pinned Yes / No / "yes to these, no to the rest" bar and

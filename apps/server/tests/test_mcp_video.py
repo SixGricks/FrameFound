@@ -121,6 +121,9 @@ async def test_the_video_tools_are_listed(env: dict) -> None:  # noqa: F811
         "get_transcript",
         "get_scenes",
         "build_rough_cut",
+        "find_shots",
+        "contact_sheet",
+        "recent_cuts",
     } <= names
 
 
@@ -338,7 +341,7 @@ async def test_every_at_ms_search_hands_back_opens_in_view_media(
 
     monkeypatch.setattr(search_api, "_visual_search", visual)
     async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
-        found = await session.call_tool("search_media", {"query": "barn"})
+        found = await session.call_tool("search_media", {"query": "barn", "verbose": True})
         hits = {h["id"]: h for h in found.structured_content["hits"]}
         assert hits[str(photo)]["at_ms"] is None
         assert hits[str(video)]["at_ms"] is not None
@@ -460,7 +463,8 @@ async def test_search_media_can_answer_with_mac_paths(env: dict) -> None:  # noq
     await _video(env)
     async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
         result = await session.call_tool(
-            "search_media", {"query": "barn", "profile": "Mac Mini", "media_type": "image"}
+            "search_media",
+            {"query": "barn", "profile": "Mac Mini", "media_type": "image", "verbose": True},
         )
     hits = result.structured_content["hits"]
     assert hits and all(h["media_type"] == "image" for h in hits)
