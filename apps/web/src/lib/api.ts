@@ -886,12 +886,15 @@ export interface ProcessingReport {
   assets_by_status: Record<string, number>;
   derivatives: Record<string, Record<string, number>>;
   jobs_last_hour: Record<string, number>;
+  /** worker -> status -> count; "server" is the server's own containers. */
+  workers_last_hour?: Record<string, Record<string, number>>;
   recent_failures: Array<{
     id: string;
     task_name: string;
     asset_id: string | null;
     error: string | null;
     started_at: string;
+    worker?: string | null;
   }>;
 }
 

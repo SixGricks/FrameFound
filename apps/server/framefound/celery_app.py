@@ -7,19 +7,60 @@ task modules for registration.
 Queues are segregated by resource class (ADR-0004):
   default    - metadata extraction, light work
   media      - FFmpeg transcodes (CPU/NVENC heavy)
+  exports    - the operator's own renders and exports; server workers only
   transcribe - ASR (GPU-eligible)
   vision     - embeddings, captions, OCR (GPU-eligible)
 """
 
-from celery import Celery
+import time
+from typing import Any, NoReturn
+
+import structlog
+from celery import Celery, Task
+from celery.exceptions import Reject
 from celery.schedules import crontab
 
 from framefound.config import get_settings
 from framefound.logging import configure_logging
+from framefound.storage import worker_roots
+from framefound.storage.worker_roots import NotHere, data_store_problem, is_remote_worker
 
 configure_logging()
 
-celery_app = Celery("framefound", broker=get_settings().redis_url)
+
+class FrameFoundTask(Task):  # type: ignore[misc]
+    """Every FrameFound task. Adds one thing: on a worker running on another
+    machine (docs/remote-workers.md), a job that machine cannot do goes back
+    to its queue for another worker instead of failing.
+
+    Two cases: the shared data store is not mounted there (checked before
+    every task, so nothing is ever written to an empty mountpoint), or the
+    task raised NotHere (a library it has no mapping for, or whose share it
+    cannot see). On the server neither can happen and this is a pass-through.
+    """
+
+    # Most tasks autoretry on any exception, which would turn a hand-back into
+    # a counted retry — and, after a few, a failure.
+    dont_autoretry_for = (Reject, NotHere)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if not is_remote_worker():
+            return super().__call__(*args, **kwargs)
+        problem = data_store_problem(get_settings().data_dir)
+        if problem is not None:
+            self._hand_back(problem)
+        try:
+            return super().__call__(*args, **kwargs)
+        except NotHere as err:
+            self._hand_back(str(err))
+
+    def _hand_back(self, reason: str) -> NoReturn:
+        structlog.get_logger().warning("task.handed_back", task=self.name, reason=reason)
+        time.sleep(worker_roots.HAND_BACK_PAUSE_S)
+        raise Reject(reason, requeue=True)
+
+
+celery_app = Celery("framefound", broker=get_settings().redis_url, task_cls=FrameFoundTask)
 celery_app.conf.update(
     task_default_queue="default",
     task_acks_late=True,  # a killed worker re-queues the job instead of losing it

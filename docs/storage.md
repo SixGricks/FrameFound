@@ -9,6 +9,11 @@ they are configured separately.
 | **Catalog database** | ~1 MB per 5k assets | No (back it up) | **Local disk**, always |
 | **Derivatives** (thumbnails, posters, proxies, frames, transcript sidecars) | large — proxies dominate | Yes, from originals | local disk *or* a NAS share |
 
+> **On the native Mac install** ([mac.md](mac.md)) proxies have a store of
+> their own, separate from the rest of the derived files and movable with
+> one command: `framefound proxies move <folder>`. What follows is for the
+> containers, where the whole derivative store moves together.
+
 ## Moving derivatives to a NAS
 
 The app disk is usually the smallest volume in the system, and 1080p proxies

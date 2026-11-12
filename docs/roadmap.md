@@ -3,6 +3,79 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-11 — FrameFound installs on the Mac mini as a program
+
+The 2012 Mac Pro's limits (no AVX, x264 and Whisper on Westmere cores) are
+what hold FrameFound back, and the always-on Mac mini (Apple silicon, 32 GB)
+already did FrameFound's heavy lifting by hand. Two things were built the
+same day. First, workers on the mini against the VM — which worked on paper
+but needed an SSH key, a tunnel, an NFS export, an autofs mount and a path
+map, and was judged convoluted. Then the simpler answer, which is the plan
+now: **FrameFound runs on the mini itself, natively, and the VM retires.**
+Guide: [mac.md](mac.md); decision: ADR-0022. Google Drive as a storage
+driver and local vision/LLM models for pre-assembly are separate items
+after the move.
+
+- **Native install** (`framefound/native`, `infrastructure/mac/install.sh`).
+  Each compose service is a launchd agent in the login session: Postgres
+  (Homebrew's, with pgvector, own cluster on a loopback port), Valkey (with
+  a password), API, web, Caddy, scanner, scheduler, four worker lanes and an
+  hourly backup check. Everything lives in `~/FrameFound`; no secret is
+  ever in a plist. Heavy lanes run below Adobe in priority.
+- **One command, `framefound`**: `install` (safe to re-run), `status`,
+  `start/stop/restart`, `doctor`, `logs`, `update`, `backup`, `restore`,
+  `proxies`, `migrate`, `ops <tool>`, `uninstall`.
+- **Proxies have their own store.** `FRAMEFOUND_PROXY_DIR` — the NAS now, an
+  external drive later with `framefound proxies move <folder>` (copies,
+  checks, switches; never deletes). The store carries a marker: nothing is
+  written without it, a missing store pauses proxies like a full disk,
+  the player says "not connected" rather than "missing", and the scanner
+  never catalogues inside a marked folder. `framefound proxies rebuild`
+  remakes missing proxies and refuses to run with the store unplugged.
+- **Migration in one command.** `framefound migrate --from user@host` copies
+  derived files while the old server runs, stops its app, moves the
+  catalogue, copies the delta, rewrites library roots (`/media/x` →
+  `/Volumes/x`) and carries the secret key. It refuses before changing
+  anything if a library has nowhere to go, the checkout is older than the
+  old server, a catalogue is already here, or the proxy store is away.
+  The old server is left intact (`docker compose up -d` undoes it).
+- **Backups** in the same archive format as `manage.sh backup`, nightly,
+  with an off-machine copy (`FRAMEFOUND_BACKUP_COPY_DIR`); `doctor` warns
+  until that is set.
+- **Also from today, kept:** `jobs.worker` (migration **0030**) and a
+  Machines section on the processing page; the `exports` queue for the
+  operator's own jobs (consumed by `worker-media` in both installs);
+  `FRAMEFOUND_MODELS_DIR`; VideoToolbox detection and
+  `FRAMEFOUND_ONNX_PROVIDER=coreml`, both opt-in, the second gated by
+  `doctor --parity`; remote workers as an unpackaged option
+  ([remote-workers.md](remote-workers.md)) — the Mac worker kit itself was
+  removed.
+- Checks: ruff and mypy clean; the suite passes locally. **Nothing has run
+  on a Mac**: launchd, Homebrew's Postgres, the web build and the migration
+  commands are exercised only through their argv lists. Expect the first
+  install to turn something up. Not deployed; the VM is untouched.
+
+**Needs the operator** (in order; all in [mac.md](mac.md)):
+1. On the mini: Homebrew installed, NAS connected, `ssh
+   framefound@192.168.1.193` working (`ssh-copy-id` once).
+2. `git clone … ~/FrameFound/src`, then
+   `bash ~/FrameFound/src/infrastructure/mac/install.sh --proxies "/Volumes/<share>/FrameFound Proxies"`.
+3. `framefound doctor`, then `framefound migrate --from framefound@192.168.1.193`.
+4. Point the Premiere panel, the Lightroom plugin and Claude's connector at
+   the mini; set `FRAMEFOUND_BACKUP_COPY_DIR`; set the Mac never to sleep.
+5. The steps that were waiting on a VM deploy now run here instead (the
+   restored catalogue is brought from the VM's schema to head on first
+   start, so the VM itself needs no further deploy):
+   `framefound ops pair_proxies --apply`, then the shots backfill.
+6. Optional: choose the proxy quality on the media engine
+   (`videotoolbox_proxy_args` in `processing/ffmpeg.py`); try
+   `framefound doctor --parity` for CoreML.
+7. When satisfied, on the VM: `docker compose down`.
+
+**Known gaps on the Mac:** no BRAW decoder (Linux build), the Security
+page's Tailscale button and the drive-management page (Linux-only), public
+HTTPS / Cloudflare Tunnel modes.
+
 ### 2026-11-10 — proxy pairing and selects brought up to date with shot intelligence
 
 PR #41 (2026-11-06 entry below) merged with `main` after PR #42 landed

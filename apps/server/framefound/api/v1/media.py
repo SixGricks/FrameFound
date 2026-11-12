@@ -22,6 +22,7 @@ from framefound.auth.deps import SESSION_COOKIE, DbDep, SettingsDep
 from framefound.db.models import Derivative
 from framefound.media.signing import SigningError, verify_media_signature
 from framefound.media.streaming import range_file_response
+from framefound.storage import stores
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -106,8 +107,12 @@ async def serve_derivative(
     if derivative is None:
         raise HTTPException(404, "No such media is available for this item")
 
-    path = settings.data_dir / derivative.relative_path
+    path = stores.derivative_path(settings.data_dir, derivative.relative_path, settings)
     if not path.is_file():
+        if stores.is_proxy(derivative.relative_path) and stores.proxy_store_problem(settings):
+            # The file is very likely fine and its drive or share is away;
+            # "regenerate" would be the wrong advice.
+            raise HTTPException(503, "The proxy store is not connected")
         raise HTTPException(404, "Media file is missing; it can be regenerated")
     content_type = _CONTENT_TYPES.get(derivative.media_format, "application/octet-stream")
     return _cacheable(request, path, content_type)

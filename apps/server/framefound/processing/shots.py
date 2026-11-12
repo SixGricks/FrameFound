@@ -36,6 +36,7 @@ from framefound.db.models import Asset, Derivative, Frame, Library, ShotWindow
 from framefound.media import motion
 from framefound.media.sun import light_class, sun_position
 from framefound.processing import derivatives as deriv
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
@@ -53,7 +54,7 @@ class NoProxy(RuntimeError):
 
 
 def proxy_path(data_dir: Path, asset_id: uuid.UUID) -> Path:
-    return data_dir / deriv.derivative_relpath(asset_id, "proxy", "mp4")
+    return stores.derivative_path(data_dir, deriv.derivative_relpath(asset_id, "proxy", "mp4"))
 
 
 def still_relpath(asset_id: uuid.UUID, ts_ms: int) -> str:

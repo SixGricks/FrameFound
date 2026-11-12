@@ -42,6 +42,7 @@ from framefound.scanner.proxies import is_proxy_path
 from framefound.scanner.proxies import reconcile as reconcile_proxies
 from framefound.scanner.stability import looks_at_rest
 from framefound.storage.reachability import unreachable_reason
+from framefound.storage.stores import STORE_MARKERS
 
 log = structlog.get_logger()
 
@@ -83,23 +84,29 @@ def _walk(
     while stack:
         current = stack.pop()
         try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    if entry.name.startswith("."):
+            with os.scandir(current) as listing:
+                entries = list(listing)
+            # FrameFound's own output (a data or proxy store somebody placed
+            # inside a library's share) is never footage: seeing the marker
+            # in a folder's listing skips that folder and everything under it.
+            if any(entry.name in STORE_MARKERS for entry in entries):
+                continue
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                rel = os.path.relpath(entry.path, root).replace(os.sep, "/")
+                if _excluded(rel, exclude_globs):
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                elif (
+                    entry.is_file(follow_symlinks=False)
+                    and extension_of(entry.name) in include_exts
+                ):
+                    try:
+                        yield rel, entry.stat()
+                    except OSError:
                         continue
-                    rel = os.path.relpath(entry.path, root).replace(os.sep, "/")
-                    if _excluded(rel, exclude_globs):
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
-                    elif (
-                        entry.is_file(follow_symlinks=False)
-                        and extension_of(entry.name) in include_exts
-                    ):
-                        try:
-                            yield rel, entry.stat()
-                        except OSError:
-                            continue
         except OSError:
             log.warning("scan.dir_unreadable", path=str(current))
             if unreadable is not None:

@@ -23,6 +23,8 @@ from typing import Any
 
 import structlog
 
+from framefound.ai.runtime import models_dir, onnx_providers
+
 log = structlog.get_logger()
 
 # The `buffalo_l` pack, published as ONNX. det_10g is the accurate detector;
@@ -82,9 +84,9 @@ def _l2_normalise(vector: Any) -> list[float]:
 class InsightFaceOnnx:
     """SCRFD + ArcFace, loaded lazily and shared per process."""
 
-    def __init__(self, cache_dir: str = "/models") -> None:
+    def __init__(self, cache_dir: str | None = None) -> None:
         # Same volume as the CLIP weights; there is no separate model dir.
-        self._cache_dir = cache_dir
+        self._cache_dir = cache_dir or models_dir()
         self._detector: Any = None
         self._recogniser: Any = None
 
@@ -103,7 +105,7 @@ class InsightFaceOnnx:
         # parallelism. Letting ORT grab every core starved the API once already.
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1
-        return ort.InferenceSession(path, options, providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(path, options, providers=onnx_providers())
 
     def detector(self) -> Any:
         if self._detector is None:

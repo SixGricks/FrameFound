@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from framefound.config import get_settings
 from framefound.db.models import Asset, Derivative, Library, ShotWindow, catalogued
 from framefound.media import motion
+from framefound.storage.worker_roots import local_root
 
 
 async def _library(db: AsyncSession, name: str) -> Library:
@@ -140,7 +141,7 @@ async def backfill(args: argparse.Namespace) -> int:
                 lib = libraries[asset.library_id]
                 started = time.monotonic()
                 try:
-                    count = await shots.analyse_motion(db, asset, lib, Path(lib.root_path))
+                    count = await shots.analyse_motion(db, asset, lib, local_root(lib.root_path))
                 except Exception as err:  # noqa: BLE001 - report and carry on
                     await db.rollback()
                     print(f"{asset.filename}: failed ({err})")

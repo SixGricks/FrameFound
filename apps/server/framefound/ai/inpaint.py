@@ -21,6 +21,7 @@ from typing import Any
 import structlog
 
 from framefound.ai.embeddings import EmbeddingUnavailable
+from framefound.ai.runtime import models_dir, onnx_providers
 
 log = structlog.get_logger()
 
@@ -51,9 +52,9 @@ def _get_session() -> Any:
             ) from err
         options = ort.SessionOptions()
         options.intra_op_num_threads = 5
-        path = hf_hub_download(MODEL_REPO, MODEL_FILE, cache_dir="/models")
+        path = hf_hub_download(MODEL_REPO, MODEL_FILE, cache_dir=models_dir())
         log.info("inpaint.loading_model", model=MODEL_REPO)
-        _session = ort.InferenceSession(path, options, providers=["CPUExecutionProvider"])
+        _session = ort.InferenceSession(path, options, providers=onnx_providers())
     return _session
 
 

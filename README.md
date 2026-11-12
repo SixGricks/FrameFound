@@ -46,6 +46,9 @@ Then open `http://<server>:8080` and follow the first-run wizard.
 
 GPU acceleration (NVIDIA): `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d`
 
+On a Mac, FrameFound installs as a program instead — no Docker, so it can use
+Apple silicon's GPU and hardware encoder: [docs/mac.md](docs/mac.md).
+
 ## Documentation
 
 | Document | Purpose |
@@ -55,6 +58,7 @@ GPU acceleration (NVIDIA): `docker compose -f docker-compose.yml -f docker-compo
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [docs/threat-model.md](docs/threat-model.md) | Security threat model |
 | [docs/remote-access.md](docs/remote-access.md) | Tailscale / DDNS / Cloudflare Tunnel design |
+| [docs/mac.md](docs/mac.md) | Installing and running natively on a Mac; moving proxies; migrating from the containers |
 | [docs/location.md](docs/location.md) | GPS, location inference, and places |
 | [docs/maps.md](docs/maps.md) | Optional Google Maps basemap and address lookup |
 | [docs/tagging.md](docs/tagging.md) | Tags that learn from your corrections, and Claude's second opinion |

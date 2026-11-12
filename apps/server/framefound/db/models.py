@@ -25,8 +25,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from framefound.config import get_settings
 from framefound.db.base import Base
 from framefound.db.vector_type import Embedding
+
+
+def _worker_name() -> str | None:
+    """The `jobs.worker` default: this process's machine, NULL on the server."""
+    return get_settings().worker_name.strip()[:100] or None
+
 
 Role = String(20)  # admin | user | readonly — validated in the service layer
 ROLES = ("admin", "user", "readonly")
@@ -321,6 +328,10 @@ class Job(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     error: Mapped[str | None] = mapped_column(String(500), default=None)
+    # Which machine ran it (FRAMEFOUND_WORKER_NAME); NULL is the server's own
+    # containers. Stamped by default so every place that writes a Job row
+    # records it without having to remember to.
+    worker: Mapped[str | None] = mapped_column(String(100), default=_worker_name)
 
 
 class Derivative(Base):

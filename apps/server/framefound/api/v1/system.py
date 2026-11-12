@@ -16,6 +16,7 @@ from sqlalchemy import func, select, text
 from framefound import __version__
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
 from framefound.db.models import Asset, Derivative, Job
+from framefound.storage import stores
 from framefound.storage.reachability import unreachable_reason
 
 log = structlog.get_logger()
@@ -38,7 +39,16 @@ _VOLUMES_CACHE: dict[_VolumesKey, tuple[float, list["VolumeStatus"]]] = {}
 # Order is the pipeline order, so the dashboard reads as a flow rather than
 # an alphabetical list.  must be here or the slowest stage in the
 # system would be invisible on the page built to show what is happening.
-QUEUES = ("metadata", "visuals", "frames", "vision", "transcribe", "media", "default")
+QUEUES = (
+    "metadata",
+    "visuals",
+    "frames",
+    "vision",
+    "transcribe",
+    "media",
+    "exports",
+    "default",
+)
 
 
 class ComponentStatus(BaseModel):
@@ -191,6 +201,12 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     libraries = (await db.execute(select(Library).order_by(Library.name))).scalars().all()
     for library in libraries:
         targets.append((library.name, Path(library.root_path), int(counts.get(library.id, 0))))
+    # A separate proxy store (storage/stores.py) is a drive or share that can
+    # be away. Listed last: on the same share as a library it is the same
+    # volume, and the library's name is the more useful label for it.
+    proxy_store = stores.separate_proxy_store(settings)
+    if proxy_store is not None:
+        targets.append(("Proxies", proxy_store, None))
 
     cache_key = tuple(targets)
     cached = _VOLUMES_CACHE.get(cache_key)
@@ -205,9 +221,11 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     # reported as unreachable rather than waited for.
     async def probe(path: Path, known: int | None) -> tuple[str | None, Any]:
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(_probe_volume, path, known), PROBE_TIMEOUT_S
-            )
+            if path == proxy_store:
+                check = asyncio.to_thread(_probe_proxy_store, path)
+            else:
+                check = asyncio.to_thread(_probe_volume, path, known)
+            return await asyncio.wait_for(check, PROBE_TIMEOUT_S)
         except TimeoutError:
             return f"This location did not answer within {PROBE_TIMEOUT_S:.0f} seconds.", None
 
@@ -271,6 +289,15 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     _VOLUMES_CACHE.clear()
     _VOLUMES_CACHE[cache_key] = (time.monotonic(), out)
     return out
+
+
+def _probe_proxy_store(path: Path) -> tuple[str | None, Any]:
+    """The proxy store is there only if its marker is: without that test
+    `disk_usage` would happily measure whatever disk an empty mountpoint
+    sits on, the mistake `_volumes` describes."""
+    if not (path / stores.PROXY_STORE_MARKER).is_file():
+        return "This drive or share is not connected.", None
+    return _probe_volume(path, None)
 
 
 def _probe_volume(path: Path, known: int | None) -> tuple[str | None, Any]:
@@ -360,8 +387,13 @@ class FailedJob(BaseModel):
     asset_id: uuid.UUID | None
     error: str | None
     started_at: datetime
+    worker: str | None = None  # None: the server's own containers
 
     model_config = {"from_attributes": True}
+
+
+# How a NULL `jobs.worker` is shown: the server's own containers.
+SERVER_WORKER_LABEL = "server"
 
 
 class ProcessingReport(BaseModel):
@@ -369,6 +401,9 @@ class ProcessingReport(BaseModel):
     assets_by_status: dict[str, int]
     derivatives: dict[str, dict[str, int]]  # kind -> status -> count
     jobs_last_hour: dict[str, int]  # status -> count
+    # worker -> status -> count over the same window; one key ("server")
+    # until a worker runs on another machine (docs/remote-workers.md).
+    workers_last_hour: dict[str, dict[str, int]] = {}
     recent_failures: list[FailedJob]
 
 
@@ -410,25 +445,17 @@ async def processing_report(
         derivatives.setdefault(kind, {})[status] = count
 
     hour_ago = text("now() - interval '1 hour'")
+    by_worker = select(Job.worker, Job.status, func.count()).group_by(Job.worker, Job.status)
     try:
-        jobs_last_hour = {
-            status: count
-            for status, count in (
-                await db.execute(
-                    select(Job.status, func.count())
-                    .where(Job.started_at > hour_ago)
-                    .group_by(Job.status)
-                )
-            ).all()
-        }
+        counted = (await db.execute(by_worker.where(Job.started_at > hour_ago))).all()
     except Exception:  # SQLite in tests has no now()-interval; report all-time
         await db.rollback()
-        jobs_last_hour = {
-            status: count
-            for status, count in (
-                await db.execute(select(Job.status, func.count()).group_by(Job.status))
-            ).all()
-        }
+        counted = (await db.execute(by_worker)).all()
+    jobs_last_hour: dict[str, int] = {}
+    workers_last_hour: dict[str, dict[str, int]] = {}
+    for worker, status, count in counted:
+        jobs_last_hour[status] = jobs_last_hour.get(status, 0) + count
+        workers_last_hour.setdefault(worker or SERVER_WORKER_LABEL, {})[status] = count
 
     failures = (
         (
@@ -444,5 +471,6 @@ async def processing_report(
         assets_by_status=assets_by_status,
         derivatives=derivatives,
         jobs_last_hour=jobs_last_hour,
+        workers_last_hour=workers_last_hour,
         recent_failures=[FailedJob.model_validate(j) for j in failures],
     )
