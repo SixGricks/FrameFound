@@ -18,6 +18,7 @@ from framefound.api.watchdog import LoopWatchdog
 from framefound.config import get_settings
 from framefound.errors import error_response, register_error_handlers
 from framefound.logging import configure_logging
+from framefound.storage.worker_roots import write_marker
 
 log = structlog.get_logger()
 
@@ -61,6 +62,9 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Proves to a worker on another machine that the folder it sees is
+        # this data store and not an empty mountpoint (storage/worker_roots.py).
+        write_marker(settings.data_dir)
         # One event loop serves every request; the watchdog names whatever
         # blocks it (see api/watchdog.py).
         watchdog = LoopWatchdog()

@@ -13,6 +13,7 @@ const QUEUE_LABELS: Record<string, string> = {
   visuals: "Thumbnails & posters",
   metadata: "Reading file details",
   media: "Video previews",
+  exports: "Exports & renders",
   transcribe: "Transcribing speech",
   vision: "Visual analysis",
   default: "Legacy queue",
@@ -75,6 +76,31 @@ export default function ProcessingPage() {
               </div>
             ))}
           </div>
+
+          {Object.keys(report.workers_last_hour ?? {}).length > 1 && (
+            <>
+              <div className="sectionhead">
+                <h2>Machines</h2>
+                <span className="faint mono">jobs in the last hour</span>
+              </div>
+              <div className="statgrid">
+                {Object.entries(report.workers_last_hour ?? {}).map(([worker, states]) => {
+                  const total = Object.values(states).reduce((a, b) => a + b, 0);
+                  return (
+                    <div className="stat" key={worker}>
+                      <p className="eyebrow">{worker}</p>
+                      <div className="stat-value">{total.toLocaleString()}</div>
+                      <p className="faint" style={{ fontSize: "0.76rem", margin: 0 }}>
+                        {Object.entries(states)
+                          .map(([status, count]) => `${count} ${status}`)
+                          .join(" · ")}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
 
           <div className="sectionhead">
             <h2>Generated files</h2>
@@ -146,7 +172,10 @@ export default function ProcessingPage() {
                     {report.recent_failures.map((job) => (
                       <tr key={job.id}>
                         <td>{TASK_LABELS[job.task_name] ?? job.task_name}</td>
-                        <td className="faint mono">{relativeTime(job.started_at)}</td>
+                        <td className="faint mono">
+                          {relativeTime(job.started_at)}
+                          {job.worker ? ` · ${job.worker}` : ""}
+                        </td>
                         <td className="muted">{job.error ?? "—"}</td>
                         <td>
                           {job.asset_id && (

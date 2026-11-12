@@ -37,9 +37,10 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import structlog
+from celery.exceptions import Reject
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from framefound.celery_app import celery_app
@@ -48,7 +49,14 @@ from framefound.db.models import PAIRED_PROXY_STATUS, Asset, Job, Library
 from framefound.processing import derivatives as deriv
 from framefound.processing.probe import probe_media
 from framefound.scanner.paths import PathValidationError, safe_join
+from framefound.storage import worker_roots
 from framefound.storage.reachability import unreachable_reason
+from framefound.storage.worker_roots import (
+    UnmappedRoot,
+    data_store_problem,
+    is_remote_worker,
+    local_root,
+)
 
 # Each Celery retry writes its own failed Job row; the scanner's give-up
 # count is measured in queueings, so it needs to know how many rows one makes.
@@ -91,6 +99,27 @@ _ASSET_FIELDS = (
 )
 
 LoadedHandler = Callable[[AsyncSession, Asset, Library, Path], Awaitable[None]]
+
+
+def _worker_label() -> str:
+    return get_settings().worker_name or "this worker"
+
+
+async def _hand_back(job: Job, reason: str) -> NoReturn:
+    """Return this job's message to its queue for another worker.
+
+    Only a worker on another machine does this (docs/remote-workers.md). The
+    things that stop it — its share not mounted, the data store not mounted,
+    no root_map entry for the library — say nothing about the job, which the
+    server can very likely do. Skipping instead would drain whole queues
+    through a broken worker in minutes. The Job row records the hand-back so
+    the processing page shows the machine struggling."""
+    job.status = "skipped"
+    job.error = f"Handed back by {_worker_label()}: {reason}"[:500]
+    log.warning("processing.handed_back", task=job.task_name, reason=reason)
+    await asyncio.sleep(worker_roots.HAND_BACK_PAUSE_S)
+    raise Reject(reason, requeue=True)
+
 
 # The short name callers hand to `_with_asset`, not the Celery route name.
 # Named rather than repeated so the two cannot drift into a comparison that
@@ -140,8 +169,18 @@ async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandle
                     job.status = "skipped"
                     job.error = "Editing proxy of another asset"
                     return
+                # A worker on another machine (docs/remote-workers.md) writes
+                # into a shared store; if that share is down it must write
+                # nothing rather than fill an empty local mountpoint.
+                problem = data_store_problem(get_settings().data_dir)
+                if problem is not None:
+                    await _hand_back(job, problem)
                 try:
-                    path = safe_join(Path(library.root_path), asset.relative_path)
+                    root = local_root(library.root_path)
+                except UnmappedRoot as err:
+                    await _hand_back(job, str(err))
+                try:
+                    path = safe_join(root, asset.relative_path)
                 except PathValidationError:
                     asset.processing_status = "path_rejected"
                     job.status = "failed"
@@ -153,15 +192,28 @@ async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandle
                     # A share that is down makes every file look deleted;
                     # flagging on that evidence turns an outage into
                     # thousands of false "missing" assets.
-                    reason = await asyncio.to_thread(unreachable_reason, Path(library.root_path), 1)
+                    reason = await asyncio.to_thread(unreachable_reason, root, 1)
                     if reason is not None:
+                        if is_remote_worker():
+                            # This machine's mount, most likely; the server
+                            # may well see the share.
+                            await _hand_back(job, reason)
                         job.error = reason[:500]
+                        return
+                    if is_remote_worker():
+                        # Only the server's scanner may call a file missing:
+                        # here it could as easily be this machine's mount.
+                        # The library is reachable, so the file is probably
+                        # gone and the scanner will say so: skip, no hand-back.
+                        job.error = f"Original file is not reachable from {_worker_label()}"
                         return
                     asset.availability = "missing"
                     job.error = "Original file is not reachable"
                     return
                 await handler(db, asset, library, path)
                 job.status = "succeeded"
+            except Reject:
+                raise  # a hand-back: the Job row is already filled in
             except Exception as exc:
                 await db.rollback()
                 job.status = "failed"
@@ -413,8 +465,8 @@ def generate_proxy(asset_id: str, requested: bool = False) -> None:
                 functools.partial(_proxy, requested=requested),
             )
         )
-    except deriv.OutOfSpace as exc:
-        log.warning("proxy.paused_low_disk", asset_id=asset_id, reason=str(exc))
+    except deriv.OutOfSpace as exc:  # low disk, or the proxy store is away
+        log.warning("proxy.paused", asset_id=asset_id, reason=str(exc))
     except Exception:
         log.error("proxy.failed", asset_id=asset_id, exc_info=True)
         raise
@@ -444,8 +496,8 @@ async def _editing_proxy_path(db: AsyncSession, asset: Asset, library: Library) 
     if proxy is None:
         return None
     try:
-        found = safe_join(Path(library.root_path), proxy.relative_path)
-    except PathValidationError:
+        found = safe_join(local_root(library.root_path), proxy.relative_path)
+    except (PathValidationError, UnmappedRoot):
         return None
     return found if found.is_file() else None
 
@@ -477,8 +529,9 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
         duration = asset.duration_s or 0.0
         # Prefer the proxy as the decode source: it is local, 1080p, and
         # H.264, where the original may be 4K on a network share.
-        proxy_rel = deriv.derivative_relpath(asset.id, "proxy", "mp4")
-        proxy = data_dir / proxy_rel
+        from framefound.processing import shots as shot_paths
+
+        proxy = shot_paths.proxy_path(data_dir, asset.id)
         has_proxy = proxy.is_file()
         if not has_proxy:
             # The editor's own proxy, when Premiere made one, stands in for
@@ -974,6 +1027,8 @@ def transcribe_asset(asset_id: str) -> None:
         if not asyncio.run(_transcribe_preflight(uuid.UUID(asset_id))):
             return
         asyncio.run(_with_asset("transcribe_asset", uuid.UUID(asset_id), _transcribe))
+    except Reject:
+        raise  # handed back to the queue by a remote worker; not a failure
     except Exception:
         log.error("transcribe.failed", asset_id=asset_id, exc_info=True)
         raise
@@ -1145,7 +1200,7 @@ def _round_key(embedding: list[float] | None) -> str:
 
 @celery_app.task(
     name="framefound.fetch_basemap",
-    queue="media",
+    queue="exports",
     # No autoretry: extraction reads a lot from a remote archive and retrying
     # automatically would burn bandwidth on a loop. Failures are reported and
     # re-requested by hand.
@@ -1305,7 +1360,7 @@ def cluster_unassigned_faces(limit: int = 2000) -> None:
 
 @celery_app.task(
     name="framefound.render_slideshow",
-    queue="media",
+    queue="exports",
     # No autoretry: a render is minutes of CPU, and the failures worth having
     # are deterministic (a missing preview, pacing that cannot fit its
     # transitions). Retrying automatically would burn the media queue on a loop.
@@ -1492,15 +1547,18 @@ async def _render_sources(
             sources[asset.id] = (data_dir / relpath, True)
             continue
         try:
-            sources[asset.id] = (safe_join(Path(library.root_path), asset.relative_path), False)
-        except PathValidationError:
+            sources[asset.id] = (
+                safe_join(local_root(library.root_path), asset.relative_path),
+                False,
+            )
+        except (PathValidationError, UnmappedRoot):
             continue
     return sources
 
 
 @celery_app.task(
     name="framefound.export_listing_zip",
-    queue="media",
+    queue="exports",
     # Deterministic work on local files: a failure will fail the same way
     # again, so retrying automatically would only burn the media queue.
     max_retries=0,
@@ -1752,7 +1810,7 @@ def export_listing_zip(
 
 @celery_app.task(
     name="framefound.inpaint_asset",
-    queue="media",
+    queue="exports",
     # Deterministic per input; retrying an 18-second model run on the same
     # pixels produces the same result or the same failure.
     max_retries=0,
@@ -1817,7 +1875,7 @@ def inpaint_asset(inpaint_id: str) -> None:
                         library = await db.get(Library, asset.library_id)
                         if library is None:
                             raise RuntimeError("Library no longer exists")
-                        base_path = safe_join(Path(library.root_path), asset.relative_path)
+                        base_path = safe_join(local_root(library.root_path), asset.relative_path)
                         first_round = True
 
                     def work() -> str:
@@ -1865,7 +1923,7 @@ def inpaint_asset(inpaint_id: str) -> None:
     name="framefound.ai_edit_listing",
     # media rather than metadata: sky compositing needs the segmentation
     # model, and worker-media mounts the models cache.
-    queue="media",
+    queue="exports",
     # Network-bound and idempotent-ish (a rerun writes new recipe versions,
     # which is the operator pressing the button again). No auto-retry: a
     # failing API fails the same way, and the per-photo loop already
@@ -2162,7 +2220,7 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
 
 @celery_app.task(
     name="framefound.collect_training_pairs",
-    queue="media",
+    queue="exports",
     # Idempotent and nightly: a failed pass is simply the next night's work.
     max_retries=0,
 )

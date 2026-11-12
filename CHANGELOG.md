@@ -6,6 +6,39 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (2026-11-11) — FrameFound as a program on a Mac
+- **Native macOS install** (docs/mac.md, ADR-0022):
+  `infrastructure/mac/install.sh` and the `framefound` command
+  (`framefound/native`). Every service runs as a launchd agent in the login
+  session — no Docker — from one folder, `~/FrameFound`.
+  Commands: `install`, `status`, `start`, `stop`, `restart`, `open`,
+  `doctor`, `logs`, `update`, `backup`, `restore`, `proxies`, `migrate`,
+  `ops`, `uninstall`.
+- **A separate, movable proxy store**: `FRAMEFOUND_PROXY_DIR`,
+  `framefound proxies move <folder>`, `framefound proxies rebuild`
+  (`python -m framefound.ops.proxy_store`). A store that is away pauses
+  proxy generation instead of failing it, and the media endpoint answers
+  503 "not connected" rather than 404. The System page lists the store.
+- **`framefound migrate --from user@host`**: moves a container install's
+  catalogue, settings and derived files to a native install and rewrites
+  library roots.
+- `REDIS_PASSWORD` (optional; set by the native install).
+- `jobs.worker` (migration 0030) and a **Machines** section on the
+  processing page; recent failures name their machine.
+- Workers on another machine, as an unpackaged option
+  (docs/remote-workers.md): `FRAMEFOUND_ROOT_MAP`, hand-back of jobs a
+  remote worker cannot do, `python -m framefound.ops.worker_check`,
+  `docker-compose.remote-workers.yml`.
+- VideoToolbox detection for proxies (used once its quality setting is
+  chosen), `FRAMEFOUND_ONNX_PROVIDER=coreml`, `FRAMEFOUND_MODELS_DIR`.
+
+### Changed (2026-11-11)
+- Listing exports, slideshow renders, object removal, AI edits, basemaps and
+  training pairs moved from the `media` queue to a new `exports` queue,
+  consumed by `worker-media` as before; `media` is now proxies alone.
+- The scanner skips any folder that holds a FrameFound store marker, so a
+  proxy or data store placed on a library's share is never catalogued.
+
 ### Security (2026-11-10)
 - Next.js 15.5.22 → 15.5.29: fixes three critical remote-code-execution
   advisories (CVE-2026-75604, GHSA-2464-fhr4-w9xw, GHSA-2xp9-vwfh-vxw4)

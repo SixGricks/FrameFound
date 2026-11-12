@@ -1,13 +1,15 @@
 """FFmpeg invocations for derivative generation.
 
 Safety rules as in probe.py: argv arrays only, hard timeouts, no shell.
-NVENC is auto-detected once per process and falls back to x264 silently —
-the GPU is an accelerator, never a requirement.
+NVENC (and VideoToolbox, on a macOS worker) is auto-detected once per
+process and falls back to x264 silently — hardware is an accelerator, never
+a requirement.
 """
 
 import functools
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import structlog
@@ -121,13 +123,13 @@ def damage_verdict(stderr_tail: str) -> str | None:
     return None
 
 
-@functools.cache
-def nvenc_available() -> bool:
-    """Functionally probe NVENC with a tiny test encode.
+def _encoder_works(codec: str) -> bool:
+    """Functionally probe a hardware encoder with a tiny test encode.
 
     Checking `-encoders` output is NOT sufficient: builds list h264_nvenc
     whenever it was compiled in, even with no NVIDIA GPU present, and then
-    fail at open time (found in deployment)."""
+    fail at open time (found in deployment). VideoToolbox is the same shape:
+    listed by every macOS build, usable only where the media engine is."""
     if shutil.which("ffmpeg") is None:
         return False
     try:
@@ -141,7 +143,7 @@ def nvenc_available() -> bool:
                 "-i",
                 "nullsrc=s=256x256:d=0.1",
                 "-c:v",
-                "h264_nvenc",
+                codec,
                 "-frames:v",
                 "1",
                 "-f",
@@ -155,6 +157,41 @@ def nvenc_available() -> bool:
         return completed.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+@functools.cache
+def nvenc_available() -> bool:
+    """NVIDIA's encoder, on the server with a GPU passed through."""
+    return _encoder_works("h264_nvenc")
+
+
+@functools.cache
+def videotoolbox_available() -> bool:
+    """Apple's media engine, on the native Mac install (docs/mac.md)."""
+    return sys.platform == "darwin" and _encoder_works("h264_videotoolbox")
+
+
+def videotoolbox_proxy_args(height: int) -> list[str] | None:
+    """FFmpeg video-codec arguments for a proxy made on Apple's media engine.
+
+    Return the argv slice that replaces libx264's
+    `["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]`, or None to
+    keep using libx264 on this machine.
+
+    The trade-off: h264_videotoolbox has no CRF. It takes either a
+    constant quality (`-q:v 1..100`, higher is better; Apple silicon only)
+    or a target bitrate (`-b:v`). Constant quality tracks the footage —
+    a static interior gets a small file, a drone pass over trees a big one —
+    which is what CRF 23 did. A bitrate is predictable on disk but either
+    starves busy shots (blocky foliage, which the motion analysis reads as
+    texture) or wastes space on still ones. `height` is the proxy's
+    target height (1080 by default) if you want the answer to scale.
+
+    Proxies feed the browser player, contact sheets and the shot motion
+    pass; Premiere's own proxies are separate files and unaffected.
+    """
+    # TODO(operator): choose the media-engine settings for proxies.
+    return None
 
 
 def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 1920) -> None:
@@ -278,9 +315,13 @@ def downscale_still(src: Path, dst: Path, max_edge: int) -> None:
 def transcode_proxy(src: Path, dst: Path, height: int = 1080) -> str:
     """1080p (default) H.264+AAC faststart MP4 proxy. Returns the codec used."""
     scale = f"scale=-2:'min({height},ih)'"
+    apple = videotoolbox_proxy_args(height) if videotoolbox_available() else None
     if nvenc_available():
         codec_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "26"]
         codec = "h264_nvenc"
+    elif apple is not None:
+        codec_args = apple
+        codec = "h264_videotoolbox"
     else:
         codec_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
         codec = "libx264"

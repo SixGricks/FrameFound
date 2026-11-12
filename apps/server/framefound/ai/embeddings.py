@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from framefound.ai.runtime import models_dir, onnx_providers
 from framefound.config import get_settings
 
 log = structlog.get_logger()
@@ -59,9 +60,13 @@ def _l2_normalise(values: Any) -> list[float]:
 class ClipOnnxProvider:
     """CLIP ViT-B/32 via ONNX Runtime. Sessions load lazily and are reused."""
 
-    def __init__(self, threads: int = 3, cache_dir: str = "/models") -> None:
+    def __init__(
+        self, threads: int = 3, cache_dir: str | None = None, providers: list[str] | None = None
+    ) -> None:
         self._threads = threads
-        self._cache_dir = cache_dir
+        self._cache_dir = cache_dir or models_dir()
+        # None: whatever FRAMEFOUND_ONNX_PROVIDER selects (ai/runtime.py).
+        self._providers = providers
         self._vision: Any = None
         self._text: Any = None
         self._tokenizer: Any = None
@@ -81,7 +86,7 @@ class ClipOnnxProvider:
         options = ort.SessionOptions()
         options.intra_op_num_threads = self._threads
         path = hf_hub_download(MODEL_REPO, filename, cache_dir=self._cache_dir)
-        return ort.InferenceSession(path, options, providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(path, options, providers=self._providers or onnx_providers())
 
     def _vision_session(self) -> Any:
         if self._vision is None:

@@ -1,0 +1,21 @@
+# Overlay: let workers on another machine reach the database and the queue.
+# See docs/remote-workers.md (the Mac mini is the first such worker).
+#
+# Add it to COMPOSE_FILE in .env, e.g.
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.braw.yml:docker-compose.remote-workers.yml
+#
+# Both ports bind to the VM's LOOPBACK only. Nothing new is reachable from
+# the network: a remote worker gets here through an SSH tunnel to this host
+# (key auth, encrypted), which lands on 127.0.0.1. Publishing on the LAN
+# instead would expose Valkey, which has no password, to every device on it.
+#
+# What loopback still trusts: any process on this VM can reach Valkey. The VM
+# runs nothing but FrameFound; if that changes, give Valkey a password first.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:16379:6379"

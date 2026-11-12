@@ -52,6 +52,7 @@ from framefound.db.models import (
 from framefound.mcp import compact
 from framefound.mcp.auth import Principal, open_session, principal
 from framefound.media.signing import SigningError, sign_media_url
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
@@ -899,7 +900,7 @@ def build_server() -> MCPServer:
             on = await _tags_on(db, [asset.id])
         if relative_path is None:
             raise ToolError(f"No {kind} has been generated for {asset.filename} yet")
-        path = get_settings().data_dir / str(relative_path)
+        path = stores.derivative_path(get_settings().data_dir, str(relative_path))
         if not path.is_file():
             raise ToolError(
                 f"The {shown} file for {asset.filename} is missing; it can be regenerated"

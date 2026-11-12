@@ -134,7 +134,11 @@ services:
           # turned out to be a single-stream figure: three parallel readers
           # pull 15 MB/s from the same NAS.
           memory: 8G
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media,frames", "--concurrency=3"]
+    # `exports` is the operator's own work — listing exports, slideshow
+    # renders, object removal, AI edits, basemaps — split from `media` so a
+    # worker on another machine (docs/remote-workers.md), which takes only
+    # bulk ingest, never picks one up. This service runs both, as before.
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "media,frames,exports", "--concurrency=3"]
     env_file: .env
     environment:
       FRAMEFOUND_MEDIA_ROOT: /media

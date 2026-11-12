@@ -8,8 +8,9 @@ values, never os.environ.
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,8 +21,34 @@ class Settings(BaseSettings):
     secret_key: str = ""  # required before signed URLs ship (M3); warned at startup
     setup_token: str = ""  # one-time token that creates the first admin
     data_dir: Path = Path("/data")
+    # Where video proxies live, when not with everything else under data_dir.
+    # Proxies are most of the derived data by size, so they are the part
+    # worth putting on a NAS share or an external drive. Same layout as under
+    # data_dir, so moving them is a copy and a change of this one value
+    # (`framefound proxies move`, storage/stores.py). None: under data_dir.
+    proxy_dir: Path | None = None
     media_root: Path = Path("/media")
+    # Model weights and caches. A volume at /models in the containers; a
+    # worker running natively on another machine points it at a local folder.
+    models_dir: Path = Path("/models")
     compute: Literal["cpu", "cuda"] = "cpu"
+    # ONNX Runtime execution provider for the vision models. "coreml" runs
+    # them on Apple silicon's GPU / Neural Engine (the native Mac install only);
+    # it falls back to the CPU per model when CoreML cannot take it.
+    onnx_provider: Literal["cpu", "coreml"] = "cpu"
+
+    # --- Workers on another machine (docs/remote-workers.md) ---------------
+    # Library roots are stored as the server's own paths (/media/intel/...).
+    # A worker that sees the same shares somewhere else maps them here, one
+    # "server prefix=local prefix" pair per entry, separated by ";":
+    #   /media/intel=/Volumes/intel;/media/breeze=/Volumes/Breeze
+    # Empty on the server itself. Set, it also marks this process as a remote
+    # worker: it never flags a file missing (only the server's scanner may),
+    # and it refuses work unless the shared data store is really mounted.
+    root_map: str = ""
+    # Recorded on every job this process runs, so the processing page can say
+    # which machine did the work. Empty means "the server".
+    worker_name: str = ""
     domain: str = ""  # set in public-HTTPS mode; also switches cookies to Secure
     # The host port Caddy publishes (compose's FRAMEFOUND_HTTP_PORT), for the
     # addresses the Security page shows. The app itself listens on 8000.
@@ -60,9 +87,20 @@ class Settings(BaseSettings):
     postgres_db: str = Field("framefound", validation_alias=AliasChoices("POSTGRES_DB"))
     redis_host: str = Field("redis", validation_alias=AliasChoices("REDIS_HOST"))
     redis_port: int = Field(6379, validation_alias=AliasChoices("REDIS_PORT"))
+    # Empty in the containers, where the queue is only on the internal
+    # network. A native install (docs/mac.md) shares the machine with every
+    # other program on it, so its queue has a password.
+    redis_password: str = Field("", validation_alias=AliasChoices("REDIS_PASSWORD"))
 
     # Full-URL override; takes precedence when set (tests, unusual deployments).
     database_url: str = ""
+
+    @field_validator("proxy_dir", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        # An env file line `FRAMEFOUND_PROXY_DIR=` means "not set"; left to
+        # pydantic it would become Path(""), the process's working directory.
+        return None if isinstance(value, str) and not value.strip() else value
 
     @property
     def db_url(self) -> str:
@@ -75,7 +113,8 @@ class Settings(BaseSettings):
 
     @property
     def redis_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/0"
+        auth = f":{quote(self.redis_password, safe='')}@" if self.redis_password else ""
+        return f"redis://{auth}{self.redis_host}:{self.redis_port}/0"
 
     @property
     def cookie_secure(self) -> bool:

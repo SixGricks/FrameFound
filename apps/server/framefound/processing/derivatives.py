@@ -3,7 +3,8 @@
 Each kind is attempted independently: a failed proxy never blocks a poster.
 Results land in the `derivatives` table with per-kind status; files live under
 <data_dir>/derivatives/<id[:2]>/<asset_id>/<kind>.<ext> (relative paths in the
-DB — the data volume is relocatable).
+DB — the data volume is relocatable). Proxies alone may hang off a separate
+proxy store instead, under the same relative path (storage/stores.py).
 """
 
 import uuid
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from framefound.db.models import Asset, Derivative, Library
 from framefound.processing import ffmpeg
 from framefound.processing.thumbnails import ThumbnailError, make_image_derivative
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
@@ -26,6 +28,14 @@ PREVIEW_EDGE = 2048
 
 class OutOfSpace(RuntimeError):
     """Free space on the derivative store is below the configured floor."""
+
+
+class ProxyStoreUnavailable(OutOfSpace):
+    """The separate proxy store (storage/stores.py) is not connected.
+
+    The same kind of pause as a full disk — nothing wrong with the clip, and
+    the work is picked up again once the store is back — so it shares the
+    exception the task wrappers already treat as "wait", not "fail"."""
 
 
 def free_gb(data_dir: Path) -> float | None:
@@ -108,7 +118,13 @@ async def _fail(db: AsyncSession, derivative: Derivative, message: str) -> None:
 
 
 def _abs(data_dir: Path, derivative: Derivative) -> Path:
-    path = data_dir / derivative.relative_path
+    if stores.is_proxy(derivative.relative_path):
+        # Never mkdir into a proxy store that is not there: on an unmounted
+        # share that would start filling the folder it mounts on.
+        problem = stores.proxy_store_problem()
+        if problem is not None:
+            raise ProxyStoreUnavailable(problem)
+    path = stores.derivative_path(data_dir, derivative.relative_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -197,7 +213,12 @@ async def generate_video_proxy(
 ) -> None:
     import asyncio
 
-    ensure_space(data_dir)
+    # Before the row is touched: a store that is away must not turn a ready
+    # proxy's record into a pending one.
+    problem = stores.proxy_store_problem()
+    if problem is not None:
+        raise ProxyStoreUnavailable(problem)
+    ensure_space(stores.proxy_root(data_dir))
     derivative = await _upsert(db, asset.id, "proxy", "mp4")
     target = _abs(data_dir, derivative)
     if asset.extension == "braw":

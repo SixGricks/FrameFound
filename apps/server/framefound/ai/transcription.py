@@ -11,6 +11,7 @@ from typing import Protocol
 
 import structlog
 
+from framefound.ai.runtime import models_dir
 from framefound.config import get_settings
 
 log = structlog.get_logger()
@@ -109,10 +110,10 @@ class FasterWhisperProvider:
     """Local CTranslate2-based Whisper. Model weights download on first use
     into the models volume; int8 on CPU, float16 on CUDA."""
 
-    def __init__(self, model_size: str, device: str, download_root: str = "/models") -> None:
+    def __init__(self, model_size: str, device: str, download_root: str | None = None) -> None:
         self._model_size = model_size
         self._device = device
-        self._download_root = download_root
+        self._download_root = download_root or models_dir()
         self._model: object | None = None
 
     def _load(self) -> object:
