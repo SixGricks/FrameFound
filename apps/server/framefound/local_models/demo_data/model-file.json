@@ -1,0 +1,61 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. Its page says nothing about code, and it lists no Python file. Only the text of its config.json (in framefound_contents) names a model_file: the case that is caught by reading the file and by nothing else.",
+  "id": "mlx-community/demo-model-file",
+  "author": "mlx-community",
+  "sha": "5555555555555555555555555555555555555555",
+  "lastModified": "2026-09-02T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "mlx-vlm",
+    "image-text-to-text",
+    "base_model:google/gemma-4-E4B-it",
+    "base_model:quantized:google/gemma-4-E4B-it",
+    "license:gemma"
+  ],
+  "cardData": {
+    "base_model": "google/gemma-4-E4B-it",
+    "license": "gemma"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 640
+    },
+    {
+      "rfilename": "config.json",
+      "size": 1780
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 4294967296,
+      "lfs": {
+        "sha256": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+        "size": 4294967296
+      }
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ],
+  "framefound_contents": {
+    "config.json": "{\n  \"model_type\": \"demo\",\n  \"model_file\": \"demo_model.py\"\n}"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "framefound_note": "Recorded from huggingface.co on 2026-11-12 (L1 design 9.2): id, author, sha, gated, library_name, pipeline_tag, every tag, cardData.base_model (a string) and cardData.license, every file name and size, the blobId of config.json, and the sha256 of model.safetensors and tokenizer.json. Stand-ins, not read from the site: the time of day in lastModified (the date is as recorded), and config (only the model_type the gemma4 tag implies). The blobIds of the other small files were not recorded and are left out.",
+  "id": "mlx-community/gemma-4-e4b-it-4bit",
+  "author": "mlx-community",
+  "sha": "475b9088d29754a3379866cf5aeb6b41acd313c2",
+  "lastModified": "2026-07-06T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "gemma4",
+    "mlx-vlm",
+    "image-text-to-text",
+    "conversational",
+    "base_model:google/gemma-4-E4B-it",
+    "base_model:quantized:google/gemma-4-E4B-it",
+    "license:gemma",
+    "4-bit",
+    "region:us"
+  ],
+  "cardData": {
+    "base_model": "google/gemma-4-E4B-it",
+    "license": "gemma"
+  },
+  "config": {
+    "model_type": "gemma4"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1570
+    },
+    {
+      "rfilename": "README.md",
+      "size": 593
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 17336
+    },
+    {
+      "rfilename": "config.json",
+      "size": 6628,
+      "blobId": "4ee08502c4f98810dd43800ec849bd69f94adc98"
+    },
+    {
+      "rfilename": "generation_config.json",
+      "size": 208
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 5146800534,
+      "lfs": {
+        "sha256": "932b8271fc3fe65adcc78b96c10c6268bbfb13e8f67d1358727c0d6ee97e1eff",
+        "size": 5146800534
+      }
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "size": 240961
+    },
+    {
+      "rfilename": "processor_config.json",
+      "size": 1316
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 32169626,
+      "lfs": {
+        "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+        "size": 32169626
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 2740
+    }
+  ]
+}

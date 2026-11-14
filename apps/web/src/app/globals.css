@@ -614,6 +614,35 @@ h2 {
   max-height: 70vh;
   object-fit: contain;
 }
+/* A clip's own page when its playable copy will not load: the poster in the
+   player's place, and the reason over it (.preview-note), never a dead
+   player. */
+.player-missing {
+  position: relative;
+  overflow: hidden;
+}
+.player-missing img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Develop: the sliders (280 px) and the photograph (at least 320 px) sit
+   side by side once the row is 616 px wide. Narrower, the row wraps, and the
+   photograph used to land under all thirteen sliders, so on a phone every
+   change was made with its result off screen. When it wraps, the photograph
+   goes first. Asked of the row's own width, not the window's, so the side by
+   side layout is never reordered. The sliders keep their place in the Tab
+   order; the photograph has nothing to Tab to. */
+.develop-body {
+  container-type: inline-size;
+}
+@container (width < 616px) {
+  .develop-preview {
+    order: -1;
+  }
+}
 
 .transcript {
   max-height: 460px;
@@ -1620,9 +1649,11 @@ small a {
 
 /* ---- 2026-11-05 bulk tag review ------------------------------------------ */
 
-/* The Tags review grid selects like the face grid (people/[id]): the frame
-   is a button that toggles the tile, "down to here" draws the line under a
-   ranked queue, and the bar above answers the whole selection at once. */
+/* The Tags review grid selects like the face grid (people/[id]): "down to
+   here" draws the line under a ranked queue, and the bar pinned to the foot
+   of the screen answers the whole selection at once. (The frame was a
+   select toggle until 2026-11-12; it opens the viewer now — see the block
+   at the end of this file.) */
 .tagpick[data-selected="true"] {
   border-color: var(--amber);
   box-shadow: 0 0 0 1px var(--amber), var(--shadow);
@@ -1642,8 +1673,9 @@ small a {
   outline: 2px solid var(--amber);
   outline-offset: -2px;
 }
-/* Sits at the foot of the picture, clear of the match % in the top corner;
-   hidden until the tile is hovered or the control has keyboard focus. */
+/* Sits in the picture's top-left corner, clear of the match % in the
+   top-right; hidden until the tile is hovered or the control has keyboard
+   focus. */
 .tagpick-downto {
   position: absolute;
   left: 8px;
@@ -1684,4 +1716,4529 @@ small a {
   .tagpick-downto {
     opacity: 1;
   }
+}
+
+/* ---- 2026-11-12 look without leaving -------------------------------------- */
+
+/* Bulk review (above) turned a suggestion's picture into a select toggle,
+   and the way to open the footage went with it. The picture opens the viewer
+   again and selecting has its own control — the rule Search already follows:
+   "the box sits outside the link so ticking a row never opens it". The stage
+   wraps picture and controls because a checkbox cannot live inside the
+   picture's <button>. */
+.tagpick-stage {
+  position: relative;
+}
+.tagpick-frame {
+  cursor: zoom-in;
+}
+/* Bottom-left of the picture: top-left is "down to here", top-right the
+   match %. Always shown, not on hover — selecting is half of what this grid
+   is for, and nothing hovers on a touch screen. The padding makes a 30 px
+   target (42 px for a finger, below). */
+.tagpick-check {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: flex;
+  padding: 5px;
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+  background: rgba(11, 10, 9, 0.78);
+  cursor: pointer;
+}
+.tagpick-check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+}
+.tagpick[data-selected="true"] .tagpick-check {
+  border-color: var(--amber);
+}
+@media (pointer: coarse) {
+  .tagpick-check {
+    padding: 9px;
+  }
+  .tagpick-check input {
+    width: 22px;
+    height: 22px;
+  }
+}
+/* "This one plays", on a clip's picture. Drawn rather than typed: phones
+   render the ▶ character as a coloured emoji. */
+.tagpick-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  margin: -19px 0 0 -19px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-bright);
+  border-radius: 50%;
+  background: rgba(11, 10, 9, 0.62);
+  pointer-events: none;
+}
+.tagpick-play::before {
+  content: "";
+  margin-left: 3px;
+  border-style: solid;
+  border-width: 7px 0 7px 11px;
+  border-color: transparent transparent transparent var(--paper);
+}
+/* The filename opens the full page (in a new tab). With `a { color: inherit;
+   text-decoration: none }` it read as plain text; it answers the pointer and
+   the keyboard now. */
+.tagpick .tile-name a:hover,
+.tagpick .tile-name a:focus-visible {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* Review opens the queue under a tag table that can run to several screens.
+   The page scrolls to it, and it lands below the sticky header (62 px on a
+   desktop, two rows on a phone) rather than underneath it. */
+.tagreview-head {
+  scroll-margin-top: 78px;
+}
+@media (max-width: 900px) {
+  .tagreview-head {
+    scroll-margin-top: 128px;
+  }
+}
+
+/* The viewer (components/MediaPreview.tsx), the app's first dialog. A native
+   modal <dialog> draws in the top layer, above the header and the film
+   grain, and no tile's `overflow: hidden` can clip it. The layout rule is on
+   `[open]`: an author `display` on the bare class would also show the dialog
+   in the instant before it is opened. */
+.preview {
+  width: min(1100px, 96vw);
+  max-width: 96vw;
+  max-height: 94dvh;
+  padding: 0;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--paper);
+  box-shadow: var(--shadow);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.preview[open] {
+  display: flex;
+  flex-direction: column;
+}
+.preview::backdrop {
+  background: rgba(11, 10, 9, 0.78);
+  backdrop-filter: blur(3px);
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.preview-title {
+  flex: 1;
+  min-width: 0;
+}
+/* Focus rests here when the viewer opens, so that Space selects rather than
+   pressing whichever button came first. It is not a control; no ring. */
+.preview-title:focus-visible {
+  outline: none;
+}
+.preview-title h2 {
+  font-size: 1.3rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-title p {
+  margin: 3px 0 0;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-open {
+  flex: none;
+  color: var(--amber);
+  font-size: 0.86rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+/* One size for every item, set by the window and never by the picture: the
+   answer buttons underneath must stay under the pointer while a reviewer
+   clicks through portrait stills, wide clips and clips with nothing to
+   play. */
+.preview-stage {
+  position: relative;
+  flex: none;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  /* The second limit leaves room for the head and the buttons in a short
+     window, so answering never needs a scroll inside the dialog. */
+  max-height: min(64dvh, calc(94dvh - 176px));
+  display: grid;
+  place-items: center;
+  background: var(--ink-deep);
+  overflow: hidden;
+}
+.preview-stage[data-kind="video"] {
+  background: #000;
+}
+.preview-stage > img,
+.preview-stage > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.preview-audio {
+  width: min(620px, 92%);
+  display: grid;
+  gap: 14px;
+}
+.preview-audio img {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
+}
+.preview-audio audio {
+  width: 100%;
+}
+/* What is missing, said over the still that does exist. */
+.preview-note {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line-bright);
+  background: rgba(11, 10, 9, 0.88);
+  font-size: 0.88rem;
+}
+.preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.preview-actions,
+.preview-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.preview-steps {
+  margin-left: auto;
+}
+/* A line is kept for the status even while it is empty: the dialog is
+   centred, so a line appearing would shift everything above it. */
+.preview-foot {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-height: 1.4em;
+  margin: 0;
+  font-size: 0.78rem;
+}
+/* An answer that was not saved. The page's own message is behind the
+   viewer, and in the foot's faint type a failure would pass for a success. */
+.preview-problem {
+  color: var(--ember);
+}
+@media (max-width: 640px) {
+  .preview-head {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  .preview-title {
+    flex: 1 1 100%;
+  }
+  /* The line under the title (who suggested it, which model, where in the
+     list) cut short on a phone hid what it is there to say, and touch has no
+     tooltip to read the rest; so on a phone it wraps in every viewer. */
+  .preview-title p {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .preview-head .btn {
+    margin-left: auto;
+  }
+  /* A phone held upright: 16:9 across its width is a strip, and a portrait
+     picture inside it would be little bigger than its tile. */
+  .preview-stage {
+    aspect-ratio: auto;
+    height: min(50dvh, calc(94dvh - 290px));
+    max-height: none;
+  }
+}
+
+/* ---- 2026-11-12 the same problem on the other pages ------------------------ */
+
+/* Tags was one case of a class: a grid whose pictures could be acted on but
+   not looked at. The viewer above is now mounted on People, Listings and
+   Slideshows too; these are the pieces those pages add. */
+
+/* A tile's picture as the thing that opens the viewer (LookFrame.tsx): a
+   listing's gallery, its suggested removals, the photographs offered to add
+   to it, a slideshow's proposal. The ring is drawn inside the picture — the
+   tile clips anything outside it. The same goes for any picture that is a
+   link (an unnamed person's on People). */
+.tile-look {
+  cursor: zoom-in;
+}
+a.tile-frame:focus-visible {
+  outline-offset: -2px;
+}
+
+/* A face in review selects on a click, as it always has; this opens the
+   photograph or clip it was found in. Shown on every face, dimmed, rather
+   than on hover only: a control nobody can see is how looking was lost on
+   Tags, and nothing hovers on a touch screen. */
+.facepick-look {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-bright);
+  border-radius: 50%;
+  background: rgba(11, 10, 9, 0.78);
+  color: var(--paper);
+  cursor: zoom-in;
+  opacity: 0.7;
+  transition: opacity 0.14s, border-color 0.14s;
+}
+.facepick-wrap:hover .facepick-look,
+.facepick-look:focus-visible {
+  opacity: 1;
+  border-color: var(--amber-line);
+}
+/* The base :focus-visible rule squares the corners of whatever it rings. */
+.facepick-look:focus-visible {
+  border-radius: 50%;
+}
+@media (pointer: coarse) {
+  .facepick-look {
+    top: 2px;
+    right: 2px;
+    width: 34px;
+    height: 34px;
+    opacity: 1;
+  }
+}
+
+/* People answers two grids — "To review" and "Found elsewhere" — from the
+   one bar pinned to the foot of the screen (.tagreview-bar): a row each. */
+.reviewbar-rows {
+  display: grid;
+  gap: 8px;
+}
+.reviewbar-rows .toolbar {
+  margin: 0;
+}
+.reviewbar-rows .toolbar + .toolbar {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* In the viewer on People: which of the faces in the picture is being asked
+   about. */
+.preview-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+  color: var(--paper-dim);
+  font-size: 0.8rem;
+}
+.preview-face .facecrop {
+  border: 1px solid var(--line-bright);
+}
+
+/* A rendered slideshow playing under its row on Slideshows. Sized by the
+   window's height as well as the table's width, so the controls are on
+   screen without scrolling. */
+.inline-player {
+  width: min(100%, 960px, calc(70dvh * 16 / 9));
+  margin: 4px auto;
+}
+
+/* ---- 2026-11-12 where the bulky files live -------------------------------- */
+
+/* The Storage page's list of bulky kinds (components/BulkStorage.tsx): where
+   each lives, how much, whether its drive is connected, and the form that
+   moves one. A list of lines in one card rather than a table: a line grows a
+   form, a question and a result under itself, and a table row cannot. */
+.storekinds {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 2px 20px;
+}
+.storekind {
+  display: grid;
+  /* what it is | where it is and how much | what can be done */
+  grid-template-columns: minmax(210px, 1fr) minmax(0, 1.6fr) minmax(130px, auto);
+  gap: 12px 26px;
+  align-items: start;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+.storekind:first-child {
+  border-top: 0;
+}
+.storekind h3 {
+  font-size: 1.22rem;
+}
+.storekind-what p {
+  margin: 8px 0 0;
+  font-size: 0.84rem;
+}
+.storekind-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+.storekind-do {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  text-align: right;
+}
+/* Anything said or asked about the line: across all three columns. */
+.storekind-wide {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.88rem;
+}
+.storekind-old {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+/* What a line says back about its old copies: working, the answer, or why
+   not. One box, because focus waits in it from the yes until the answer. */
+.storekind-said {
+  display: grid;
+  gap: 8px;
+}
+.storekind-said p {
+  margin: 0;
+}
+/* The spinner beside a sentence that runs to several lines stays beside the
+   sentence instead of sitting on a line of its own above it. */
+.storekind-said .storekind-old {
+  flex-wrap: nowrap;
+  align-items: start;
+}
+.storekind-said .spinner {
+  flex: none;
+  margin-top: 3px;
+}
+@media (max-width: 900px) {
+  .storekind {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .storekind-do {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+/* The move form, opened under its line. A well, so it reads as belonging to
+   the line above it and not as the next line. */
+.storeform {
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+/* A question asked in the page in place of the buttons that led to it: the
+   server wants a yes before it makes anything in a folder, and deleting old
+   copies names the folder first. Amber, because it waits on the reader. */
+.storeask {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+}
+.storeask:focus-visible {
+  border-radius: var(--radius);
+}
+.storeask p {
+  margin: 0 0 12px;
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+.storeask .toolbar {
+  margin: 0;
+}
+.storekind-wide > .storeask {
+  margin-top: 0;
+}
+
+/* The move in progress, or the last one: its title beside its state. Also
+   the bulk folder card's title row. */
+.storemove {
+  margin-bottom: 14px;
+}
+.storemove-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+.storemove-head h3 {
+  font-size: 1.22rem;
+}
+/* Focus is sent to the title when a move starts, so the card is read out
+   and scrolled to; a ring round a heading would only puzzle. */
+.storemove-head h3:focus {
+  outline: none;
+}
+.storemove .spinner {
+  width: 10px;
+  height: 10px;
+}
+
+/* ---- 2026-11-12 the chat panel -------------------------------------------- */
+
+/* Claude beside every page (components/ChatPanel.tsx). The app's first
+   drawer. Three things had to hold: the button that opens it is in reach on
+   every page and on a phone; closed, it takes nothing from the page; open on
+   a wide window, the page is narrowed rather than covered, so a listing's
+   rail and a queue's answer bar can still be used beside it. */
+
+body {
+  /* How wide the panel is beside a page. Used by the panel and by the page
+     that makes room for it, so the two cannot disagree. */
+  --chat-w: clamp(360px, 30vw, 460px);
+}
+
+/* The button, in the site header. A direct child of the bar (like the
+   Manage menu), pushed to the right-hand end with the account controls. */
+.chatopen {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  border: 1px solid var(--line-bright);
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+.chatopen:hover {
+  border-color: var(--amber-line);
+}
+.chatopen[data-active="true"] {
+  border-color: var(--amber-line);
+}
+/* Two auto margins on one row would share the free space between them and
+   strand the button in the middle of the bar. */
+.chatopen + .topbar-end {
+  margin-left: 0;
+}
+/* A speech bubble, drawn: phones turn the character for one into an emoji. */
+.chatopen-mark {
+  position: relative;
+  width: 14px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+}
+.chatopen-mark::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  bottom: -5px;
+  border-style: solid;
+  border-width: 4px 4px 0 0;
+  border-color: currentColor transparent transparent transparent;
+}
+/* Claude is busy, or waiting for an answer, while the panel is shut. In the
+   corner, out of the flow: the button must not change width as a turn
+   starts and ends, or the nav beside it would jump. */
+.chatopen-note {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 2px var(--ink);
+}
+.chatopen-note[data-kind="busy"] {
+  background: var(--ink);
+  border: 2px solid var(--line-bright);
+  border-top-color: var(--amber);
+  box-shadow: none;
+  animation: spin 0.9s linear infinite;
+}
+
+/* The signed-in address already went under 1100 px ("the first thing to go
+   when the bar gets tight"). With the button in the bar it has to go
+   sooner: at 1280 px the two together pushed Showcase out of the nav. */
+@media (max-width: 1440px) {
+  .topbar-end .mono {
+    display: none;
+  }
+}
+
+/* Between the phone layout and a full-width bar (an iPad on its side, a
+   small laptop) the nav was already a few pixels short, and the button took
+   another 150 from it: at 1100 px Showcase went out of sight where it used
+   to fit. The bar is set a little tighter there, which gives back what the
+   button takes: the nav shows as much as it did before the button came. */
+@media (min-width: 901px) and (max-width: 1199px) {
+  .topbar {
+    gap: 12px;
+  }
+  .topbar .navlink {
+    padding-left: 9px;
+    padding-right: 9px;
+  }
+}
+
+/* A phone's first row (brand, Manage, Sign out) has no room for a fourth
+   thing: at 375 px it wrapped Sign out onto a row of its own. The button
+   sits at the end of the nav's row instead, and the nav scrolls beside it as
+   it already did. The basis is what forces the nav off the first row; the
+   150 px it leaves is the button and the gap. */
+@media (max-width: 900px) {
+  .navlinks {
+    width: auto;
+    flex: 1 1 calc(100% - 150px);
+    margin-right: 0;
+    padding-right: 0;
+    /* The nav is cut short of the edge now, at any width down here; the
+       fade that says "this scrolls" used to start at 640 px. */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+  .chatopen {
+    order: 3;
+    margin-left: 0;
+  }
+}
+
+/* The panel. Narrow windows first: a sheet over the page, above the header
+   (40) and the Manage menu (50), below the skip link (60). The page behind
+   is inert while it is up. */
+.chatpanel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 55;
+  width: 100vw;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--line-bright);
+  box-shadow: var(--shadow);
+}
+/* The panel takes focus itself when a blank part of it is clicked (so the
+   keys that follow are the panel's); that focus is not worth a ring. */
+.chatpanel:focus {
+  outline: none;
+}
+/* Wider than a phone, the sheet is a column on the right of a dimmed page. */
+@media (min-width: 521px) {
+  .chatpanel {
+    left: auto;
+    right: 0;
+    width: 440px;
+  }
+}
+/* A page that is wider than a phone's screen (a long path on Storage, the
+   details on an asset page) makes the browser lay "fixed" things out against
+   that wider page: the sheet opened 110 px off the right-hand edge. While a
+   sheet is up the page behind is cut to the screen's width instead. */
+@media (max-width: 1199px) {
+  .chatframe[data-chat="open"] {
+    overflow-x: clip;
+  }
+}
+.chat-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 54;
+  background: rgba(11, 10, 9, 0.6);
+}
+/* Wide windows: a column under the header, and the page gives up that much
+   of its width. The padding narrows everything in the shell; the header
+   takes its share back, so the nav is not squeezed by a panel that sits
+   below it. Under the header's z-index, so the Manage menu opens over it. */
+@media (min-width: 1200px) {
+  .chatpanel {
+    top: 62px;
+    z-index: 35;
+    width: var(--chat-w);
+    height: calc(100dvh - 62px);
+    box-shadow: none;
+  }
+  .chatframe[data-chat="open"] .shell {
+    padding-right: var(--chat-w);
+  }
+  .chatframe[data-chat="open"] .topbar {
+    margin-right: calc(-1 * var(--chat-w));
+  }
+}
+
+/* Read out, not shown: who said a message, and how a turn ended. */
+.chat-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.chat-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-title {
+  flex: 1;
+  min-width: 0;
+}
+/* Focus rests here when there is no message box to put it in. Not a
+   control; no ring. */
+.chat-title:focus-visible {
+  outline: none;
+}
+.chat-title h2 {
+  font-size: 1.3rem;
+  line-height: 1.2;
+}
+.chat-title p {
+  margin: 1px 0 0;
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-head .btn {
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+@media (pointer: coarse) {
+  .chat-head .btn {
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+}
+
+/* Which model, what it has cost, and whether pictures leave the building. */
+.chat-meta {
+  flex: none;
+  display: grid;
+  gap: 7px;
+  padding: 9px 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-meta p {
+  margin: 0;
+  font-size: 0.72rem;
+}
+.chat-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+.chat-switch input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+}
+.chat-switch small {
+  display: block;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+/* The conversation, and the list of earlier ones. The only part that
+   scrolls; it must not pull the page along when it reaches its end. */
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.chat-log:focus-visible {
+  outline-offset: -2px;
+}
+.chat-note {
+  margin: 0;
+  font-size: 0.88rem;
+}
+div.chat-note {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.chat-welcome p {
+  margin: 0 0 8px;
+}
+.chat-welcome .faint {
+  font-size: 0.84rem;
+}
+.chat-welcome .hint {
+  text-align: left;
+}
+
+.chat-msg {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-msg[data-role="user"] {
+  justify-items: end;
+}
+.chat-bubble {
+  max-width: 90%;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-from {
+  max-width: 90%;
+  margin: -3px 0 0;
+  font-size: 0.72rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* Claude's words. Long file names and paths wrap rather than widen the
+   panel; a block of code scrolls sideways inside itself. */
+.chat-answer {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-answer > * {
+  margin: 0 0 9px;
+}
+.chat-answer > :last-child {
+  margin-bottom: 0;
+}
+.chat-answer h3 {
+  font-family: var(--font-ui);
+  font-size: 0.96rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.chat-answer a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-answer code {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--ink-deep);
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+}
+.chat-answer pre {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+.chat-answer hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.chat-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.chat-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+}
+.chat-list li > span:first-child {
+  color: var(--paper-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What Claude looked up: one line each, in plain words, with whether it
+   worked. Opens to what was asked for and the first line of the answer. */
+.chat-tools {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  min-width: 0;
+}
+.chat-tool {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-chip {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--paper-dim);
+  font-size: 0.8rem;
+}
+.chat-chip > summary,
+.chat-chip-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.chat-chip > summary {
+  cursor: pointer;
+}
+.chat-chip > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-chip-mark {
+  flex: none;
+  width: 12px;
+  font-family: var(--font-mono);
+  text-align: center;
+}
+.chat-chip-mark .spinner {
+  display: block;
+  width: 10px;
+  height: 10px;
+  transform-origin: center;
+}
+.chat-chip-open {
+  margin-left: auto;
+  font-size: 0.62rem;
+  opacity: 0.7;
+}
+.chat-chip[open] .chat-chip-open {
+  transform: rotate(180deg);
+}
+.chat-chip[data-tone="ok"] .chat-chip-mark {
+  color: var(--sage);
+}
+.chat-chip[data-tone="bad"] {
+  border-color: rgba(228, 87, 46, 0.4);
+}
+.chat-chip[data-tone="bad"] .chat-chip-mark {
+  color: var(--ember);
+}
+.chat-chip[data-tone="ask"] {
+  border-color: var(--amber-line);
+  color: var(--paper);
+}
+.chat-chip[data-tone="ask"] .chat-chip-mark {
+  color: var(--amber);
+}
+.chat-chip-more {
+  display: grid;
+  gap: 6px;
+  padding: 2px 10px 8px 30px;
+}
+.chat-chip-more p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.chat-chip-why {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+.chat-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 0;
+  font-size: 0.78rem;
+}
+.chat-kv dt {
+  color: var(--paper-faint);
+}
+.chat-kv dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* Pictures Claude looked at. One height, each at its own shape: a contact
+   sheet is wide, a portrait still is not. */
+.chat-pictures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chat-picture {
+  height: 112px;
+  min-width: 72px;
+  max-width: 100%;
+  padding: 0;
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+  background: var(--ink-deep);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.chat-picture:hover {
+  border-color: var(--amber-line);
+}
+.chat-picture img {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  object-fit: cover;
+}
+.chat-picture-gone {
+  font-size: 0.8rem;
+}
+/* The items a request for a yes would change, small, each one opening the
+   viewer: a dozen of them still fit the card. */
+.chat-ask-items {
+  display: grid;
+  gap: 6px;
+}
+.chat-ask-items .chat-picture {
+  width: 64px;
+  height: 64px;
+  min-width: 0;
+}
+.chat-ask-items .chat-picture img {
+  width: 100%;
+}
+.chat-item-name {
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+/* A rough cut or selects: a file to keep, so it looks like one. */
+.chat-file {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: 9px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+.chat-file:hover {
+  border-color: var(--amber);
+}
+
+/* A change Claude wants to make, waiting for a yes or no. Amber, like the
+   Storage page's questions: it waits on the reader. */
+.chat-ask {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+}
+.chat-ask p {
+  margin: 0;
+}
+.chat-ask > .faint {
+  font-size: 0.78rem;
+  color: var(--paper-dim);
+}
+.chat-ask-one {
+  display: grid;
+  gap: 8px;
+}
+.chat-ask-one + .chat-ask-one,
+.chat-ask-all {
+  padding-top: 10px;
+  border-top: 1px solid var(--amber-line);
+}
+.chat-ask-what {
+  overflow-wrap: anywhere;
+}
+.chat-ask-do {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-working {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--paper-faint);
+}
+.chat-working .spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+}
+.chat-end {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--paper-faint);
+}
+/* Refused, over budget, or broken: the server's sentence, where the answer
+   would have been. */
+.chat-end[data-tone="bad"] {
+  padding: 9px 12px;
+  border: 1px solid var(--ember);
+  border-radius: var(--radius);
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+.chat-problem {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--ember);
+  overflow-wrap: anywhere;
+}
+
+/* Earlier conversations. */
+.chat-convos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.chat-convo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding-right: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.chat-convo[data-current="true"] {
+  border-color: var(--amber-line);
+}
+.chat-convo-open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 9px 4px 9px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-convo-open:hover .chat-convo-title {
+  color: var(--amber);
+}
+.chat-convo-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-convo-open .faint {
+  font-size: 0.74rem;
+}
+.chat-convo-del {
+  flex: none;
+  padding: 5px 9px;
+  font-size: 0.78rem;
+}
+.chat-convo-ask {
+  flex: 1 1 100%;
+  display: grid;
+  gap: 10px;
+  padding: 10px 4px 10px 12px;
+  font-size: 0.88rem;
+}
+.chat-convo-ask:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--radius);
+}
+.chat-convo-ask p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.chat-convo-why {
+  flex: 1 1 100%;
+  padding: 0 4px 9px 12px;
+}
+
+/* The foot: the message box, or the sentence that says why there is none.
+   On a short window (a phone on its side, 667 x 375) a six-line note made
+   the foot 55 px taller than the room left under the panel's head, and Send
+   went off the bottom with nothing to scroll it back. The box now grows to
+   at most about a fifth of the window's height (168 px on any laptop) and
+   scrolls inside past that; and
+   should the foot still not fit (a long "this page" line), the foot gives
+   way and scrolls itself, so Send is never out of reach. */
+.chat-foot {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+}
+.chat-composer {
+  display: grid;
+  gap: 7px;
+}
+.chat-here {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  font-size: 0.78rem;
+  color: var(--paper-dim);
+}
+.chat-here:empty {
+  display: none;
+}
+.chat-here-what {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.chat-compose textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 168px;
+  max-height: min(168px, 22vh);
+  max-height: min(168px, 22dvh);
+  line-height: 1.45;
+  resize: none;
+}
+/* Below 16 px an iPhone zooms the whole page in when the box takes focus. */
+@media (pointer: coarse) {
+  .chat-compose textarea {
+    font-size: 16px;
+  }
+}
+.chat-why {
+  margin: 0;
+  min-height: 1.3em;
+  font-size: 0.74rem;
+}
+.chat-gate {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 11px 13px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 0.9rem;
+}
+.chat-gate[data-fault] {
+  border-color: var(--amber-line);
+}
+.chat-gate p {
+  margin: 0;
+}
+.chat-gate a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---- 2026-11-12 AI models ------------------------------------------------- */
+
+/* Demonstration mode: dashed, amber, never dismissable — a page that looks
+   real and is not must say so above everything else on it. */
+.demo-banner {
+  margin: 14px 0 0;
+  padding: 12px 16px;
+  border: 1px dashed var(--amber);
+  border-radius: var(--radius-lg);
+  background: var(--amber-soft);
+  font-size: 0.92rem;
+}
+
+/* The four tiles. The dashboard's 178 px columns leave one tile per row on
+   a phone; two fit at 375 px, and a model's name wraps inside its tile. */
+.models-tiles {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.models-tile-name,
+.models-tile-text {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+.models-tile-name {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  line-height: 1.25;
+}
+.models-tile-text {
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+.models-tile-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.models-tile-pills:empty {
+  display: none;
+}
+
+/* Getting started: a line's work under way goes on a row of its own under
+   the line, the full width of the card. */
+.checkup li.models-step {
+  flex-wrap: wrap;
+}
+.models-step-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.models-step-job {
+  flex-basis: 100%;
+  padding-left: 22px;
+}
+
+.models-progress {
+  min-width: 0;
+}
+.models-progress-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 6px;
+  font-size: 0.84rem;
+}
+/* The sentence gives way, not the spinner: on a phone a long "Waiting its
+   turn — …" pushed the spinner onto a line of its own above it. */
+.models-progress-line > .spinner {
+  flex: none;
+}
+.models-progress-line > .faint {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+
+/* Two cards side by side (the Looker and the Editor); one column under 900 px. */
+.rolecards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 900px) {
+  .rolecards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Add a model: what Check found. The verdict leads, sage for yes and ember
+   for no; then one row per check — label, value with its pill, and the
+   detail beneath. On a phone the label goes above the value. */
+.models-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 12px 0 0;
+}
+.preflight {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.preflight-verdict {
+  margin: 0;
+  font-weight: 600;
+}
+.preflight-verdict[data-ok="yes"] {
+  color: var(--sage);
+}
+.preflight-verdict[data-ok="no"] {
+  color: var(--ember);
+}
+.preflight-checks {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  font-size: 0.86rem;
+}
+.preflight-row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 4px 14px;
+}
+.preflight-row dt {
+  color: var(--paper-faint);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding-top: 3px;
+}
+.preflight-row dd {
+  margin: 0;
+  min-width: 0;
+}
+.preflight-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  overflow-wrap: anywhere;
+}
+.preflight-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.82rem;
+}
+@media (max-width: 560px) {
+  .preflight-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.preflight-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 0.88rem;
+}
+.preflight-list li + li {
+  margin-top: 4px;
+}
+.preflight-list[data-tone="bad"] {
+  color: var(--ember);
+}
+.preflight-list[data-tone="warn"] {
+  color: var(--amber);
+}
+
+/* Installed models. A row's own sentences (why it stopped, why it is no
+   longer approved) sit under the cell's first line; its Details open as a
+   row of their own across the whole table. */
+.models-row-sentence {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  color: var(--paper-faint);
+}
+.models-row-sentence[data-tone="bad"] {
+  color: var(--ember);
+}
+.models-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.models-actions:empty {
+  display: none;
+}
+.models-detailrow td {
+  background: var(--surface-2);
+}
+.models-details {
+  max-width: 820px;
+}
+.models-chain {
+  margin: 0;
+  padding-left: 16px;
+}
+
+/* Who does what: the role's choice of model, Assign and Take the role away
+   on one line that wraps on a phone. */
+.models-role-give {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+  margin-top: 14px;
+}
+.models-role-give .select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* A model's Test, under its row: the picture it was shown beside what it
+   answered; stacked on a phone. */
+.models-test {
+  max-width: 920px;
+}
+/* The table scrolls sideways on a phone, and a row across it is as wide as
+   the table: what opens under a row (Test, Details) stays in view at the
+   left, as wide as the screen, so reading an answer needs no sideways
+   scrolling. */
+.models-detailrow td > .models-test,
+.models-detailrow td > .models-details {
+  position: sticky;
+  left: 10px;
+  max-width: min(920px, calc(100vw - 56px));
+}
+.models-detailrow td > .models-details {
+  max-width: min(820px, calc(100vw - 56px));
+}
+.models-test-result {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 14px 18px;
+  margin-top: 8px;
+}
+@media (max-width: 640px) {
+  .models-test-result {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.models-test-figure {
+  margin: 0;
+  font-size: 0.8rem;
+}
+.models-test-figure figcaption {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.models-test-picture {
+  display: grid;
+  place-items: center;
+  width: 200px;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ink-deep);
+}
+.models-test-picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.models-test-words {
+  font-size: 0.86rem;
+}
+/* A suggestion, not a tag: dashed, the app's look for what AI proposes. */
+.pill.models-suggested {
+  border-style: dashed;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+}
+/* What a model wrote when it did not answer in the form asked for: its own
+   words, as text, in a box that scrolls rather than stretching the table. */
+.answerbox {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 16em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--ink-deep);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--paper-dim);
+}
+
+/* Software that runs models: what is installed and the newest, with Check
+   now beside the newest; Install a particular version on one line that
+   wraps on a phone. */
+.models-runtime-facts {
+  margin-top: 10px;
+}
+.models-runtime-newest {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.models-version {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+  margin-top: 8px;
+}
+/* The installer's last lines. A .pathbox keeps one path on one line; these
+   are several lines, kept as printed and scrolled inside the box. */
+.pathbox.models-lastlines {
+  display: block;
+  margin: 8px 0 0;
+  max-height: 14em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Sharing this Mac: the five figures side by side, two or one per row on a
+   phone; the server's answer to Save sits beside the button. */
+.models-sharing-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0 14px;
+  align-items: end;
+}
+.models-sharing-fields .input {
+  width: 100%;
+  min-width: 0;
+}
+.models-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 14px;
+}
+.models-save-note {
+  flex: 1 1 14em;
+  min-width: 0;
+  font-size: 0.88rem;
+}
+.models-save-note[data-tone="bad"] {
+  color: var(--ember);
+}
+.models-save-note[data-tone="ok"] {
+  color: var(--sage);
+}
+
+/* Approved publishers: the three lists side by side, stacked on a phone.
+   A publisher's name is spelled as Hugging Face spells it — the pill keeps
+   its case instead of the uppercase of a status pill — and a long one wraps
+   inside its pill rather than widening the card. */
+.publists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  /* Opening the built-in blocked names must not stretch the other two. */
+  align-items: start;
+}
+.publist {
+  min-width: 0;
+}
+.publist-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pill.publist-name {
+  max-width: 100%;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.pill.publist-name small {
+  font-size: 0.68rem;
+}
+.publist-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.publist-add .input {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+.publist-note {
+  display: block;
+  margin: 8px 0 0;
+}
+
+/* Recent activity: a job's own sentence under its pill. */
+.models-activity td {
+  vertical-align: top;
+}
+
+/* ---- 2026-11-12 compare on your footage ---------------------------------- */
+
+/* The card on AI models: one line per comparison, wrapping on a phone. */
+.models-compare-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+}
+.models-compare-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.models-compare-list li:first-child {
+  border-top: 0;
+}
+.models-compare-name,
+.compare-link,
+.compare-back {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.compare-back {
+  font-size: 0.86rem;
+}
+
+/* The builder's four numbered steps. */
+.compare-step {
+  font-size: 1.15rem;
+  margin: 26px 0 10px;
+}
+.compare-builder > .compare-step:first-child {
+  margin-top: 0;
+}
+
+/* Radio buttons drawn as cards; the radios stay visible, and arrow keys move
+   between them as in any radio group. Three across; one column on a phone. */
+.sourcecards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.sourcecards label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.sourcecards label > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.sourcecards input {
+  margin-top: 3px;
+  accent-color: var(--amber);
+}
+.sourcecards label:has(input:checked) {
+  border-color: var(--amber);
+}
+.sourcecards label:focus-within {
+  box-shadow: 0 0 0 3px var(--amber-soft);
+}
+@media (max-width: 760px) {
+  .sourcecards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* What the chosen source card asks for, under the cards. */
+.compare-source {
+  margin-top: 14px;
+  min-width: 0;
+}
+.compare-source > p {
+  margin: 10px 0 0;
+}
+.compare-source > p:first-child {
+  margin-top: 0;
+}
+
+/* A tick box (or radio) and its words, the words wrapping beside it. */
+.compare-tick {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.compare-tick input {
+  flex: none;
+  margin-top: 3px;
+  accent-color: var(--amber);
+}
+
+/* The recorded cuts, grouped by client; long lists scroll inside. */
+.compare-cuts {
+  margin-top: 10px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.compare-cuts fieldset,
+.compare-counted {
+  border: 0;
+  margin: 0;
+  padding: 6px 0;
+  min-width: 0;
+}
+.compare-counted legend {
+  padding: 0;
+  margin-bottom: 2px;
+}
+
+/* Folders found as you type: one button each, the place then its counts. */
+.compare-results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.compare-results .btn {
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.compare-result-place {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+}
+.pill.compare-chosen {
+  max-width: 100%;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.compare-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.compare-size .input {
+  width: 6.5em;
+}
+
+/* The models, one row each: tick and name, then pills, then why. */
+.compare-models {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.compare-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.compare-model:first-child {
+  border-top: 0;
+}
+.compare-model[data-blocked] .compare-model-name {
+  color: var(--paper-faint);
+}
+.compare-model-pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.compare-model-why {
+  flex-basis: 100%;
+  padding-left: 24px;
+  font-size: 0.86rem;
+}
+
+/* The preview and every sentence the builder shows in a tone. */
+.compare-preview {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--ink-deep);
+}
+.compare-said {
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+.compare-said:first-child {
+  margin-top: 0;
+}
+.compare-said[data-tone="warn"] {
+  color: var(--amber);
+}
+.compare-said[data-tone="bad"] {
+  color: var(--ember);
+}
+.compare-counting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--paper-faint);
+}
+
+.compare-start {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.compare-start > .card,
+.compare-start > p {
+  flex-basis: 100%;
+}
+
+/* Saved comparisons: the sample's label under its count. */
+.compare-label {
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.compare-saved td:first-child {
+  min-width: 12em;
+}
+
+/* One comparison: the header — the name with Rename, the sample's line, and
+   the buttons with their panels. */
+.compare-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.compare-title h2 {
+  overflow-wrap: anywhere;
+}
+.compare-rename {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+.compare-rename .input {
+  flex: 1 1 16em;
+  min-width: 0;
+}
+.compare-line {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.compare-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.compare-buttons .btn {
+  padding: 5px 12px;
+}
+.compare-head-buttons {
+  margin-top: 14px;
+}
+.compare-delete,
+.compare-remove {
+  border-color: rgba(228, 87, 46, 0.4);
+  color: var(--ember);
+}
+.compare-panel {
+  margin-top: 12px;
+}
+.compare-panel .select {
+  max-width: 100%;
+  min-width: 0;
+}
+.compare-label-strong {
+  font-weight: 600;
+}
+
+/* The figures: a label column and one column per model, in the order added.
+   One grid holds every cell, so a row lines up across the models; each
+   model's cells are a group of their own (display: contents), which is what
+   lets them become one stacked card per model on a phone. It scrolls
+   sideways inside .tablewrap when the models do not fit. No column is
+   marked or ordered by a figure. */
+.compare-figures {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.comparecols {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, auto);
+  grid-template-columns: minmax(9em, 11em);
+  grid-auto-columns: minmax(16em, 1fr);
+}
+.comparecol {
+  display: contents;
+}
+.comparecell {
+  /* Holds its hidden label: positioned against the page instead, the labels
+     of columns scrolled out of view widened the whole page. */
+  position: relative;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+}
+.comparecell[data-row="0"] {
+  border-top: 0;
+}
+.comparecol-labels .comparecell {
+  border-left: 0;
+  color: var(--paper-dim);
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+.comparecell-head {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+.comparecol-name {
+  margin: 0;
+  font-size: 1rem;
+}
+.compare-build {
+  font-size: 0.76rem;
+}
+.comparecell .bar {
+  margin: 0 0 6px;
+}
+.comparecell .compare-said {
+  margin: 4px 0 0;
+}
+.comparecell .compare-said:first-of-type {
+  margin-top: 0;
+}
+/* A cell's own label: read by a screen reader with every cell (the label
+   column is hidden from it), seen only when the columns stack. */
+.comparecell-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.compare-detail {
+  margin-top: 8px;
+}
+.compare-floor {
+  margin-top: 8px;
+}
+.compare-overnote {
+  margin: 10px 0 0;
+  font-size: 0.86rem;
+}
+@media (max-width: 900px) {
+  .compare-figures {
+    border: 0;
+    background: none;
+  }
+  .comparecols {
+    display: grid;
+    grid-auto-flow: row;
+    grid-template-rows: none;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .comparecol-labels {
+    display: none;
+  }
+  .comparecol {
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    min-width: 0;
+  }
+  .comparecell {
+    border-left: 0;
+  }
+  .comparecell-name {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0 0 4px;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+    display: block;
+    color: var(--paper-faint);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+}
+
+/* What did you decide? */
+.compare-verdict-choices {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.compare-verdict-choices legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+.compare-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+.compare-note textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 4.5em;
+}
+.compare-verdict-note {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The answers, item by item: Show and Order above, then one row per item —
+   the item, then one cell per model in the order added. Every row shares the
+   grid's columns (subgrid), so a model's cells line up down the page; the
+   whole scrolls sideways inside .tablewrap when the models do not fit. Under
+   900 px each item is a card with its models' answers under it, each headed
+   by the model's name (.comparecell-name, as in the figures). */
+.compare-answers-tools {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.compare-show {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.compare-show .btn {
+  padding: 5px 10px;
+  font-size: 0.82rem;
+}
+.compare-count {
+  margin-left: 2px;
+  font-size: 0.74rem;
+  color: var(--paper-faint);
+}
+.btn[aria-pressed="true"] .compare-count {
+  color: inherit;
+}
+.compare-order {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.compare-order .select {
+  max-width: 100%;
+  min-width: 0;
+}
+.compare-answers-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.compare-answers {
+  display: grid;
+  grid-template-columns: minmax(15em, 19em) repeat(var(--compare-models, 1), minmax(15em, 1fr));
+}
+.compare-answers[data-models="0"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.comparerow {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+.comparerow > .comparecell:first-child {
+  border-left: 0;
+}
+.comparerow-head > .comparecell {
+  border-top: 0;
+  color: var(--paper-dim);
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+.compare-item {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.compare-item p {
+  margin: 0;
+}
+/* The frozen stills, side by side, as the link that opens the viewer. */
+.compare-item .tile-frame {
+  aspect-ratio: auto;
+  display: block;
+  border-radius: 8px;
+}
+.compare-stills {
+  display: grid;
+  /* Inside the link it shrank to its gaps (4 px) without this. */
+  width: 100%;
+  grid-template-columns: repeat(var(--compare-stills, 1), minmax(0, 1fr));
+  gap: 2px;
+}
+.tile-frame .compare-stills img {
+  height: auto;
+  aspect-ratio: 16 / 10;
+}
+.compare-stills .placeholder {
+  aspect-ratio: 16 / 10;
+  align-content: center;
+  font-size: 0.6rem;
+}
+.compare-gone-frame {
+  opacity: 0.55;
+}
+.compare-item-name {
+  overflow-wrap: anywhere;
+}
+.compare-item-line {
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.compare-facts {
+  color: var(--paper-dim);
+}
+.compare-truth {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.pill.compare-truth-tag,
+.pill.compare-tag {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.76rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+s.pill.compare-truth-tag {
+  text-decoration: line-through;
+}
+.compare-used-in {
+  font-size: 0.76rem;
+}
+/* A model's tags: dashed, the app's look for what AI proposes. A tag you
+   had ruled on carries a mark in text as well as its colour. */
+.compare-tags {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pill.compare-tag {
+  border-style: dashed;
+}
+.pill[data-ruling="yes"] {
+  color: var(--sage);
+  border-color: rgba(139, 176, 106, 0.6);
+}
+.pill[data-ruling="no"] {
+  color: var(--ember);
+  border-color: rgba(228, 87, 46, 0.6);
+}
+.compare-new {
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+.compare-caption,
+.compare-score {
+  margin: 4px 0 0;
+}
+.compare-answer-foot {
+  margin: 4px 0 0;
+  font-size: 0.74rem;
+}
+.compare-answer .answerbox {
+  max-height: 12em;
+}
+.compare-looking {
+  margin: 0;
+}
+/* Read by a screen reader, not seen: what the ✓ and ✗ on a tag mean. */
+.compare-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.pill.compare-tag {
+  position: relative;
+}
+/* In the viewer: each model's score and caption under the footage. */
+.compare-viewer-answers {
+  flex-basis: 100%;
+  display: grid;
+  gap: 6px;
+  max-height: 24dvh;
+  overflow-y: auto;
+  font-size: 0.86rem;
+}
+.compare-viewer-answer {
+  overflow-wrap: anywhere;
+}
+.compare-viewer-caption {
+  display: block;
+}
+@media (max-width: 900px) {
+  .compare-answers-wrap {
+    border: 0;
+    background: none;
+  }
+  .compare-answers,
+  .compare-answers[data-models="0"] {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .comparerow {
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    min-width: 0;
+  }
+  .comparerow-head {
+    display: none;
+  }
+  .comparerow > .comparecell:first-child {
+    border-top: 0;
+  }
+  .compare-order,
+  .compare-order .select {
+    width: 100%;
+  }
+}
+/* A demonstration model's mark beside each figure and answer: on a line of
+   its own above the words, so made-up output never reads as real. */
+.comparecell > .pill.compare-demo {
+  margin: 0 6px 6px 0;
+}
+.compare-viewer-answer .pill.compare-demo,
+.comparerow-head .pill.compare-demo {
+  vertical-align: middle;
+}
+
+/* ---- 2026-11-12 colour: three looks side by side ------------------------- */
+
+/* The clip card on a video's page (components/ClipLookCard.tsx). The three
+   tiles are equal on purpose: no look is drawn larger, brighter or first,
+   since the operator chooses by eye and nothing here recommends. */
+.looks {
+  margin-top: 26px;
+  min-width: 0;
+}
+/* Under 1080 px the asset page is one `1fr` column, and a grid column will
+   not shrink below its widest unbreakable content: the scene strip under
+   the player (and now the card's own strip of stills) held a phone's page
+   at 698 px, so the whole page scrolled sideways. The strips scroll inside
+   themselves instead. */
+.detail > * {
+  min-width: 0;
+}
+.looks-head {
+  margin-top: 0;
+}
+.looks-line {
+  margin: 6px 0 0;
+  font-size: 0.86rem;
+}
+.looks-empty {
+  margin-top: 12px;
+  padding: 32px 20px;
+}
+.looks .demo-banner {
+  margin-bottom: 4px;
+}
+.lookgrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 700px) {
+  .lookgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.looktile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.looktile[data-chosen="true"] {
+  border-color: var(--sage);
+  box-shadow: inset 0 0 0 1px rgba(139, 176, 106, 0.4);
+}
+.looktile[data-off="true"] {
+  background: transparent;
+}
+.looktile-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.looktile-head h3 {
+  font-size: 1.1rem;
+  line-height: 1.25;
+  margin-right: auto;
+}
+.looktile-from {
+  margin: -4px 0 0;
+  font-size: 0.8rem;
+}
+.looktile-picture {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--ink-deep);
+  cursor: zoom-in;
+}
+.looktile-picture:hover {
+  border-color: var(--amber-line);
+}
+.looktile-picture:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+.looktile-picture img,
+.lookflip img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: var(--ink-deep);
+}
+.looktile-nopicture {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  padding: 12px;
+  font-size: 0.82rem;
+  text-align: center;
+}
+.looktile-off {
+  padding: 28px 14px;
+  font-size: 0.86rem;
+}
+.looktile-words p {
+  margin: 0 0 6px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.looktile-made {
+  font-size: 0.72rem;
+}
+.looktile-actions {
+  margin: auto 0 0;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.looktile-actions .btn,
+.looks-foot-actions .btn {
+  text-decoration: none;
+}
+.looktile-numbers summary {
+  cursor: pointer;
+  font-size: 0.84rem;
+  color: var(--paper-dim);
+}
+.looktile-numbers .kv {
+  margin-top: 8px;
+}
+
+/* One look, large, with the three to flip between. */
+.lookflip {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.lookflip img {
+  border-radius: var(--radius);
+}
+.lookflip-bar,
+.lookflip-foot {
+  margin: 0 0 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lookflip-foot {
+  margin: 10px 0 0;
+  justify-content: space-between;
+  font-size: 0.84rem;
+}
+.lookflip-back {
+  margin-left: auto;
+}
+
+.looks-said {
+  margin: 10px 0 0;
+  font-size: 0.88rem;
+}
+.looks-foot {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.looks-chosen {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.looks-chosen-picture {
+  margin: 0;
+  width: 200px;
+  max-width: 100%;
+}
+.looks-chosen-picture img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+}
+.looks-chosen-picture figcaption {
+  margin-top: 4px;
+  font-size: 0.8rem;
+}
+.looks-foot-actions {
+  margin: 0;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.looks-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.looks-size .select {
+  min-width: 0;
+  max-width: 100%;
+}
+.looks-premiere {
+  margin-top: 14px;
+}
+.looks-premiere p {
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+/* A listing's proposals from the local model (components/LocalEditPanel.tsx,
+   L4·W4): one row each, the tick apart from the pictures so looking at a
+   photograph never ticks it. Kept here because that step cannot edit this
+   file; it is the design's `.proposals`. */
+.proposals {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.proposals > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  min-width: 0;
+}
+.proposals img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+}
+@media (max-width: 700px) {
+  .proposals > li {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .proposals > li > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---- 2026-11-13 colour: asking, Adjust, the folder (L4·W3) ---------------- */
+
+/* The model's tile: Suggest a look, the request on its way, a failure. */
+.looks-ask {
+  display: grid;
+  gap: 8px;
+}
+.looks-ask-bar {
+  margin: 0;
+  gap: 8px;
+  font-size: 0.84rem;
+}
+.looks-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 0.86rem;
+}
+/* An inline span would take no size; with reduced motion asked for the
+   global rule stops it turning, and the sentence beside it says the rest. */
+.looks-job .spinner {
+  display: inline-block;
+  flex: none;
+}
+.looks-failed {
+  padding: 10px 12px;
+  font-size: 0.86rem;
+}
+.looks-failed p {
+  margin: 0 0 8px;
+}
+.looks-failed pre {
+  margin: 6px 0 8px;
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+
+/* Adjust: "Yours" beside the eight sliders; one column on a phone. */
+.looks-adjust {
+  margin-top: 14px;
+}
+.looks-adjust-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 10px;
+}
+@media (max-width: 700px) {
+  .looks-adjust-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.looks-yours {
+  margin: 0;
+  min-width: 0;
+}
+.looks-yours img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+}
+.looks-yours .looktile-nopicture {
+  border-radius: var(--radius);
+  background: var(--ink-deep);
+}
+.looks-yours figcaption {
+  margin-top: 4px;
+  font-size: 0.8rem;
+}
+.looks-sliders {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.looks-slider {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: baseline;
+  font-size: 0.86rem;
+}
+.looks-slider input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.looks-slider input[type="range"]:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+.looks-adjust-bar {
+  margin: 12px 0 0;
+  gap: 8px;
+}
+
+/* The folder: its line, its Suggest and zip, and its clips one press away. */
+.looks-folder {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  min-width: 0;
+}
+.looks-folder > p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.looks-folder-bar {
+  margin: 0;
+  gap: 8px;
+  font-size: 0.84rem;
+}
+.looks-folder-bar .btn {
+  text-decoration: none;
+}
+.looks-folder-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+.looks-folder-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.88rem;
+}
+.looks-folder-list a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.looks-folder-list .pill {
+  flex: none;
+}
+
+/* ---- 2026-11-13 colour: review fixes (L4 web) ------------------------------ */
+
+/* The card's strip of stills looks like the scene strip above it but moves
+   the looks, not the player: no lift on hover (the scene strip's "press to
+   play here"), and the still on show is marked in the chosen tile's sage
+   rather than the playhead's amber. */
+.looks-moments .strip-cell:hover {
+  transform: none;
+}
+.looks-moments .strip-cell[data-active="true"] {
+  outline-color: var(--sage);
+}
+/* A picture that could not be made, with "Try again" under its sentence. */
+.looktile-nopicture {
+  flex-direction: column;
+  gap: 8px;
+}
+/* The request's line in the flip view, between its buttons and the picture. */
+.lookflip-job {
+  margin: 0 0 10px;
+}
+
+/* ---- 2026-11-12 second runtime -------------------------------------------- */
+
+/* Which build: a repository of several GGUF builds lists them as radios in a
+   table, between the Check's rows and Download. */
+.models-builds {
+  border: 0;
+  margin: 16px 0 0;
+  padding: 0;
+  min-width: 0;
+}
+.models-builds legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 0;
+  font-size: 0.84rem;
+  color: var(--paper-dim);
+}
+.models-builds-asking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.models-builds-asking > .spinner {
+  flex: none;
+}
+.models-builds-intro {
+  margin: 4px 0 8px;
+  font-size: 0.84rem;
+}
+/* As wide as its four short columns, not the card: spread over 1,200 px the
+   size and memory of a row are too far from its name to read as one line. */
+.models-builds-list {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.models-builds-list > .table {
+  width: auto;
+}
+/* The repository read for the plan holds 21 builds: past eight rows the list
+   scrolls in its own box and Download stays in reach. The header stays on
+   top while it does. */
+.models-builds-list[data-scrolls="yes"] {
+  max-height: 340px;
+  overflow-y: auto;
+}
+.models-builds-list thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+.models-builds-list td {
+  padding: 0;
+  white-space: nowrap;
+}
+/* Each cell is a label of its row's radio, filling the cell, so a click
+   anywhere on the row chooses that build. */
+.models-builds-list td > label {
+  display: block;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.models-builds-list td > label.models-build-note {
+  padding-top: 0;
+  white-space: normal;
+  max-width: 26em;
+  font-size: 0.8rem;
+}
+.models-builds-list td > label.models-build-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.models-build-id input[type="radio"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--amber);
+}
+.models-builds-list tr[data-chosen="yes"] td {
+  background: var(--amber-soft);
+}
+.models-builds-reads {
+  margin: 8px 0 0;
+  font-size: 0.84rem;
+}
+
+/* ---- 2026-11-13 colour: the listing's local model (L4·W4) ----------------- */
+
+/* The rail: Ask the local model, under Auto-edit's own button and line. */
+.localedit-ask {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 0.78rem;
+}
+.localedit-or {
+  margin: 0;
+  text-align: center;
+}
+.localedit-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0;
+  font-size: 0.84rem;
+}
+/* An inline span would take no size; with reduced motion asked for the
+   global rule stops it turning, and the sentence beside it says the rest. */
+.localedit-job .spinner {
+  display: inline-block;
+  flex: none;
+}
+.localedit-redo {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.localedit-note {
+  font-size: 0.72rem;
+}
+.localedit-problem {
+  padding: 8px 10px;
+  border: 1px solid var(--ember);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+}
+.localedit-said:empty {
+  display: none;
+}
+.localedit-said {
+  font-size: 0.82rem;
+}
+
+/* The list above the gallery. */
+.localedit .sectionhead {
+  flex-wrap: wrap;
+}
+.localedit .demo-banner {
+  margin-bottom: 10px;
+}
+.localedit .toolbar {
+  margin-bottom: 10px;
+  font-size: 0.84rem;
+}
+.localedit-uses label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.localedit-tick {
+  width: 18px;
+  height: 18px;
+  margin: 4px 0 0;
+  accent-color: var(--amber);
+}
+.localedit-pic {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 0.72rem;
+}
+/* The as-shot picture is the gallery's LookFrame; the same shape as the
+   suggestion beside it, so the two compare frame for frame. */
+.localedit-pic .tile-frame {
+  aspect-ratio: 3 / 2;
+  border-radius: var(--radius);
+}
+.localedit-nopic {
+  aspect-ratio: 3 / 2;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+}
+.localedit-words {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-width: 0;
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+.localedit-file {
+  font-size: 0.74rem;
+}
+.localedit-name {
+  display: grid;
+  gap: 2px;
+  font-size: 0.78rem;
+}
+.localedit-words .pill {
+  justify-self: start;
+}
+.localedit-foot {
+  margin: 12px 0 0;
+}
+.localedit-missing {
+  margin: 10px 0 0;
+  font-size: 0.84rem;
+}
+/* "1 photograph was left because …", under Apply after a run that left some. */
+.localedit-left {
+  margin: 10px 0 0;
+}
+/* Empty, it stays in the accessibility tree (`.localedit-said:empty` would
+   take it out with display: none), so a screen reader already knows the
+   status region when the sentence is written into it and reads it out; it
+   takes no room on screen until then. The rail's own status line under Ask
+   ("The local model will look at …", "Stopped. …", "… dismissed.") had the
+   same fault and gets the same rule. */
+.localedit-said.localedit-left:empty,
+.localedit-ask > .localedit-said:empty {
+  display: block;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- 2026-11-13 cuts: the Cuts list, the draft form, a draft's card ---- */
+
+.cuts-lead {
+  margin: -6px 0 0;
+  font-size: 0.88rem;
+}
+.cuts-ended {
+  margin: 14px 0 0;
+  color: var(--sage);
+}
+.cuts-ended p {
+  margin: 4px 0 0;
+}
+.cutform {
+  display: grid;
+  min-width: 0;
+}
+.cutform-brief {
+  width: 100%;
+  resize: vertical;
+  font-size: 0.95rem;
+}
+.cutform .autocomplete {
+  max-width: 560px;
+}
+.cutform-chosen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* The chosen folder: a name, not a label, so it keeps its own case. */
+.pill.cutform-folder {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.82rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.cutform-unpick {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--paper-dim);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.cutform-unpick:hover {
+  color: var(--amber);
+}
+.cutform-note {
+  margin: 4px 0 0;
+  font-size: 0.84rem;
+}
+.cutform-lengths {
+  border: 0;
+  padding: 0;
+  margin-inline: 0;
+  min-width: 0;
+}
+.cutform-lengths legend {
+  padding: 0;
+  margin-bottom: 5px;
+}
+/* A pressed length, as the app marks a pressed toggle. */
+.cutform .hint[aria-pressed="true"] {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+.cutform-seconds {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.84rem;
+}
+.cutform-seconds .input {
+  width: 6.5em;
+  padding: 5px 8px;
+}
+.cutform-more {
+  margin-top: 16px;
+  font-size: 0.88rem;
+}
+.cutform-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 12em));
+  gap: 12px;
+}
+.cutform-pair .field {
+  margin-top: 8px;
+}
+.cutform-editor {
+  margin: 16px 0 0;
+  font-size: 0.86rem;
+}
+.cutform-refusal {
+  margin: 14px 0 0;
+  border-color: var(--ember);
+}
+.cutform-asked {
+  margin: 14px 0 0;
+  color: var(--sage);
+}
+.cutform-go {
+  margin-top: 16px;
+}
+.cutform-why {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  max-width: 70ch;
+}
+.draftcards {
+  display: grid;
+  gap: 12px;
+}
+.draftcard {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.draftcard-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.draftcard-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.draftcard-what {
+  margin: 0;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+.draftcard-says {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 0;
+}
+.draftcard-says[data-tone="bad"] {
+  color: var(--ember);
+}
+.draftcard-offer {
+  margin: 0;
+  font-size: 0.82rem;
+}
+.draftcard-more {
+  font-size: 0.86rem;
+}
+.draftcard-problems {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+.draftcard-actions {
+  margin: 6px 0 0;
+}
+.draftcard-actions a.btn {
+  text-decoration: none;
+}
+.cuts-table {
+  padding: 0;
+}
+.cuts-made {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+/* A local draft is what a model proposed: the dashed look suggestions have. */
+.pill[data-made="local"] {
+  border-style: dashed;
+}
+@media (max-width: 600px) {
+  .cutform-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- 2026-11-13 cuts: one cut — its versions, its shot list, its download ---- */
+
+.cut-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.cut-title h2 {
+  overflow-wrap: anywhere;
+}
+.cut-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+}
+.cut-said {
+  margin-top: 14px;
+}
+.cut-versions {
+  margin: 20px 0 0;
+}
+/* A local draft is what a model proposed: the dashed look suggestions have,
+   on its button as on its pill in the list. */
+.cut-versions .btn[data-made="local"] {
+  border-style: dashed;
+}
+.cut-draftnote,
+.cut-checked {
+  margin-top: 14px;
+  font-size: 0.9rem;
+}
+.cut-draftnote {
+  border-style: dashed;
+  border-color: var(--line-bright);
+}
+.cut-draftnote p,
+.cut-checked p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cut-draftnote .cut-brief {
+  margin-top: 8px;
+  color: var(--paper-dim);
+  font-style: italic;
+}
+.cut-checked ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+.toolbar.cut-actions {
+  margin: 18px 0 0;
+}
+.cutsend-problem {
+  margin-top: 12px;
+  border-color: var(--ember);
+}
+.cutsend-said p {
+  margin: 8px 0 0;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+.cut-readonly {
+  margin: 10px 0 0;
+  font-size: 0.86rem;
+}
+.cut-again {
+  margin-top: 14px;
+}
+.cut-again:focus {
+  outline: none;
+}
+.cut-again-lead {
+  margin: 0 0 10px;
+  font-size: 0.86rem;
+}
+
+/* A shot: its number, its picture, and what is known about it. The picture
+   is the way to the footage (LookFrame), 168 px wide beside the text. */
+.cutshots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.cutshot {
+  display: grid;
+  grid-template-columns: 2ch 168px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.cutshot-n {
+  color: var(--paper-faint);
+  font-size: 0.86rem;
+  text-align: right;
+  padding-top: 2px;
+}
+.cutshot-pic .tile-frame {
+  border-radius: 6px;
+}
+.cutshot-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.cutshot-body p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cutshot-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 0.95rem;
+}
+/* A clip's name is a link to its page at that moment. In a shot row it sits
+   in a paragraph and already has the look of a link in prose; in the table
+   of offered shots it does not, and with `a { color: inherit;
+   text-decoration: none }` it read as plain text there. One look for both. */
+.cutshot-link {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cutshot-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cutshot-what {
+  font-size: 0.84rem;
+}
+/* Why the shot is there. On a local draft and on Claude's cut these are a
+   model's words: the dashed look the app gives what AI proposes. */
+.cutshot-note {
+  font-size: 0.88rem;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.cutshot-note[data-made="local"],
+.cutshot-note[data-made="mcp"] {
+  border-style: dashed;
+  border-color: var(--line-bright);
+}
+.cutshot-lead {
+  color: var(--paper-faint);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.cutshot-gone {
+  color: var(--ember);
+  font-size: 0.84rem;
+}
+/* A clip that is deleted or away: the row stays, so the cut still reads as
+   the cut that was made, but its picture and words step back. The sentence
+   that says why does not. */
+.cutshot[data-gone="true"] .cutshot-pic,
+.cutshot[data-gone="true"] .cutshot-name,
+.cutshot[data-gone="true"] .cutshot-times,
+.cutshot[data-gone="true"] .cutshot-what,
+.cutshot[data-gone="true"] .cutshot-note {
+  opacity: 0.55;
+}
+.cutshot-total {
+  margin: 12px 0 0;
+  font-size: 0.86rem;
+}
+/* The reason, beside the footage in the viewer. */
+.cutshot-viewer-note {
+  flex-basis: 100%;
+  margin: 0;
+  max-height: 20dvh;
+  overflow-y: auto;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+.cut-offered {
+  margin-top: 26px;
+}
+.cut-offered-lead {
+  margin: 8px 0 10px;
+  font-size: 0.86rem;
+}
+.cut-offered-span {
+  white-space: nowrap;
+}
+.cut-offered-line {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  min-width: 24ch;
+}
+.cut-offered tr[data-chosen="true"] td {
+  color: var(--paper);
+}
+.cut-offered tr:not([data-chosen]) td {
+  color: var(--paper-dim);
+}
+@media (max-width: 600px) {
+  /* The picture goes above its text; the number sits beside the picture. */
+  .cutshot {
+    grid-template-columns: 2ch minmax(0, 1fr);
+  }
+  .cutshot-body {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---- 2026-11-13 cuts: two versions side by side; what a page attached to a chat message ---- */
+
+/* Compare sits at the end of the Versions row, a little apart from the
+   version buttons: it is not one of them. */
+.cut-compare-toggle {
+  margin-left: 6px;
+}
+/* A heading the keyboard is sent to after "Show version 2" (its button has
+   gone): it is not a control, so it shows no ring of its own. */
+#cut-shots:focus {
+  outline: none;
+}
+.cutcompare-says {
+  margin: 0;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+.cutcompare-key {
+  margin: 4px 0 12px;
+  font-size: 0.82rem;
+}
+/* Two columns while each has room for a shot row (number, picture, words);
+   one under about 900 px, and also when the chat panel has narrowed the
+   page — the columns are sized from the room there is, not from the window. */
+.cutcompare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 410px), 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.cutcompare-side {
+  min-width: 0;
+}
+.cutcompare-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 8px;
+}
+.cutcompare-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.cutcompare-head .select {
+  margin-left: auto;
+  max-width: 100%;
+}
+/* Side by side there is less room for each row: a smaller picture. */
+.cutcompare .cutshot {
+  grid-template-columns: 2ch 132px minmax(0, 1fr);
+  gap: 12px;
+}
+/* Under a trimmed shot's pills: the in and out it has in the other version. */
+.cutcompare-was {
+  flex-basis: 100%;
+  font-size: 0.74rem;
+}
+@media (max-width: 600px) {
+  .cutcompare .cutshot {
+    grid-template-columns: 2ch minmax(0, 1fr);
+  }
+}
+
+/* In the chat panel, above the message box: what a page attached to the
+   next message (a cut's review request), a way to read it, and what
+   pressing Send will do. */
+.chat-attached {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line-bright);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 0.8rem;
+}
+/* The pill, what is attached (it wraps), and the x that removes it, which
+   stays at the end of the first line however long the label is. */
+.chat-attached-what {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-attached p {
+  margin: 0;
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+.chat-attached-read summary {
+  cursor: pointer;
+  color: var(--paper-dim);
+}
+.chat-attached-read pre {
+  margin: 6px 0 2px;
+  /* Never so tall that reading it takes the box and Send away with it. */
+  max-height: min(30dvh, 160px);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* A long message of the reader's own: its start, and the rest to open. */
+.chat-bubble-long {
+  display: grid;
+  gap: 6px;
+}
+.chat-bubble-long p {
+  margin: 0;
+}
+.chat-bubble-long summary {
+  cursor: pointer;
+  color: var(--paper-dim);
+  font-size: 0.8rem;
+  white-space: normal;
+}
+.chat-bubble-long details p {
+  margin-top: 6px;
+  font-size: 0.86rem;
+}
+
+/* ---- 2026-11-13 cuts: after review — what the form holds, older cuts, a tall attachment, the Find row ---- */
+
+/* On the Cuts list, at the top of the form: the cut a draft will be the next
+   version of, with the way to make it a new cut instead. Empty, it takes no
+   room (it is always there, so a screen reader hears it change). */
+.cutform-revises {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 14px;
+  font-size: 0.86rem;
+}
+.cutform-revises:empty {
+  display: none;
+}
+.cutform-revises .btn {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+}
+/* Under the list of cuts: the way to the older ones. */
+.cuts-older {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0 0;
+  font-size: 0.84rem;
+}
+
+/* The chat panel's foot with something attached. The foot is the one part
+   of the panel that neither shrinks nor scrolls, and the attachment made it
+   taller than a short window (a 1366 x 768 laptop with "Read what will be
+   sent" open, a phone on its side with it shut): the message box and Send
+   went off the bottom with nothing to scroll them back. Now the foot may be
+   squeezed, and what gives way is the attachment, which scrolls; the box,
+   Send and the lines under them keep their size and their place. Where
+   even that is not enough (a phone on its side with a long note typed) the
+   foot itself scrolls, so nothing in it is ever out of reach. */
+.chat-foot[data-attached] {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.chat-foot[data-attached] > * {
+  flex: none;
+}
+.chat-foot[data-attached] > .chat-composer {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-foot[data-attached] > .chat-composer > * {
+  flex: none;
+}
+.chat-foot[data-attached] .chat-attached {
+  flex: 0 1 auto;
+  /* Its first line (what is attached, and the x that removes it) at least. */
+  min-height: 2.6rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Cuts is the ninth link of the Find row, which with it needs 692 px: that
+   fitted at 1280 px with nothing to spare, and from 1200 to 1279 px (a
+   browser with a side panel, 125 % zoom on a 1536 px laptop) Showcase was
+   cut off with nothing saying the row scrolls. The bar is set as tight here
+   as it already is below 1200 px, which gives the row back more than the
+   link took. */
+@media (min-width: 1200px) and (max-width: 1339px) {
+  .topbar {
+    gap: 12px;
+  }
+  .topbar .navlink {
+    padding-left: 9px;
+    padding-right: 9px;
+  }
+}
+/* And at any width, a row that is cut off says so with the fade a phone's
+   has always had (Shell.tsx marks the row while there is more to its
+   right), so the next link someone adds cannot go out of sight unsaid. */
+.navlinks[data-more] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+
+/* ---- 2026-11-13 folders in Browse, and a model's score (L3·W1) ---- */
+
+/* Browse has two views, chosen by the pair of buttons under its heading:
+   Everything (the flat sheet it has always been) and Folders. The pair sits
+   closer to what it switches than one toolbar sits to the next. */
+.browse-views {
+  margin-bottom: 14px;
+}
+
+/* Folders: where you are, as a trail of links — Libraries › GELCO › Pete Dye —
+   with what can be done with the folder as a whole to its right. Both wrap:
+   a path five folders deep on a phone takes the lines it needs and the
+   buttons drop beneath it. */
+.crumbs-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-bottom: 16px;
+}
+.crumbs {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.95rem;
+}
+.crumbs li {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  /* A folder named with one long unbroken word still fits a phone. */
+  overflow-wrap: anywhere;
+}
+.crumbs li + li::before {
+  content: "›";
+  margin: 0 8px;
+  color: var(--paper-faint);
+}
+/* Every part but the last goes somewhere; with `a { color: inherit;
+   text-decoration: none }` they read as plain text. */
+.crumbs a {
+  color: var(--paper-dim);
+  text-decoration: underline;
+  text-decoration-color: var(--line-bright);
+  text-underline-offset: 3px;
+}
+.crumbs a:hover,
+.crumbs a:focus-visible {
+  color: var(--amber);
+  text-decoration-color: currentColor;
+}
+.crumbs [aria-current] {
+  font-weight: 600;
+}
+.crumbs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The folders inside a folder (and, at the top, the libraries): one row
+   each, the whole row a link. The name takes the room; what the folder
+   holds, how much of it a local model has looked at and its newest file
+   follow, and fall to a second line under the name where there is no room
+   beside it. */
+.folderlist {
+  margin: 0 0 26px;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.folderlist li + li {
+  border-top: 1px solid var(--line);
+}
+.folderrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 18px;
+  padding: 11px 14px;
+  transition: background 0.15s;
+}
+.folderrow:hover {
+  background: var(--surface-2);
+}
+/* The ring is drawn inside the row: the list clips anything outside it. */
+.folderrow:focus-visible {
+  outline-offset: -2px;
+}
+.folderrow-name {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.folderrow:hover .folderrow-name,
+.folderrow:focus-visible .folderrow-name {
+  color: var(--amber);
+}
+.folderrow-what,
+.folderrow-looked {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--paper-faint);
+}
+.folderrow-looked {
+  color: var(--sage);
+}
+
+/* The heading over a folder's own files, under the folders inside it, with
+   how many of them the filters are showing when that is fewer. */
+.browse-fileshead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+}
+.browse-fileshead h3 {
+  font-size: 1.15rem;
+}
+.browse-fileshead .mono {
+  font-size: 0.74rem;
+}
+
+/* A tile on Browse. The picture opens the viewer (LookFrame) and the name
+   opens the asset's page, so the tile itself is no longer one link. The
+   stage holds the picture and the "＋ listing" button over it, which cannot
+   live inside the picture's link. */
+.tile-stage {
+  position: relative;
+}
+.browse-tile .tile-name a:hover,
+.browse-tile .tile-name a:focus-visible,
+.tile-where a:hover,
+.tile-where a:focus-visible {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* Under the name: the folder the file is in, which opens that folder. One
+   line; the whole path is the link's tooltip. */
+.tile-where {
+  margin-top: 4px;
+  font-size: 0.72rem;
+  color: var(--paper-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A local model's 0-100 score of a photograph or a shot: an opinion, so it
+   is labelled as one wherever it is read out. 70 and up is tinted sage,
+   under 40 amber, between them plain. */
+.scorepill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--paper-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.scorepill[data-tone="good"] {
+  color: var(--sage);
+  border-color: rgba(139, 176, 106, 0.45);
+}
+.scorepill[data-tone="low"] {
+  color: var(--amber);
+  border-color: var(--amber-line);
+}
+/* Over a picture: bottom right (top right is a clip's length, top left
+   "＋ listing"), on the same dark glass as the other badges. */
+.tile-frame .scorepill {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  background: rgba(11, 10, 9, 0.78);
+  backdrop-filter: blur(6px);
+}
+
+/* ---- 2026-11-13 Review with AI: the dialog, and a library's switch (L3·W2) ---- */
+
+/* The dialog that asks a local model to look through a folder
+   (components/ReviewWithAi.tsx). It is the viewer's dialog — the same box,
+   head and button bar — at the width of a form: a few sentences and three
+   buttons across eleven hundred pixels read as a page with a hole in it. */
+.preview.review {
+  width: min(640px, 96vw);
+  /* The middle scrolls, not the box: in a short window the buttons stay
+     where they are instead of sliding off under a long list of sentences. */
+  overflow: hidden;
+}
+/* The folder under the title is a path, and a path wraps: cut short with an
+   ellipsis it would leave out the very folder being asked about. */
+.review .preview-title h2 {
+  white-space: normal;
+}
+.review .preview-title p {
+  margin-top: 4px;
+  font-size: 0.86rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.review-x {
+  flex: none;
+  padding: 4px 11px;
+  font-size: 1.1rem;
+  line-height: 1.2;
+}
+.review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+  /* A grid item will not shrink below its longest word without this, and a
+     model's name is one long word. */
+  min-width: 0;
+}
+.review-body > * {
+  min-width: 0;
+  margin: 0;
+}
+.review-body p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.review-body p + p {
+  margin-top: 6px;
+}
+.review-body a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* What a review would take: a label and what is true of it, one pair a row.
+   While the figures are being asked for again they stay, a little dimmed,
+   so the dialog does not jump under the pointer. */
+.review-rows {
+  display: grid;
+  gap: 12px;
+  transition: opacity 0.15s;
+}
+.review-rows[aria-busy="true"] {
+  opacity: 0.6;
+}
+.review-row {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: 3px 16px;
+  align-items: baseline;
+}
+.review-label {
+  color: var(--paper-faint);
+  font-size: 0.82rem;
+}
+.review-row .select {
+  width: 100%;
+  min-width: 0;
+}
+/* A tick box with what ticking it means underneath. */
+.review-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.review-check input {
+  flex: none;
+  margin-top: 4px;
+  accent-color: var(--amber);
+}
+.review-check input:disabled {
+  cursor: not-allowed;
+}
+.review-check .faint {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.84rem;
+}
+/* Said before anything else, in amber: this is the demonstration; local AI
+   is paused. Neither is an error. */
+.review-note {
+  padding: 8px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 0.88rem;
+}
+/* Why a button cannot be pressed: a line of its own over the buttons, in
+   the bar, so it is still there when the sentences above have scrolled. */
+.review-why {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--paper-dim);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+.review-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.review-state .mono,
+.review-count {
+  font-size: 0.78rem;
+}
+.review-body .bar {
+  margin-top: 0;
+}
+.review-body .review-count {
+  margin-top: 6px;
+}
+.review-question {
+  flex: 1 1 100%;
+}
+/* Close sits apart from what starts or stops something. */
+.review-bar .review-close {
+  margin-left: auto;
+}
+@media (max-width: 640px) {
+  /* The viewer drops its buttons under its title on a phone. Here there is
+     one small button, and it stays beside the title. */
+  .review .preview-head {
+    flex-wrap: nowrap;
+    align-items: flex-start;
+  }
+  .review .preview-title {
+    flex: 1 1 auto;
+  }
+}
+@media (max-width: 560px) {
+  /* A phone: the label over what it labels. */
+  .review-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .review-bar .btn {
+    flex: 1 1 auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .review-rows {
+    transition: none;
+  }
+  .review-body .bar > i {
+    transition: none;
+  }
+}
+
+/* Libraries: "Look at new footage with AI" among a library's pills, and the
+   line under them that says what ticking it covers. */
+.pill.lib-look {
+  gap: 7px;
+  cursor: pointer;
+}
+.pill.lib-look:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.pill.lib-look input {
+  accent-color: var(--amber);
+}
+.lib-looknote {
+  margin: 12px 0 0;
+  font-size: 0.84rem;
+}
+.lib-looknote + .lib-looknote {
+  margin-top: 4px;
+}
+
+/* ---- 2026-11-13 Looking on Processing, and the Looker's settings (L3·W3) ---- */
+
+/* Processing › Looking (local AI). First the libraries whose new footage is
+   looked at as it arrives, a sentence each; one left alone after the model
+   failed says so in the colour of a failure, since nothing is coming for
+   its files for hours. */
+.looking-ingest {
+  margin-bottom: 12px;
+  padding: 14px 20px;
+}
+.looking-ingest p {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+.looking-ingest p + p {
+  margin-top: 6px;
+}
+.looking-ingest p[data-stopped] {
+  color: var(--ember);
+}
+/* Then the reviews, one a row. A folder five levels deep and a model's name
+   are long unbroken words: they wrap inside their cells instead of pushing
+   Cancel off the side of the card. */
+.looking-reviews td {
+  overflow-wrap: anywhere;
+}
+.looking-reviews td:first-child {
+  min-width: 190px;
+}
+/* A state and a button are a word each, never broken in half. */
+.looking-reviews .pill,
+.looking-reviews .btn {
+  white-space: nowrap;
+}
+/* Cancel, the size of the page's other in-table buttons. */
+.looking-reviews .btn {
+  padding: 4px 10px;
+}
+.looking-asked {
+  margin-top: 3px;
+  font-size: 0.74rem;
+}
+.looking-model {
+  font-size: 0.74rem;
+  min-width: 160px;
+}
+/* The bar, how many of how many, then the server's sentence. Wide enough
+   that the sentence is not one word a line when the card is narrow. */
+.looking-progress {
+  min-width: 230px;
+  width: 40%;
+}
+.looking-progress .bar {
+  margin-top: 5px;
+}
+.looking-progress > div + div {
+  margin-top: 4px;
+}
+.looking-count {
+  font-size: 0.72rem;
+}
+@media (max-width: 720px) {
+  /* A phone is where a review left running is checked on. Five columns side
+     by side would put the bar and Cancel off the right-hand edge, behind a
+     sideways scroll; each review becomes a block instead, its cells one
+     under another, and the column heads (which only name what is plain to
+     see) are kept for a screen reader alone. */
+  .looking-reviews thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .looking-reviews,
+  .looking-reviews tbody,
+  .looking-reviews tr,
+  .looking-reviews td {
+    display: block;
+  }
+  .looking-reviews tr {
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .looking-reviews tr:last-child {
+    border-bottom: none;
+  }
+  .looking-reviews td {
+    padding: 3px 10px;
+    border-bottom: none;
+  }
+  .looking-reviews td:empty {
+    display: none;
+  }
+  /* Under a thumb now, so the size of one. */
+  .looking-reviews .btn {
+    margin-top: 4px;
+    padding: 9px 18px;
+  }
+  .looking-progress,
+  .looking-model,
+  .looking-reviews td:first-child {
+    width: auto;
+    min-width: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .looking-progress .bar > i {
+    transition: none;
+  }
+}
+
+/* AI models › What the Looker does: the card under the two role cards. */
+.models-looking {
+  margin-top: 14px;
+}
+.models-looking-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.84rem;
+}
+.models-looking-stills .select {
+  justify-self: start;
+  max-width: 100%;
+}
+.models-looking .models-save-note {
+  margin: 12px 0 0;
+}
+.models-looking-where {
+  margin: 14px 0 0;
+  font-size: 0.86rem;
+}
+
+/* ---- 2026-11-13 Where a look shows: an asset's card, a clip's shots, a search hit (L3·W4) ---- */
+
+/* What a local model said of a photograph or a shot (components/LookNote):
+   the score, then its caption at reading size, why, and in the faintest
+   line who said it. A caption is a model's sentence and may be one long
+   word; it wraps instead of widening the card. */
+.looknote {
+  display: grid;
+  gap: 8px;
+}
+.looknote p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.looknote-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.looknote-caption {
+  font-size: 1rem;
+  line-height: 1.45;
+}
+.looknote-reason {
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+.looknote-said {
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+.looknote-opinion {
+  font-size: 0.78rem;
+}
+/* The card on an asset's page: which shot the look is of, above it, and
+   what is still to do, under it. */
+.lookcard-about {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+}
+.lookcard-more {
+  margin: 12px 0 0;
+  font-size: 0.86rem;
+}
+
+/* A clip's shots (components/ShotList), last in the asset page's column.
+
+   The column is as narrow as 560 px on a laptop (the details sit beside it)
+   and as wide as a thousand on a tablet held sideways, so the layout follows
+   the room the list has, not the window: the section is a container. With
+   little room each shot is a block — its picture on the left, what was
+   measured and what the model said beside it, each measurement named
+   ("Move: orbit right") because the column heads are then out of sight,
+   kept for a screen reader. With room it is the table the markup is. A
+   browser without container queries gets the blocks, which fit anywhere. */
+.shots {
+  container-type: inline-size;
+  /* The card's "All 3 shots" link lands here, below the bar that stays at
+     the top of the window, not under it. */
+  scroll-margin-top: 72px;
+}
+/* A shot's button brings the player back into view; the same bar would
+   otherwise cover its top edge. */
+.detail .player {
+  scroll-margin-top: 76px;
+  scroll-margin-bottom: 12px;
+}
+/* The bar is two rows on a phone, as the Tags queue's heading allows for. */
+@media (max-width: 900px) {
+  .shots,
+  .detail .player {
+    scroll-margin-top: 128px;
+  }
+}
+.shotlist-card {
+  padding: 6px 8px;
+  /* A safety net, not the layout: should a row ever be wider than the card,
+     it scrolls inside the card instead of painting over the details beside
+     it. */
+  overflow-x: auto;
+}
+.shotlist thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.shotlist,
+.shotlist tbody,
+.shotlist td {
+  display: block;
+}
+.shotlist tr {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 14px;
+  align-content: start;
+  padding: 12px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.shotlist tr:last-child {
+  border-bottom: none;
+}
+.shotlist td {
+  grid-column: 2;
+  padding: 2px 0;
+  border-bottom: none;
+  overflow-wrap: anywhere;
+}
+.shotlist td[data-label]::before {
+  content: attr(data-label) ": ";
+  font-family: var(--font-ui);
+  color: var(--paper-faint);
+}
+.shotlist td:empty {
+  display: none;
+}
+.shotlist .shot-when {
+  grid-column: 1;
+  grid-row: 1 / span 6;
+}
+/* The shot the player is in, as the transcript marks its cue. */
+.shotlist tr[data-active="true"] {
+  background: var(--amber-soft);
+  border-radius: 8px;
+}
+/* The picture and the times: one button that plays the shot. */
+.shot-seek {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.shot-still {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  aspect-ratio: 16 / 9;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-deep);
+  transition: border-color 0.14s;
+}
+.shot-still img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.shot-seek:hover .shot-still,
+.shot-seek:focus-visible .shot-still {
+  border-color: var(--amber);
+}
+.shot-nopicture {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--paper-faint);
+}
+.shotlist td.shot-score {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.shotlist td.shot-score:empty {
+  display: none;
+}
+.shot-reason {
+  margin-top: 3px;
+  font-size: 0.82rem;
+}
+.shotlist-said {
+  margin: 8px 6px 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.shotlist-said .mono {
+  font-size: 0.7rem;
+}
+@container (min-width: 760px) {
+  .shotlist thead {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    display: table-header-group;
+  }
+  .shotlist {
+    display: table;
+  }
+  .shotlist tbody {
+    display: table-row-group;
+  }
+  .shotlist tr {
+    display: table-row;
+    padding: 0;
+  }
+  .shotlist td,
+  .shotlist td.shot-score {
+    display: table-cell;
+    padding: 10px;
+    margin: 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+  }
+  .shotlist tr:last-child td {
+    border-bottom: none;
+  }
+  .shotlist td[data-label]::before {
+    content: none;
+  }
+  /* Two words at most ("orbit right", "golden hour"): one line each, and
+     the model's sentence takes what is left. */
+  .shotlist td[data-label] {
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  /* An empty cell keeps its place in a table: the columns would shift. */
+  .shotlist td:empty,
+  .shotlist td.shot-score:empty {
+    display: table-cell;
+  }
+  .shotlist tr[data-active="true"] {
+    border-radius: 0;
+  }
+  /* The times stay under the picture, as in the blocks: beside it the first
+     column took a third of the table and the model's sentence was left a
+     ribbon one word wide. */
+  .shotlist td.shot-when {
+    width: 1%;
+  }
+  /* "made up" goes under the score, not beside it, for the same reason. */
+  .shotlist td.shot-score {
+    white-space: nowrap;
+  }
+  .shotlist td.shot-score > .pill {
+    display: flex;
+    width: fit-content;
+    margin-top: 5px;
+  }
+}
+
+/* Search: a caption standing where a spoken quote would be. Smaller and
+   faint, so a model's sentence is never taken for words someone said. */
+.hit-quote.hit-caption {
+  font-size: 0.92rem;
+  color: var(--paper-faint);
+}
+
+/* ---- 2026-11-13 the other ways in to drafting a cut (L5·W4) ---- */
+
+/* "Draft a cut…" in Search's select bar and "Draft a cut from this folder"
+   among a folder's actions in Browse are links (they open the Cuts page)
+   standing in a row of buttons. A link takes the page's line height and a
+   button does not, so the link stood 7 px taller than its neighbours and
+   stretched the whole row. Here, and only here, it is as tall as they are. */
+.selectbar > a.btn,
+.crumbs-actions > a.btn {
+  line-height: normal;
+}
+
+/* The clips a draft form holds by id, by name: a short list that scrolls
+   rather than pushing the rest of the form down for a long selection. */
+.cutform-clips {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-width: 560px;
+  max-height: 10.5em;
+  overflow-y: auto;
+  font-size: 0.84rem;
+}
+.cutform-clips li {
+  padding: 1px 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- final QA: the Tags page's viewer -------------------------------------- */
+
+/* The box TagViewer wraps the shared viewer in is a hook, not a box. */
+.tag-viewer {
+  display: contents;
+}
+/* Its line under the question says who suggested the picture, how sure it
+   was and which model. Cut to one row, a phone showed only "suggested by
+   local …", and touch has no tooltip to read the rest; so it wraps. */
+.tag-viewer .preview-title p {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ---- final QA: system pages and the shell ----------------------------------- */
+
+/* A Security section the page went to for a link (/security#services) takes
+   the focus, so Tab carries on from there. It is not a control, so it draws
+   no ring: the scroll shows where you are. */
+.secsection[tabindex="-1"]:focus,
+.disclosure[tabindex="-1"]:focus {
+  outline: none;
 }

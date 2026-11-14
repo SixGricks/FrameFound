@@ -15,8 +15,8 @@ API.
 """
 
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import cast
@@ -95,10 +95,28 @@ def bind(principal_value: Principal, factory: SessionFactory) -> None:
     _sessions.set(factory)
 
 
-def _base_url(request: Request) -> str:
+@contextmanager
+def bound(principal_value: Principal, factory: SessionFactory) -> Iterator[None]:
+    """`bind`, undone on the way out. For a caller that runs tools in
+    process and then goes on to other work (the chat panel): `bind` alone
+    would leave the next thing in the same task acting as this user."""
+    token_p = _principal.set(principal_value)
+    token_s = _sessions.set(factory)
+    try:
+        yield
+    finally:
+        _principal.reset(token_p)
+        _sessions.reset(token_s)
+
+
+def base_url(request: Request) -> str:
+    """scheme://host as the caller reached us, behind the proxy or not."""
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
     host = request.headers.get("host", request.url.netloc)
     return f"{scheme}://{host}"
+
+
+_base_url = base_url
 
 
 class BearerGate:

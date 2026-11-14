@@ -340,3 +340,104 @@ async def test_faces_on_a_paired_proxy_are_neither_shown_nor_counted(env: dict) 
     async with env["factory"]() as db:
         proxy_face = await db.get(Face, uuidlib.UUID(env["faces"][0]))
         assert proxy_face is not None and proxy_face.source == "detected"
+
+
+async def _clip_faces(env: dict, moments: list[int], *, suggested: bool = False) -> list[str]:
+    """Faces of this person in one clip, one per moment (milliseconds). With
+    `suggested`, they are a sweep's offers to the person instead of members."""
+    person_id = uuidlib.UUID(env["person_id"])
+    async with env["factory"]() as db:
+        library = (await db.execute(select(Library))).scalar_one()
+        clip = Asset(
+            library_id=library.id,
+            relative_path=f"clip-{len(moments)}-{suggested}.mp4",
+            filename="party.mp4",
+            extension="mp4",
+            media_type="video",
+            size_bytes=1000,
+            mtime=BASE,
+            availability="online",
+        )
+        db.add(clip)
+        await db.flush()
+        ids: list[str] = []
+        for ts_ms in moments:
+            frame = Frame(asset_id=clip.id, ts_ms=ts_ms, relative_path=f"f/clip-{ts_ms}.jpeg")
+            db.add(frame)
+            await db.flush()
+            face = Face(
+                frame_id=frame.id,
+                asset_id=clip.id,
+                person_id=None if suggested else person_id,
+                suggested_person_id=person_id if suggested else None,
+                suggested_similarity=0.8 if suggested else None,
+                suggestion_state="pending" if suggested else None,
+                box_x=0.1,
+                box_y=0.1,
+                box_w=0.2,
+                box_h=0.2,
+                detection_score=0.9,
+                embedding=_vec(0.01),
+                source="detected",
+            )
+            db.add(face)
+            await db.flush()
+            ids.append(str(face.id))
+        await db.commit()
+    return ids
+
+
+async def test_a_face_says_whether_it_is_in_a_photograph_or_a_clip_and_when(env: dict) -> None:
+    """The review page opens a face's picture in the viewer. It used to ask
+    for every asset in turn to learn whether it was a photograph or a clip,
+    and a clip played from 0:00 with "the face appears somewhere in this
+    clip". The face now says both, so the clip starts where the face is."""
+    (in_clip,) = await _clip_faces(env, [12_500])
+    (offered,) = await _clip_faces(env, [40_000], suggested=True)
+    await env["client"].put(f"/api/v1/people/{env['person_id']}/name", json={"name": "Ann"})
+
+    detail = (await env["client"].get(f"/api/v1/people/{env['person_id']}")).json()
+    faces = {face["face_id"]: face for face in detail["faces"]}
+    assert (faces[in_clip]["media_type"], faces[in_clip]["ts_ms"]) == ("video", 12_500)
+    photo = faces[env["faces"][0]]
+    # A photograph's single frame is at 0, which is no moment at all.
+    assert (photo["media_type"], photo["ts_ms"]) == ("image", None)
+
+    found = (await env["client"].get(f"/api/v1/people/{env['person_id']}/suggestions")).json()
+    assert [(f["face_id"], f["media_type"], f["ts_ms"]) for f in found] == [
+        (offered, "video", 40_000)
+    ]
+    box = (await env["client"].get(f"/api/v1/people/faces/{in_clip}/crop-box")).json()
+    assert (box["media_type"], box["ts_ms"]) == ("video", 12_500)
+
+
+async def test_the_person_page_costs_the_same_queries_however_many_faces_it_shows(
+    env: dict,
+) -> None:
+    """The kind and the moment come with the faces, not one question per
+    face: a review queue holds hundreds."""
+    from sqlalchemy import event
+
+    engine = env["factory"].kw["bind"].sync_engine
+    url = f"/api/v1/people/{env['person_id']}"
+
+    async def selects() -> int:
+        seen: list[str] = []
+
+        def capture(_conn, _cursor, statement, _params, _context, _many) -> None:  # type: ignore[no-untyped-def]
+            if statement.lstrip().upper().startswith("SELECT"):
+                seen.append(statement)
+
+        event.listen(engine, "before_cursor_execute", capture)
+        try:
+            resp = await env["client"].get(url)
+        finally:
+            event.remove(engine, "before_cursor_execute", capture)
+        assert resp.status_code == 200
+        return len(seen)
+
+    few = await selects()
+    await _clip_faces(env, [1_000, 2_000, 3_000, 4_000, 5_000, 6_000])
+    many = await selects()
+    assert len((await env["client"].get(url)).json()["faces"]) == 9
+    assert many == few

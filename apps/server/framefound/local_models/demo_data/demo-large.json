@@ -1,0 +1,62 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. The maker's original that demo-large-4bit says it was built from.",
+  "id": "google/demo-large",
+  "author": "google",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "lastModified": "2026-09-06T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "transformers",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "image-text-to-text",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "license": "apache-2.0"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 3100
+    },
+    {
+      "rfilename": "config.json",
+      "size": 2100
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors",
+      "size": 32212254720,
+      "lfs": {
+        "sha256": "4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a",
+        "size": 32212254720
+      }
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors",
+      "size": 28991029248,
+      "lfs": {
+        "sha256": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "size": 28991029248
+      }
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ]
+}

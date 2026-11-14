@@ -1,0 +1,32 @@
+{
+  "framefound_note": "An invented model: no such repository exists. It holds only the part that reads pictures (a projector), not a model. Every value is a stand-in.",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "id": "google/demo-projector-only",
+  "author": "google",
+  "sha": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+  "lastModified": "2026-09-15T00:00:00.000Z",
+  "tags": [
+    "gguf",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "license": "apache-2.0"
+  },
+  "config": {},
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 900
+    },
+    {
+      "rfilename": "mmproj-demo-F16.gguf",
+      "size": 851251104,
+      "lfs": {
+        "sha256": "9847fcab18481e8f9b2bdd9afb31af3f06b670009c7bb6fa71ddfd735f59b295",
+        "size": 851251104
+      }
+    }
+  ]
+}

@@ -35,6 +35,7 @@ from framefound.db.models import Asset, Face, Frame, Slideshow
 from framefound.media import slideshow as selector
 from framefound.media.streaming import range_file_response
 from framefound.media.theming import THEMES, get_theme, score_many
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
@@ -358,20 +359,34 @@ async def create(body: CreateRequest, _user: CurrentUser, db: DbDep) -> Slidesho
             "audio_relpath": body.audio_relpath.strip(),
         },
     )
+    # Committed before queueing: the worker looks the row up by id, and a
+    # render that starts before the commit would find nothing to render.
     db.add(show)
     await db.commit()
-    await _queue(show)
+    if not _queued(show):
+        # A row no worker was told about sat "queued" for good, one more each
+        # time the operator pressed Render while the queue was down.
+        await db.delete(show)
+        await db.commit()
+        raise _queue_down()
     return _as_out(show)
 
 
-async def _queue(show: Slideshow) -> None:
+def _queued(show: Slideshow) -> bool:
+    """Hand the render to the worker; False when the queue would not take it."""
     try:
         from framefound.processing.tasks import render_slideshow
 
         render_slideshow.delay(str(show.id))
     except Exception:
-        raise HTTPException(status_code=503, detail="The processing queue is unavailable") from None
+        log.warning("slideshow.queue_unavailable", slideshow_id=str(show.id))
+        return False
     log.info("slideshow.queued", slideshow_id=str(show.id), slides=len(show.asset_ids))
+    return True
+
+
+def _queue_down() -> HTTPException:
+    return HTTPException(status_code=503, detail="The processing queue is unavailable")
 
 
 @router.get("", response_model=list[SlideshowOut])
@@ -404,11 +419,17 @@ async def rerender(slideshow_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> Sl
         raise HTTPException(status_code=404, detail="No such slideshow")
     if show.status == "rendering":
         raise HTTPException(status_code=409, detail="That slideshow is already rendering")
+    before = (show.status, show.error, show.segments_done)
     show.status = "pending"
     show.error = None
     show.segments_done = 0
     await db.commit()
-    await _queue(show)
+    if not _queued(show):
+        # Put it back as it was: a finished video is still finished, and a
+        # failed one keeps the reason it failed, rather than "queued" for good.
+        show.status, show.error, show.segments_done = before
+        await db.commit()
+        raise _queue_down()
     return _as_out(show)
 
 
@@ -420,10 +441,16 @@ async def stream_video(  # type: ignore[no-untyped-def]
     show = await db.get(Slideshow, slideshow_id)
     if show is None or not show.relative_path:
         raise HTTPException(status_code=404, detail="No such slideshow")
-    path = settings.data_dir / show.relative_path
-    if not path.is_file():
+    # In a thread: the render store may be a share, and a share that has
+    # hung must hold up this request, not the whole API.
+    found = await asyncio.to_thread(stores.locate, show.relative_path, settings)
+    if not found.there:
+        if found.away is not None:
+            # The video is very likely fine and its drive or share is away;
+            # "no longer on disk" would send the operator to render it again.
+            raise HTTPException(status_code=503, detail=found.away)
         raise HTTPException(status_code=404, detail="The rendered file is no longer on disk")
-    return range_file_response(request, path, "video/mp4")
+    return range_file_response(request, found.path, "video/mp4")
 
 
 @router.delete("/{slideshow_id}", status_code=204, dependencies=[require_admin])
@@ -440,7 +467,21 @@ async def delete_slideshow(
     if show is None:
         return
     if show.relative_path:
-        (settings.data_dir / show.relative_path).unlink(missing_ok=True)
+        relative_path = show.relative_path
+
+        def remove() -> str | None:
+            busy = stores.unwritable("renders", settings)
+            if busy is None:
+                # Its old copy too, if renders were moved and the old copies
+                # kept: a move back would otherwise bring the video back.
+                stores.discard(relative_path, settings)
+            return busy
+
+        # With its store away (or mid-move) the video cannot be removed, and
+        # deleting the row anyway would leave a file nothing knows about.
+        busy = await asyncio.to_thread(remove)
+        if busy is not None:
+            raise HTTPException(status_code=503, detail=busy)
     import shutil
 
     shutil.rmtree(settings.data_dir / "renders" / "work" / str(show.id), ignore_errors=True)

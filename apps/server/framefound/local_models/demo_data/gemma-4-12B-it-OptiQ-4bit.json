@@ -1,0 +1,93 @@
+{
+  "framefound_note": "Recorded from huggingface.co on 2026-11-12 (L1 design 9.2): id, sha, library_name, pipeline_tag, that it has no mlx-vlm tag, cardData.base_model, and the sizes of its three weights files. Stand-ins, not read from the site: lastModified, the tags, cardData.license, config, the names and checksums of the three weights files, and every other file.",
+  "id": "mlx-community/gemma-4-12B-it-OptiQ-4bit",
+  "author": "mlx-community",
+  "sha": "de9e183868050b34bf6b4272518500ffcebf15b3",
+  "lastModified": "2026-08-14T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "text-generation",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "gemma4",
+    "text-generation",
+    "conversational",
+    "base_model:google/gemma-4-12B-it",
+    "base_model:quantized:google/gemma-4-12B-it",
+    "license:gemma",
+    "4-bit",
+    "region:us"
+  ],
+  "cardData": {
+    "base_model": "google/gemma-4-12B-it",
+    "license": "gemma"
+  },
+  "config": {
+    "model_type": "gemma4"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1570
+    },
+    {
+      "rfilename": "README.md",
+      "size": 812
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 17336
+    },
+    {
+      "rfilename": "config.json",
+      "size": 4102
+    },
+    {
+      "rfilename": "generation_config.json",
+      "size": 208
+    },
+    {
+      "rfilename": "model-00001-of-00003.safetensors",
+      "size": 5349856755,
+      "lfs": {
+        "sha256": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+        "size": 5349856755
+      }
+    },
+    {
+      "rfilename": "model-00002-of-00003.safetensors",
+      "size": 3510027171,
+      "lfs": {
+        "sha256": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+        "size": 3510027171
+      }
+    },
+    {
+      "rfilename": "model-00003-of-00003.safetensors",
+      "size": 104760992,
+      "lfs": {
+        "sha256": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "size": 104760992
+      }
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "size": 198440
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 32169626,
+      "lfs": {
+        "sha256": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+        "size": 32169626
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 2740
+    }
+  ]
+}

@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     # data_dir, so moving them is a copy and a change of this one value
     # (`framefound proxies move`, storage/stores.py). None: under data_dir.
     proxy_dir: Path | None = None
+    # One folder for everything bulky (a `Framefound` folder on a NAS share):
+    # proxies, slideshow renders, listing exports, basemaps, the model
+    # library and backup copies, each in a subfolder named after its kind
+    # (storage/stores.py). None: each kind stays where it always was.
+    bulk_dir: Path | None = None
+    # Where each backup archive is copied off this machine. None: the bulk
+    # folder's `backups` when there is one, else no copy (native/backup.py).
+    backup_copy_dir: Path | None = None
     media_root: Path = Path("/media")
     # Model weights and caches. A volume at /models in the containers; a
     # worker running natively on another machine points it at a local folder.
@@ -36,6 +44,23 @@ class Settings(BaseSettings):
     # them on Apple silicon's GPU / Neural Engine (the native Mac install only);
     # it falls back to the CPU per model when CoreML cannot take it.
     onnx_provider: Literal["cpu", "coreml"] = "cpu"
+
+    # --- Local AI models (docs/local-models.md) -----------------------------
+    # Where the software that runs models is installed, one folder per
+    # version. Set, it also means "this install can run models": the Mac
+    # install's settings file names ~/FrameFound/runtimes, the containers
+    # leave it unset and every local-AI control says so (local_models).
+    runtimes_dir: Path | None = None
+    # Both on this machine only (127.0.0.1). The first is FrameFound's own
+    # model server; the second is the program it starts to run one model,
+    # which nothing else talks to.
+    model_server_port: int = 54805
+    model_runtime_port: int = 54806
+    # Developer only (CONTRIBUTING.md): the AI models page against made-up
+    # models, for review in a browser on a machine that cannot run any.
+    # Ignored when runtimes_dir is set or a public domain is configured, so
+    # a real install can never be made to show them.
+    local_ai_demo: bool = False
 
     # --- Workers on another machine (docs/remote-workers.md) ---------------
     # Library roots are stored as the server's own paths (/media/intel/...).
@@ -95,7 +120,7 @@ class Settings(BaseSettings):
     # Full-URL override; takes precedence when set (tests, unusual deployments).
     database_url: str = ""
 
-    @field_validator("proxy_dir", mode="before")
+    @field_validator("proxy_dir", "bulk_dir", "backup_copy_dir", "runtimes_dir", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         # An env file line `FRAMEFOUND_PROXY_DIR=` means "not set"; left to

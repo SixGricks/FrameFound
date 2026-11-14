@@ -28,7 +28,7 @@ from sqlalchemy.engine import CursorResult
 
 from framefound.ai import people as people_lib
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, Face, Person, catalogued
+from framefound.db.models import Asset, Face, Frame, Person, catalogued
 from framefound.media.maps_store import load_face_config, save_face_config
 
 log = structlog.get_logger()
@@ -56,6 +56,12 @@ class FaceOut(BaseModel):
     detection_score: float
     similarity: float | None
     source: str
+    # What the face is in, and when in it, so the review page can open the
+    # picture as the right kind and start a clip where the face is seen
+    # without asking about every asset first. `ts_ms` is null for anything
+    # but a clip: a photograph's one frame is at 0 and that says nothing.
+    media_type: str
+    ts_ms: int | None
 
 
 class PersonOut(BaseModel):
@@ -110,7 +116,20 @@ def _rows(result: object) -> int:
     return cast("CursorResult[Any]", result).rowcount or 0
 
 
-def _face_out(face: Face, asset: Asset) -> FaceOut:
+def _faces() -> Any:
+    """Faces with the asset each is in and the moment of its frame: the one
+    shape every `FaceOut` is built from, read in the same query as the faces
+    themselves. The page used to ask for each asset in turn to learn whether
+    it was a photograph or a clip. The frame is an outer join: a face whose
+    frame row is missing is still a face, it just has no moment."""
+    return (
+        select(Face, Asset, Frame.ts_ms)
+        .join(Asset, Asset.id == Face.asset_id)
+        .outerjoin(Frame, Frame.id == Face.frame_id)
+    )
+
+
+def _face_out(face: Face, asset: Asset, ts_ms: int | None) -> FaceOut:
     return FaceOut(
         face_id=face.id,
         asset_id=face.asset_id,
@@ -123,6 +142,8 @@ def _face_out(face: Face, asset: Asset) -> FaceOut:
         detection_score=face.detection_score,
         similarity=face.similarity,
         source=face.source,
+        media_type=asset.media_type,
+        ts_ms=ts_ms if asset.media_type == "video" else None,
     )
 
 
@@ -220,15 +241,12 @@ async def _cover_faces(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, F
     )
     rows = (
         await db.execute(
-            select(Face, Asset)
-            .join(ranked, ranked.c.face_id == Face.id)
-            .join(Asset, Asset.id == Face.asset_id)
-            .where(ranked.c.rank == 1)
+            _faces().join(ranked, ranked.c.face_id == Face.id).where(ranked.c.rank == 1)
         )
     ).all()
-    for face, asset in rows:
+    for face, asset, ts_ms in rows:
         if face.person_id is not None:
-            covers[face.person_id] = _face_out(face, asset)
+            covers[face.person_id] = _face_out(face, asset, ts_ms)
     return covers
 
 
@@ -327,16 +345,14 @@ async def _covers(db: DbDep, people: Sequence[Person]) -> dict[uuid.UUID, FaceOu
         return {}
     rows = (
         await db.execute(
-            select(Face, Asset)
-            .join(Asset, Asset.id == Face.asset_id)
-            .where(
+            _faces().where(
                 Face.id.in_({face_id for _, face_id in pairs}),
                 Face.source != "rejected",
                 _reviewable(),
             )
         )
     ).all()
-    faces = {face.id: (face, asset) for face, asset in rows}
+    faces = {face.id: (face, asset, ts_ms) for face, asset, ts_ms in rows}
     covers: dict[uuid.UUID, FaceOut] = {}
     for person_id, face_id in pairs:
         found = faces.get(face_id)
@@ -358,8 +374,7 @@ async def get_person(
         raise HTTPException(status_code=404, detail="No such person")
 
     stmt = (
-        select(Face, Asset)
-        .join(Asset, Asset.id == Face.asset_id)
+        _faces()
         .where(Face.person_id == person_id, catalogued())
         # Unreviewed first: the review queue is the reason to open this page.
         #
@@ -381,7 +396,7 @@ async def get_person(
     if source:
         stmt = stmt.where(Face.source == source)
     rows = (await db.execute(stmt)).all()
-    faces = [_face_out(face, asset) for face, asset in rows]
+    faces = [_face_out(face, asset, ts_ms) for face, asset, ts_ms in rows]
 
     suggestions = (
         await db.execute(
@@ -704,8 +719,7 @@ async def list_suggestions(
     """Faces a sweep thinks could be this person, best match first."""
     rows = (
         await db.execute(
-            select(Face, Asset)
-            .join(Asset, Asset.id == Face.asset_id)
+            _faces()
             .where(
                 Face.suggested_person_id == person_id,
                 Face.suggestion_state == "pending",
@@ -716,8 +730,8 @@ async def list_suggestions(
         )
     ).all()
     out = []
-    for face, asset in rows:
-        item = _face_out(face, asset)
+    for face, asset, ts_ms in rows:
+        item = _face_out(face, asset, ts_ms)
         item.similarity = face.suggested_similarity
         item.source = "suggested"
         out.append(item)
@@ -947,14 +961,10 @@ async def update_face_settings(
 @router.get("/faces/{face_id}/crop-box", response_model=FaceOut)
 async def face_crop_box(face_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> FaceOut:
     """Where a face sits in its frame, in normalised coordinates."""
-    row = (
-        await db.execute(
-            select(Face, Asset).join(Asset, Asset.id == Face.asset_id).where(Face.id == face_id)
-        )
-    ).first()
+    row = (await db.execute(_faces().where(Face.id == face_id))).first()
     if row is None:
         raise HTTPException(status_code=404, detail="No such face")
-    return _face_out(row[0], row[1])
+    return _face_out(row[0], row[1], row[2])
 
 
 # A little air around the box. Detectors crop tight to the features, and a
@@ -997,8 +1007,6 @@ async def face_crop(  # type: ignore[no-untyped-def]
     any geometry at all.
     """
     from PIL import Image
-
-    from framefound.db.models import Frame
 
     row = (
         await db.execute(

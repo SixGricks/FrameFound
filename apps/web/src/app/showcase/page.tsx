@@ -142,7 +142,30 @@ function PlaceCard({
         {pick && <span className="faint mono">{describe(pick)}</span>}
         {pick?.season && <span className="pill">{pick.season}</span>}
         {pick?.source && <span className="pill">{pick.source}</span>}
-        {pick && pick.frame_ms != null && <span className="pill">video frame</span>}
+        {pick && pick.frame_ms != null && (
+          <>
+            <span className="pill">video frame</span>
+            {/* A frame is one instant of a clip, and the picture below only
+                opens the still: there was no way from here to the clip it
+                was taken from. A new tab, as the picture uses, so the
+                ranking and the choices made on this page stay put. */}
+            <Link
+              className="linkish"
+              style={{ fontSize: "0.8rem" }}
+              href={
+                pick.frame_ms >= 1000
+                  ? `/assets/${pick.asset_id}?t=${Math.floor(pick.frame_ms / 1000)}`
+                  : `/assets/${pick.asset_id}`
+              }
+              target="_blank"
+              rel="noreferrer"
+              prefetch={false}
+              title={`Play ${pick.filename} from this moment, in a new tab`}
+            >
+              Play the clip ↗
+            </Link>
+          </>
+        )}
         <span className="faint mono" style={{ marginLeft: "auto" }}>
           {count === 1 ? "1 option" : `${current + 1} of ${count}`}
         </span>

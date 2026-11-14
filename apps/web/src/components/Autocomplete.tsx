@@ -33,6 +33,7 @@ export default function Autocomplete({
   placeholder,
   ariaLabel,
   disabled = false,
+  autoFocus = false,
   minChars = 1,
   renderExtra,
 }: {
@@ -44,6 +45,11 @@ export default function Autocomplete({
   placeholder?: string;
   ariaLabel: string;
   disabled?: boolean;
+  /** Take focus on appearing — for a field that a button press has just put
+   *  on the page in that button's place. Without it focus falls to the
+   *  document when the button goes, and what the reader types next lands on
+   *  whatever single-key shortcuts the page has instead of in the field. */
+  autoFocus?: boolean;
   minChars?: number;
   /** Extra controls per row — "merge into this one", and the like. */
   renderExtra?: (suggestion: Suggestion) => React.ReactNode;
@@ -94,7 +100,22 @@ export default function Autocomplete({
   const visible = open && items.length > 0;
 
   function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (!visible) return;
+    if (!visible) {
+      // An arrow opens a closed list again, as a combobox's does. After
+      // Escape the field keeps focus, so nothing else could: the list only
+      // came back by typing, or by leaving the field and returning to it.
+      // The arrow also moves, as it does in an open list: Down to the first
+      // row, Up to the last, so Enter then picks the row that is lit. Enter
+      // and every other key do what they did before with the list closed.
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setOpen(true);
+        if (items.length) setActive(event.key === "ArrowDown" ? 0 : items.length - 1);
+        // An empty list may be a request that failed: ask again.
+        else void look(value);
+      }
+      return;
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setActive((i) => (i + 1) % items.length);
@@ -124,6 +145,7 @@ export default function Autocomplete({
         aria-label={ariaLabel}
         maxLength={120}
         disabled={disabled}
+        autoFocus={autoFocus}
         autoComplete="off"
         role="combobox"
         aria-expanded={visible}

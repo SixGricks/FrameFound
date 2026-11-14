@@ -1,0 +1,59 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. An approved maker's model that asks for an account (gated), under a licence of the maker's own, and that says it was built from a blocked publisher's model. The blocked publisher's name is filled in when the file is read (fake.BLOCKED_PLACEHOLDER), so it is written nowhere but policy.DEFAULT_BLOCKED.",
+  "id": "nvidia/demo-gated",
+  "author": "nvidia",
+  "sha": "6666666666666666666666666666666666666666",
+  "lastModified": "2026-09-03T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": "auto",
+  "library_name": "transformers",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "image-text-to-text",
+    "base_model:__BLOCKED_PUBLISHER__/demo-base",
+    "base_model:finetune:__BLOCKED_PUBLISHER__/demo-base",
+    "license:other"
+  ],
+  "cardData": {
+    "base_model": "__BLOCKED_PUBLISHER__/demo-base",
+    "license": "other",
+    "license_name": "nvidia-open-model-license",
+    "license_link": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 8120
+    },
+    {
+      "rfilename": "config.json",
+      "size": 2210
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 8589934592,
+      "lfs": {
+        "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "size": 8589934592
+      }
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ]
+}

@@ -37,6 +37,8 @@ backups/
 
 # Models (downloaded at runtime)
 models/
+# ...but not the web app's AI models page, which shares the name.
+!apps/web/src/app/models/
 
 # OS / editor
 .DS_Store

@@ -28,6 +28,9 @@ import {
   type SkyAsset,
   type SkyInfo,
 } from "@/lib/api";
+import { usePageTitle } from "@/lib/hooks";
+
+import { REMOVE_MARKED, noticeAfterMarking } from "./marking";
 
 const DEBOUNCE_MS = 250;
 
@@ -54,6 +57,7 @@ const SLIDERS: Array<{
 ];
 
 export default function EditPage() {
+  usePageTitle("Develop");
   const params = useParams<{ assetId: string }>();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -418,8 +422,9 @@ export default function EditPage() {
           className="btn"
           disabled={busy || inpaint?.busy}
           onClick={() => {
-            setMarking((v) => !v);
-            if (!marking) setNotice("Paint over what should disappear, then press Remove.");
+            const next = !marking;
+            setMarking(next);
+            setNotice((current) => noticeAfterMarking(next, current));
           }}
         >
           {marking ? "Cancel marking" : "Remove objects"}
@@ -452,7 +457,7 @@ export default function EditPage() {
             aria-label="Brush size"
           />
           <button className="btn btn-primary" disabled={busy || !marked} onClick={submitRemoval}>
-            Remove marked
+            {REMOVE_MARKED}
           </button>
           <button className="btn" disabled={!marked} onClick={clearMarks}>
             Clear marks
@@ -466,7 +471,12 @@ export default function EditPage() {
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {/* Sliders beside the photograph where both fit; where they do not
+          (a phone), the photograph comes first — see .develop-body. */}
+      <div
+        className="develop-body"
+        style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}
+      >
         <div className="card" style={{ width: 280, flexShrink: 0 }}>
           <label
             style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}
@@ -599,7 +609,7 @@ export default function EditPage() {
           </p>
         </div>
 
-        <div style={{ flex: 1, minWidth: 320 }}>
+        <div className="develop-preview" style={{ flex: 1, minWidth: 320 }}>
           {previewUrl ? (
             <div style={{ position: "relative", display: "inline-block" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -3,8 +3,10 @@
 // Three ways to draw the same places, in order of how much they tell an
 // outsider:
 //
-//   maplibre — vector tiles from a style URL the operator chooses. Point it at
-//              your own OpenMapTiles or Protomaps server and no third party
+//   maplibre — vector tiles: a map downloaded on the Basemaps page (one file
+//              in the data directory, no tile server), or a style URL the
+//              operator chooses on the Security page, such as their own
+//              OpenMapTiles or Protomaps server. Either way no third party
 //              learns anything. This is the recommended basemap.
 //   google   — Google's tiles. Every pan is a request telling Google roughly
 //              where you are looking.
@@ -16,8 +18,10 @@
 // the page does not know or care which is active.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
 import type { MapConfig, Place } from "@/lib/api";
+import { count } from "@/lib/storage";
 import type { GMap, GMarker } from "@/types/google-maps";
 import type { MlMap, MlMarker } from "@/types/maplibre";
 
@@ -127,7 +131,7 @@ export default function PlaceMap({
       const marker = new api.Marker({
         position: { lat: place.lat, lng: place.lon },
         map,
-        title: `${place.name} — ${place.asset_count} assets`,
+        title: `${place.name} — ${count(place.asset_count, "asset")}`,
         label: {
           text: String(place.asset_count),
           color: "#12100e",
@@ -192,7 +196,7 @@ export default function PlaceMap({
       el.type = "button";
       el.className = "mapdot";
       el.textContent = String(place.asset_count);
-      el.title = `${place.name} — ${place.asset_count} assets`;
+      el.title = `${place.name} — ${count(place.asset_count, "asset")}`;
       el.addEventListener("click", () => onSelect(place));
       return new api.Marker({ element: el }).setLngLat([place.lon, place.lat]).addTo(map);
     });
@@ -246,9 +250,21 @@ export default function PlaceMap({
     <div className="card">
       {failed && (
         <p className="faint" style={{ marginTop: 0, fontSize: "0.84rem" }}>
-          {provider === "maplibre"
-            ? "The map library or tile style could not load — check the URLs on the Security page. Showing positions without a basemap."
-            : "Google Maps could not load — check the key and its referrer restrictions. Showing positions without a basemap."}
+          {provider === "maplibre" ? (
+            <>
+              The map could not load — check the map chosen on the{" "}
+              <Link className="linkish" href="/basemaps">
+                Basemaps
+              </Link>{" "}
+              page, or for a tile server of your own its URLs on the{" "}
+              <Link className="linkish" href="/security">
+                Security
+              </Link>{" "}
+              page. Showing positions without a basemap.
+            </>
+          ) : (
+            "Google Maps could not load — check the key and its referrer restrictions. Showing positions without a basemap."
+          )}
         </p>
       )}
       <svg
@@ -271,17 +287,22 @@ export default function PlaceMap({
             onClick={() => select(place)}
           >
             <title>
-              {place.name} — {place.asset_count} assets
+              {place.name} — {count(place.asset_count, "asset")}
             </title>
           </circle>
         ))}
       </svg>
       {!failed && (
         <p className="faint" style={{ fontSize: "0.78rem", margin: "10px 0 0" }}>
+          {/* QA found this still pointing only at the Security page and a
+              tile server to run, after the Basemaps page made a real map one
+              download and one press. */}
           Relative positions, drawn from the coordinates themselves — nothing
-          leaves this machine. For a real basemap, add a self-hosted tile style
-          on the Security page; OpenMapTiles or Protomaps keeps it all on your
-          network.
+          leaves this machine. For a real map, download one on the{" "}
+          <Link className="linkish" href="/basemaps">Basemaps</Link> page: it is one file, kept on
+          this machine, and one press puts it here. A tile server of your own
+          (OpenMapTiles or Protomaps) can be set on the{" "}
+          <Link className="linkish" href="/security">Security</Link> page instead.
         </p>
       )}
     </div>

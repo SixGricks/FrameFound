@@ -1,7 +1,7 @@
 """What the Claude API costs this install, and the ceiling it may not cross.
 
 Every call FrameFound makes to Anthropic — the recipe-picker, photo naming,
-the tag reviewer — lands in one ledger with the token counts the API itself
+the tag reviewer, the chat panel — lands in one ledger with the token counts the API itself
 reported. The budget check reads that ledger, so the number the operator
 sets on the Security page is enforced from measured spend, not from a guess
 at the prompt size.
@@ -42,6 +42,9 @@ PRICES: dict[str, tuple[float, float, float, float]] = {
 TAG_REVIEW = "tag_review"
 RECIPE = "recipe"
 DESCRIBE = "describe"
+# The chat panel (framefound/chat). Its rows never carry an asset id: the
+# tag reviewer reads "a tag_review row with an asset" as "already reviewed".
+CHAT = "chat"
 
 # A typical reviewer call: a 768px preview (~600 image tokens), the tag
 # vocabulary and instructions, and a short structured answer. Used only
@@ -75,13 +78,35 @@ def price_of(model: str, usage: dict[str, int]) -> float | None:
     ) / 1_000_000
 
 
+def _row_or_dearest(model: str) -> tuple[float, float, float, float]:
+    """An unknown model is priced at the dearest listed rate: a cap that
+    assumes unknown means free is not a cap."""
+    return _price_row(model) or max(PRICES.values(), key=lambda r: r[0] + r[1])
+
+
 def estimate_call(model: str) -> float:
     """What one reviewer call will probably cost, for the pre-call check.
-    An unknown model is estimated at the dearest listed rate: a cap that
-    assumes unknown means free is not a cap."""
-    row = _price_row(model) or max(PRICES.values(), key=lambda r: r[0] + r[1])
-    inp, out, _write, _read = row
+    An unknown model is estimated at the dearest listed rate."""
+    inp, out, _write, _read = _row_or_dearest(model)
     return (ESTIMATE_INPUT_TOKENS * inp + ESTIMATE_OUTPUT_TOKENS * out) / 1_000_000
+
+
+# What one chat answer is assumed to write, thinking included, when deciding
+# whether the next request fits. The ledger records what it really cost.
+CHAT_OUTPUT_TOKENS = 1_500
+
+
+def estimate_chat(model: str, prompt_tokens: int) -> float:
+    """What the next chat request will probably cost: the whole pending
+    prompt at the full input rate, plus a nominal answer.
+
+    Deliberately not the cached rate. Most of a long conversation is read
+    from the cache at a twentieth of the price, but only if the cache is
+    still warm, and a check that assumes the cheap case lets the cap be
+    crossed on the day it is not.
+    """
+    inp, out, _write, _read = _row_or_dearest(model)
+    return (max(0, prompt_tokens) * inp + CHAT_OUTPUT_TOKENS * out) / 1_000_000
 
 
 def month_start(now: datetime | None = None) -> datetime:
@@ -91,8 +116,11 @@ def month_start(now: datetime | None = None) -> datetime:
 
 
 async def spent_since(db: AsyncSession, since: datetime, purpose: str | None = None) -> float:
-    """Dollars recorded since `since`. Failed calls carry no usage and so
-    cost nothing here, which matches what the API bills."""
+    """Dollars recorded since `since`. A call the API turned away carries
+    no usage and so costs nothing here, which matches what it bills. A
+    call that failed after the API had begun to answer is different: it is
+    billed, and whoever records it passes the usage reported up to then
+    (the chat panel does), so it counts here like any other."""
     stmt = select(func.coalesce(func.sum(AiUsage.cost_usd), 0.0)).where(
         AiUsage.created_at >= since, AiUsage.cost_usd.is_not(None)
     )

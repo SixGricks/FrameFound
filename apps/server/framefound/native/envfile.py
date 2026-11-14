@@ -64,6 +64,43 @@ def merged(text: str, values: dict[str, str], *, only_missing: bool = False) -> 
     return "\n".join(lines) + "\n"
 
 
+def added(text: str, template: str) -> str:
+    """`text` with every setting of `template` it lacks appended, each with
+    the comment written above it in the template.
+
+    What `install` does to an existing file when a release introduces a
+    setting. The comments come too because a bare line tells the operator
+    nothing: `FRAMEFOUND_RUNTIMES_DIR=…` alone does not say that it is what
+    turns the AI models page on. Nothing already in `text` changes, and a
+    key that is there blank stays blank."""
+    present = parse(text)
+    blocks: list[list[str]] = []
+    comments: list[str] = []
+    # Whether the template's previous line was a key just taken, so that
+    # neighbouring new keys (two ports) stay one block.
+    joined = False
+    for line in template.splitlines():
+        key, _value = _split(line)
+        if key is None:
+            if line.strip().startswith("#"):
+                comments.append(line)
+            else:
+                comments, joined = [], False
+            continue
+        if key in present:
+            comments, joined = [], False
+            continue
+        if joined:
+            blocks[-1].extend([*comments, line])
+        else:
+            blocks.append([*comments, line])
+        comments, joined = [], True
+    if not blocks:
+        return text
+    kept = text.rstrip("\n")
+    return "\n\n".join(([kept] if kept else []) + ["\n".join(block) for block in blocks]) + "\n"
+
+
 def update(path: Path, values: dict[str, str], *, only_missing: bool = False) -> None:
     try:
         text = path.read_text(encoding="utf-8")
@@ -98,12 +135,26 @@ FRAMEFOUND_SERVER_NAME=FrameFound
 FRAMEFOUND_HTTP_PORT={ports["FRAMEFOUND_HTTP_PORT"]}
 
 # ---- Files ----
-# Derived files other than proxies: thumbnails, frames, transcripts, backups.
+# What every page reads: thumbnails, frames, transcripts, backups.
 FRAMEFOUND_DATA_DIR={layout.data}
-# Video proxies, when they live somewhere else (a NAS share, an external
-# drive). Set and changed by:  framefound proxies move <folder>
+# One folder for everything bulky (a folder on a NAS share): video proxies,
+# slideshow videos, listing exports, basemaps and backup copies, each in a
+# subfolder of its own. Set by:  framefound install --store <folder>
+# Do not change it by editing this line. The folder is also recorded in
+# <data>/.framefound-stores.json, and that record is what FrameFound
+# follows: an edit here changes nothing, restart or not. Change it with
+# `framefound install --store <folder>` or on the Storage page. The same
+# record holds any kind moved somewhere of its own (the Storage page, or
+# `framefound storage move`), and wins over these lines for that too.
+FRAMEFOUND_BULK_DIR=
+# Video proxies alone, when they are to live somewhere other than the bulk
+# folder. Set and changed by:  framefound proxies move <folder>
 FRAMEFOUND_PROXY_DIR=
 FRAMEFOUND_MODELS_DIR={layout.models}
+# The software that runs AI models on this Mac, one folder per version,
+# installed and updated from the AI models page. This line is what turns
+# that page on.
+FRAMEFOUND_RUNTIMES_DIR={layout.runtimes}
 # Libraries must be folders under this. /Volumes covers every mounted share
 # and external drive.
 FRAMEFOUND_MEDIA_ROOT=/Volumes
@@ -113,7 +164,8 @@ FRAMEFOUND_MIN_FREE_GB=20
 # ---- Backups ----
 # Nightly, into <data>/backups; the newest this many are kept.
 FRAMEFOUND_BACKUP_KEEP=14
-# A second copy off this Mac (a NAS folder). Empty: none.
+# A second copy off this Mac. Empty: the bulk folder's `backups` when there
+# is a bulk folder, otherwise none.
 FRAMEFOUND_BACKUP_COPY_DIR=
 
 # ---- How hard it works ----
@@ -145,6 +197,9 @@ POSTGRES_USER=framefound
 POSTGRES_DB=framefound
 REDIS_HOST=127.0.0.1
 REDIS_PORT={ports["REDIS_PORT"]}
+# The local AI model server, and the model it runs (only the server talks to that).
+FRAMEFOUND_MODEL_SERVER_PORT={ports["FRAMEFOUND_MODEL_SERVER_PORT"]}
+FRAMEFOUND_MODEL_RUNTIME_PORT={ports["FRAMEFOUND_MODEL_RUNTIME_PORT"]}
 # Caddy is the only proxy, and it is on this machine.
 FRAMEFOUND_TRUSTED_PROXIES=127.0.0.1/32
 # Homebrew's Postgres with pgvector, found at install time.

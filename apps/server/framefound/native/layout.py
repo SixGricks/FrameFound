@@ -9,12 +9,17 @@ up, moving it or removing it is a matter of one path:
     valkey/          the queue's append-only file
     data/            derived files: thumbnails, frames, transcripts, backups
     models/          downloaded model weights
+    runtimes/        the software that runs local AI models, one folder per
+                     version (FRAMEFOUND_RUNTIMES_DIR; local_models/runtimes.py)
     web/             the built web app
     run/             sockets and scheduler state
     logs/            one log per service
 
-Proxies are the one thing an operator moves elsewhere (a NAS share, an
-external drive): `FRAMEFOUND_PROXY_DIR`, set by `framefound proxies move`.
+The bulky kinds are what an operator keeps elsewhere (a NAS share, an
+external drive): video proxies, slideshow videos, listing exports, basemaps
+and backup copies. `framefound install --store <folder>` gives them one
+folder (`FRAMEFOUND_BULK_DIR`), and each can be moved on its own afterwards
+(storage/stores.py; `framefound storage`, or the Storage page).
 The source checkout is wherever this package was installed from.
 """
 
@@ -35,6 +40,10 @@ DEFAULT_PORTS = {
     "FRAMEFOUND_WEB_PORT": "54802",
     "POSTGRES_PORT": "54803",
     "REDIS_PORT": "54804",
+    # The local AI model server, and the runtime it starts. Both answer on
+    # 127.0.0.1 only, and only FrameFound's own services talk to them.
+    "FRAMEFOUND_MODEL_SERVER_PORT": "54805",
+    "FRAMEFOUND_MODEL_RUNTIME_PORT": "54806",
 }
 
 
@@ -75,6 +84,10 @@ class Layout:
         return self.home / "models"
 
     @property
+    def runtimes(self) -> Path:
+        return self.home / "runtimes"
+
+    @property
     def web(self) -> Path:
         return self.home / "web"
 
@@ -110,6 +123,7 @@ class Layout:
             self.valkey,
             self.data,
             self.models,
+            self.runtimes,
             self.run,
             self.logs,
         )

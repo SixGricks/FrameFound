@@ -48,6 +48,11 @@ from framefound.db.models import (
     TranscriptSegment,
 )
 from framefound.mcp.auth import open_session, principal
+from framefound.nle import roughcut
+from framefound.nle.roughcut import DEFAULT_STILL_S as DEFAULT_STILL_S
+from framefound.nle.roughcut import MAX_CUTS as MAX_CUTS
+from framefound.nle.roughcut import CutIn as CutIn
+from framefound.nle.roughcut import RoughCut as RoughCut
 from framefound.nle.selects import (
     DEFAULT_HANDLES_S,
     DEFAULT_MAX_PICTURE_S,
@@ -59,9 +64,7 @@ from framefound.nle.selects import (
 
 log = structlog.get_logger()
 
-MAX_CUTS = 200
 MAX_SEGMENTS = 2000
-DEFAULT_STILL_S = 4.0
 # How a downloaded link is described to the agent, per derivative kind.
 DOWNLOADS = {
     "proxy": "1080p H.264 MP4 of the video, with sound — download this to cut or caption",
@@ -150,33 +153,6 @@ class ScenesResult(BaseModel):
     note: str
 
 
-class CutIn(BaseModel):
-    id: str = Field(description="Asset id (a video, or a photograph to hold on screen)")
-    in_s: float = Field(default=0.0, ge=0, description="Start, seconds into the source")
-    out_s: float | None = Field(
-        default=None, description="End, seconds into the source; a photo's hold length"
-    )
-    note: str = Field(default="", max_length=500, description="Becomes a marker on the cut")
-    # Speed is recorded in cut history only; the XML plays every piece at
-    # 100% until speed per cut lands in the timeline itself.
-
-
-class RoughCut(BaseModel):
-    title: str
-    filename: str
-    profile: str | None
-    duration_s: float
-    cuts: int
-    xml: str = Field(description="FCP7 XML: save as .xml and import into Premiere or Resolve")
-    unmapped: list[str] = Field(
-        description="Files with no path for this profile; they will import offline"
-    )
-    note: str
-    recorded: bool = Field(
-        default=False, description="Whether the cut was written to cut history (recent_cuts)"
-    )
-
-
 # --- helpers -----------------------------------------------------------------
 
 
@@ -199,28 +175,15 @@ async def _asset(db: Any, asset_id: str) -> Asset:
 
 
 async def _profile_map(db: Any, profile: str | None) -> dict[uuid.UUID, tuple[Any, Any]]:
-    from framefound.api.v1.panel import _profiles
-
-    if not profile or not profile.strip():
-        return {}
-    found = await _profiles(db, profile)
-    if not found:
-        names = sorted(set((await db.execute(select(PathMapping.profile_name))).scalars().all()))
-        raise ToolError(
-            f"No path profile called {profile!r}. Profiles: {', '.join(names) or 'none yet'} "
-            "(add one per library on the Libraries page)."
-        )
-    return found
+    try:
+        return await roughcut.profile_map(db, profile)
+    except roughcut.CutError as exc:
+        raise ToolError(str(exc)) from exc
 
 
-def _local_path(asset: Asset, profiles: dict[uuid.UUID, tuple[Any, Any]]) -> str | None:
-    from framefound.api.v1.panel import _translate_for
-
-    return _translate_for(asset, profiles)
-
-
-def _has_audio(asset: Asset) -> bool:
-    return asset.media_type == "audio" or asset.audio_codec is not None
+# One rule for a path and for sound, shared with the cut writer.
+_local_path = roughcut.local_path
+_has_audio = roughcut.has_audio
 
 
 # --- the tools ---------------------------------------------------------------
@@ -464,6 +427,7 @@ def register(server: MCPServer) -> None:
         still_s: float = DEFAULT_STILL_S,
         client: str | None = None,
         record: bool = True,
+        parent: str | None = None,
     ) -> RoughCut:
         """Lay clips end to end into an FCP7 XML sequence that Premiere Pro
         and DaVinci Resolve open as a timeline (Final Cut Pro 10/11 cannot:
@@ -478,106 +442,30 @@ def register(server: MCPServer) -> None:
         every piece's in/out and the shot it came from), which recent_cuts
         summarises and find_shots uses to flag or skip shots already used.
         `client` defaults to the library most pieces come from; pass
-        `record: false` for a throwaway draft."""
-        from framefound.nle.fcp7 import Clip, Cut, build_sequence
+        `record: false` for a throwaway draft.
 
+        `parent` is the id of a cut this one revises: the new cut is kept
+        beside it as the next version and neither is replaced. A local
+        draft's id is in the review request about it (recent_cuts does not
+        list a draft that was never downloaded); a finished cut's id is in
+        recent_cuts with verbose."""
         who = principal()
-        if not cuts:
-            raise ToolError("Give at least one cut")
-        if len(cuts) > MAX_CUTS:
-            raise ToolError(f"At most {MAX_CUTS} cuts in one sequence")
-        still_s = min(max(still_s, 0.5), 60.0)
         async with open_session() as db:
-            profiles = await _profile_map(db, profile)
-            libraries = {lib.id: lib for lib in (await db.execute(select(Library))).scalars()}
-            assets: dict[str, Asset] = {}
-            for cut in cuts:
-                if cut.id not in assets:
-                    assets[cut.id] = await _asset(db, cut.id)
-
-        built: list[Cut] = []
-        unmapped: list[str] = []
-        for cut in cuts:
-            asset = assets[cut.id]
-            if asset.media_type == "audio":
-                raise ToolError(f"{asset.filename} is audio; a rough cut takes video and photos")
-            path = _local_path(asset, profiles) if profiles else None
-            if path is None:
-                library = libraries.get(asset.library_id)
-                root = library.root_path.rstrip("/") if library else ""
-                path = f"{root}/{asset.relative_path}"
-                if asset.filename not in unmapped:
-                    unmapped.append(asset.filename)
-            clip = Clip(
-                name=asset.filename,
-                path=path,
-                duration_s=asset.duration_s,
-                fps=asset.fps,
-                width=asset.width,
-                height=asset.height,
-                has_audio=_has_audio(asset),
-            )
-            if asset.media_type == "image":
-                hold = (cut.out_s - cut.in_s) if cut.out_s is not None else still_s
-                built.append(Cut(clip, 0.0, max(0.5, hold), is_still=True, note=cut.note))
-                continue
-            out_s = cut.out_s if cut.out_s is not None else (asset.duration_s or cut.in_s)
-            if asset.duration_s is not None:
-                out_s = min(out_s, asset.duration_s)
-            if out_s <= cut.in_s:
-                raise ToolError(
-                    f"{asset.filename}: out_s ({out_s:g}) must be after in_s ({cut.in_s:g})"
-                    + (f"; the clip is {asset.duration_s:g}s long" if asset.duration_s else "")
-                )
-            built.append(Cut(clip, cut.in_s, out_s, note=cut.note))
-
-        xml = build_sequence(title.strip() or "FrameFound rough cut", built)
-        total = sum(c.out_s - c.in_s for c in built)
-        recorded = False
-        if record:
-            from framefound.mcp.shots import record_cut
-
-            pieces = [
-                (assets[cut.id], piece.in_s, piece.out_s, 1.0)
-                for cut, piece in zip(cuts, built, strict=True)
-            ]
             try:
-                async with open_session() as db:
-                    await record_cut(
-                        db,
-                        title.strip() or "FrameFound rough cut",
-                        pieces,
-                        client=client,
-                        profile=profile,
-                        created_by=who.user_id,
-                    )
-                recorded = True
-            except Exception:
-                # History is a record, not the product: the timeline still
-                # goes back to the editor.
-                log.warning("mcp.cut_not_recorded", exc_info=True)
-        safe = "".join(ch if ch.isalnum() or ch in " -_" else "-" for ch in title).strip()
-        note = f"{len(built)} cuts, {total:.1f}s."
-        if unmapped:
-            note += (
-                f" {len(unmapped)} file(s) have no path for "
-                + (f"profile {profile!r}" if profile else "any profile (none given)")
-                + "; they use the server's path and will import offline until relinked."
-            )
-        if recorded:
-            note += " Recorded in cut history."
-        log.info("mcp.rough_cut", cuts=len(built), seconds=round(total, 1), by=who.token_name)
-        return RoughCut(
-            title=title,
-            filename=f"{safe or 'rough-cut'}.xml",
-            profile=profile,
-            duration_s=round(total, 3),
-            cuts=len(built),
-            xml=xml,
-            unmapped=unmapped,
-            note=note,
-            recorded=recorded,
-        )
+                return await roughcut.build_rough_cut(
+                    db,
+                    title,
+                    cuts,
+                    profile=profile,
+                    still_s=still_s,
+                    client=client,
+                    record=record,
+                    created_by=who.user_id,
+                    by=who.token_name,
+                    parent=parent,
+                )
+            except roughcut.CutError as exc:
+                raise ToolError(str(exc)) from exc
 
     @server.tool()
     async def build_selects(

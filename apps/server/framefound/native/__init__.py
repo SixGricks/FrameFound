@@ -2,7 +2,8 @@
 
 The containers in docker-compose.yml become launchd agents in the logged-in
 user's session — Postgres, Valkey, the API, the web app, Caddy, the scanner,
-the scheduler and the workers — started at login and restarted if they stop.
+the scheduler, the workers and the local AI model server — started at
+login and restarted if they stop.
 Everything lives under one folder (`~/FrameFound`), and one command drives
 it: `framefound install | start | stop | status | doctor | update | backup |
 proxies | migrate`.

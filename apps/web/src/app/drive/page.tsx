@@ -17,6 +17,7 @@ import {
   type GdriveRename,
   type GdriveSettings,
 } from "@/lib/api";
+import { usePageTitle } from "@/lib/hooks";
 
 function renumber(renames: GdriveRename[]): GdriveRename[] {
   return renames.map((entry, index) => {
@@ -32,6 +33,7 @@ function renumber(renames: GdriveRename[]): GdriveRename[] {
 }
 
 export default function DrivePage() {
+  usePageTitle("Drive");
   const [settings, setSettings] = useState<GdriveSettings | null>(null);
   const [folder, setFolder] = useState("");
   const [preview, setPreview] = useState<GdrivePreview | null>(null);
@@ -178,7 +180,10 @@ export default function DrivePage() {
           </p>
         )}
         {error && (
-          <p className="mono" style={{ color: "var(--bad, #e5484d)" }}>
+          // --ember is the palette's failure colour. This used `--bad`, which
+          // was never defined, so the message came out in a fallback red no
+          // other page uses.
+          <p className="mono" role="alert" style={{ color: "var(--ember)" }}>
             {error}
           </p>
         )}
@@ -196,6 +201,10 @@ export default function DrivePage() {
             </span>
           </div>
           <div className="card">
+            <p className="faint" style={{ marginTop: 0 }}>
+              Not sure a room is right? A current name opens that picture in Google Drive, in a
+              new tab — the plan stays as it is here.
+            </p>
             <table className="table">
               <thead>
                 <tr>
@@ -224,7 +233,24 @@ export default function DrivePage() {
                           {skippedRow ? "+" : "✕"}
                         </button>
                       </td>
-                      <td className="mono">{entry.old_name}</td>
+                      <td className="mono">
+                        {/* The plan gave a name and a room with no picture to
+                            check the room against. The row only carries
+                            Drive's file id — no catalogue asset, and nothing
+                            here can serve a Drive thumbnail — so the name
+                            opens the file in Drive itself, in a new tab: the
+                            plan and the rows dropped from it stay as they
+                            are. */}
+                        <a
+                          className="linkish"
+                          href={`https://drive.google.com/file/d/${encodeURIComponent(entry.file_id)}/view`}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open this picture in Google Drive, in a new tab"
+                        >
+                          {entry.old_name}
+                        </a>
+                      </td>
                       <td className="mono">
                         {skippedRow ? "— left as is —" : planned?.new_name}
                       </td>

@@ -7,7 +7,7 @@ root allowlist — the scanner never accepts arbitrary filesystem paths.
 
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from framefound.auth import service as auth_service
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, client_ip, require_admin
 from framefound.db.models import Asset, Library, PathMapping, Scan
+from framefound.local_models import availability
 from framefound.scanner.paths import PathValidationError, validate_library_root
 from framefound.scanner.proxies import DEFAULT_PATTERN, ProxyPattern
 
@@ -92,6 +93,8 @@ class LibraryUpdate(BaseModel):
     transcribe_enabled: bool | None = None
     # Where editors' proxies sit beside an original; "" turns pairing off.
     proxy_pattern: str | None = Field(default=None, max_length=200)
+    # Have the Looker look at what arrives from now on (framefound/looking).
+    look_at_ingest: bool | None = None
 
     @model_validator(mode="after")
     def _proxy_pattern_parses(self) -> "LibraryUpdate":
@@ -117,6 +120,9 @@ class LibraryOut(BaseModel):
     proxy_pattern: str = DEFAULT_PATTERN
     last_scan_at: datetime | None
     asset_count: int = 0
+    look_at_ingest: bool = False
+    # When looking at what arrives was switched on; nothing older is swept.
+    look_since: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -215,13 +221,44 @@ async def get_library(library_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> L
 
 @router.patch("/{library_id}", response_model=LibraryOut, dependencies=[require_admin])
 async def update_library(
-    library_id: uuid.UUID, body: LibraryUpdate, db: DbDep, _user: CurrentUser
+    library_id: uuid.UUID, body: LibraryUpdate, request: Request, db: DbDep, user: CurrentUser
 ) -> LibraryOut:
     library = await _get_library(db, library_id)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    look = changes.pop("look_at_ingest", None)
+    if look is not None and look != library.look_at_ingest:
+        await _switch_looking(db, library, look, request, user.id)
+    for field, value in changes.items():
         setattr(library, field, value)
     await db.commit()
     return LibraryOut.model_validate(library)
+
+
+async def _switch_looking(
+    db: DbDep, library: Library, on: bool, request: Request, actor: uuid.UUID
+) -> None:
+    """Turn looking at what arrives on or off, and say who did.
+
+    Turning it on is refused where models cannot run (the containers): a
+    switch that is on and does nothing is worse than one that cannot be
+    turned on. Turning it off is always allowed. `look_since` is set when it
+    goes on and cleared when it goes off, so turning it off and on again
+    never reaches back to what arrived while it was off; asking for the
+    state it is already in changes nothing, which keeps the line where it was.
+    """
+    if on:
+        can = availability()
+        if not can.ok:
+            raise HTTPException(409, can.reason or "Local AI models cannot run here.")
+    library.look_at_ingest = on
+    library.look_since = datetime.now(UTC) if on else None
+    await auth_service.audit(
+        db,
+        "library.look_at_ingest",
+        actor_user_id=actor,
+        ip=client_ip(request),
+        detail={"name": library.name, "on": on},
+    )
 
 
 @router.delete("/{library_id}", status_code=204, dependencies=[require_admin])

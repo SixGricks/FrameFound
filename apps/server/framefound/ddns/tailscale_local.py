@@ -17,19 +17,35 @@ exactly that rather than failing vaguely.
 Nothing here can take the host *off* the tailnet: there is no logout, no
 `down`, no route or ACL change. The worst a caller can do is produce a
 sign-in link, which is useless without the owner's Tailscale account.
+
+On a Mac the usual Tailscale is the app (from the Mac App Store or
+tailscale.com/download), which has no socket at the Linux path and reported
+"not installed" while it was running. The app is read through the command
+line inside it; a tailscaled from Homebrew is reached through its own
+socket like on Linux.
 """
 
 import asyncio
-from dataclasses import dataclass, field
+import json
+import sys
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
 
+from framefound.native import proc
+
 log = structlog.get_logger()
 
 SOCKET = Path("/var/run/tailscale/tailscaled.sock")
+# Where tailscaled puts its socket on a Mac (Homebrew's, or one built from
+# source). The Mac app has none.
+MAC_SOCKET = Path("/var/run/tailscaled.socket")
+# The Tailscale command line that comes inside the Mac app, whichever store
+# it came from. It finds the app's own way in by itself.
+MAC_APP_CLI = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
 # The daemon refuses LocalAPI requests that do not name it as the host — a
 # guard against browsers being tricked into talking to it.
 LOCALAPI = "http://local-tailscaled.sock/localapi/v0"
@@ -39,7 +55,22 @@ LOGIN_WAIT_S = 12.0
 LOGIN_POLL_S = 0.5
 
 ADMIN_CONSOLE = "https://login.tailscale.com/admin/machines"
-DOWNLOAD = "https://tailscale.com/download"
+LINUX_DOWNLOAD = "https://tailscale.com/download"
+MAC_DOWNLOAD = "https://tailscale.com/download/mac"
+
+APP_NOT_ANSWERING = (
+    "The Tailscale app is on this Mac but is not answering. Open it from Applications "
+    "and make sure it is connected, then look again."
+)
+APP_SIGNS_IN = (
+    "On a Mac, Tailscale is signed in from its own app: click the Tailscale icon in the "
+    "menu bar and choose Log in."
+)
+# Signed in but turned off: the app's own switch, not its Log in.
+APP_TURNS_ON = (
+    "On a Mac, Tailscale is turned on from its own app: click the Tailscale icon in the "
+    "menu bar and choose Connect."
+)
 
 # What the page shows, from the daemon's BackendState.
 NOT_INSTALLED = "not_installed"
@@ -63,6 +94,29 @@ class TailscaleUnavailable(RuntimeError):
     """The daemon could not be reached, or refused. Message safe to show."""
 
 
+def host_platform() -> str:
+    """Which way of installing Tailscale fits the machine FrameFound runs
+    on, "macos" or "linux", so the page can show that one."""
+    return "macos" if sys.platform == "darwin" else "linux"
+
+
+def download_page(platform: str) -> str:
+    """Where to get Tailscale for this kind of machine, for installing it on
+    the server itself (a phone or laptop wants LINUX_DOWNLOAD, the page for
+    every device).
+
+    The Security page's answer carries `platform` too; a server older than
+    that field still sent this link, so the card falls back to it when
+    `platform` is missing.
+    """
+    return MAC_DOWNLOAD if platform == "macos" else LINUX_DOWNLOAD
+
+
+# Read by the Security page's API for every answer; the machine does not
+# change while the server runs.
+DOWNLOAD = download_page(host_platform())
+
+
 @dataclass
 class TailscaleStatus:
     state: str
@@ -74,15 +128,46 @@ class TailscaleStatus:
     tailnet: str = ""
     ips: list[str] = field(default_factory=list)
     version: str = ""
+    # Looked up when made, so a test can say which kind of machine this is.
+    platform: str = field(default_factory=lambda: host_platform())
+    # Read through the Mac app's command line, which cannot be asked for a
+    # sign-in link: signing in is done in the app.
+    via_app: bool = False
+
+
+def _socket() -> Path | None:
+    """The daemon's socket, where this kind of host keeps it."""
+    places = [SOCKET, MAC_SOCKET] if host_platform() == "macos" else [SOCKET]
+    return next((place for place in places if place.exists()), None)
 
 
 def _client() -> httpx.AsyncClient:
     """A client bound to the daemon's socket. Replaced in tests."""
-    return httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(SOCKET)), timeout=TIMEOUT_S)
+    socket = _socket() or SOCKET
+    return httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(socket)), timeout=TIMEOUT_S)
 
 
 def socket_present() -> bool:
-    return SOCKET.exists()
+    return _socket() is not None
+
+
+def mac_app() -> Path | None:
+    """The Mac app's command line, when this is a Mac and the app is there."""
+    if host_platform() != "macos" or not MAC_APP_CLI.exists():
+        return None
+    return MAC_APP_CLI
+
+
+def _app_says(app: Path) -> str:
+    """`status --json` from the Mac app's command line: the same answer the
+    socket gives. Replaced in tests."""
+    try:
+        done = proc.run([app, "status", "--json"], capture=True, check=False, timeout=TIMEOUT_S)
+    except proc.CommandFailed as err:
+        raise TailscaleUnavailable(APP_NOT_ANSWERING) from err
+    if done.returncode != 0:
+        raise TailscaleUnavailable(APP_NOT_ANSWERING)
+    return done.stdout
 
 
 def parse_status(body: dict[str, Any]) -> TailscaleStatus:
@@ -103,7 +188,17 @@ def parse_status(body: dict[str, Any]) -> TailscaleStatus:
 async def status() -> TailscaleStatus:
     """What the host's Tailscale is doing right now."""
     if not socket_present():
-        return TailscaleStatus(state=NOT_INSTALLED)
+        app = mac_app()
+        if app is None:
+            return TailscaleStatus(state=NOT_INSTALLED)
+        said = await asyncio.to_thread(_app_says, app)
+        try:
+            body = json.loads(said)
+        except ValueError as err:
+            raise TailscaleUnavailable(APP_NOT_ANSWERING) from err
+        if not isinstance(body, dict):
+            raise TailscaleUnavailable(APP_NOT_ANSWERING)
+        return replace(parse_status(body), via_app=True)
     try:
         async with _client() as client:
             response = await client.get(f"{LOCALAPI}/status", params={"peers": "false"})
@@ -119,6 +214,13 @@ async def status() -> TailscaleStatus:
 
 def _refused(response: httpx.Response) -> TailscaleUnavailable:
     if response.status_code == 403:
+        if host_platform() == "macos":
+            # The native install runs as the Mac's own user, not uid 1000
+            # (on a Mac the first account is 501).
+            return TailscaleUnavailable(
+                "Tailscale won't let FrameFound start a sign-in. In Terminal on this Mac, "
+                "run once: sudo tailscale set --operator=$USER"
+            )
         return TailscaleUnavailable(
             "Tailscale won't let FrameFound start a sign-in. On the server, run once: "
             "sudo tailscale set --operator=$(id -un 1000)"
@@ -139,6 +241,11 @@ async def start_login() -> TailscaleStatus:
         return current
     if current.state == NEEDS_LOGIN and current.login_url:
         return current  # a link is already waiting
+    if current.via_app:
+        # The app's command line has no way to ask for a link and wait for
+        # it without holding a terminal open. Turned off, it is already
+        # signed in and only needs switching on.
+        raise TailscaleUnavailable(APP_TURNS_ON if current.state == STOPPED else APP_SIGNS_IN)
 
     async with _client() as client:
         # Wanting to run is what makes a finished sign-in connect; a host

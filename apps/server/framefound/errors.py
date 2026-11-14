@@ -26,6 +26,9 @@ _CODES = {
     404: "not_found",
     409: "conflict",
     422: "validation_error",
+    # "Are you sure?": the request is fine and needs one more field saying
+    # so (the message is the question to put to the person).
+    428: "confirmation_required",
     429: "rate_limited",
     500: "internal_error",
     503: "unavailable",

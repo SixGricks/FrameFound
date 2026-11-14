@@ -13,6 +13,19 @@ roofline, and the 6000×4000 original is edited at full size. The question
 "which model?" is therefore "which model picks sliders best?", not "which
 model makes the prettiest picture?".
 
+## Auto-edit's modes
+
+Auto-edit is in the **Auto-edit** card on a listing's page. It runs in one of
+three modes. The two that edit write a new edit version of each photograph
+the same way, the original is never touched, and no mode replaces a name you
+confirmed.
+
+| Mode | What it does | Needs |
+|---|---|---|
+| edit | The **Auto-edit** button. With an Anthropic key, Claude looks at each photograph for straightening, a caption and a file name, and the tone comes from your learned look (or Claude's sliders when no look is installed). Without a key, the tuned listing preset. A picked sky goes wherever there is enough sky. | an Anthropic key for Claude's judgement; none for the preset |
+| describe | Names the photographs without editing them, for a shoot still edited elsewhere. Photographs whose names you confirmed are skipped. | an Anthropic key |
+| local | Applies what the local model proposed for each ticked photograph (**Ask the local model** first, on the listing page; the proposals appear above the gallery under "What the local model suggests", and **Apply to the N ticked** runs this mode). Tone from your learned look, or the preset; straightening and names from the model, each of which you can turn off; a picked sky only where the model said it is worth replacing, unless you choose everywhere. Nothing is sent anywhere, and no key or budget is used. A name you confirmed is never replaced. | the local model's proposals (asking needs the Mac install, [local-models.md](local-models.md)) |
+
 ## The candidates
 
 **Claude, through the API FrameFound already uses** (prices from
@@ -192,7 +205,7 @@ plus 5.5% on credit purchases: one account, not better processing.
 | Gemini 3 Pro Image | $90–180 | 17 MP |
 | OpenAI gpt-image-2 | ≈ $124 + input | 8.3 MP |
 | xAI Grok Imagine | $15–38 | 2K |
-| FLUX / Seedream / Qwen | $15–60 | 2–4 MP |
+| FLUX and other open image models | $15–60 | 2–4 MP |
 
 None of them outputs 24 MP. All regenerate the whole frame, so property
 details can change, which is a Bright MLS risk. None has a published

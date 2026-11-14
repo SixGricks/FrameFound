@@ -6,21 +6,28 @@ scripts written on the Mac to score drone clips for smoothness, a dozen
 and ordering by time of day by eye. The analysis now happens once at
 ingest (processing/shots.py); these tools look it up.
 
-**They describe; they never prescribe.** find_shots filters on what a shot
-is and what it can do — smooth at 50%, holds 6 s at 200%, an orbit at
-golden hour — and returns the matches in a stable order. It has no notion
-of a "good" shot, a house style or a last shot. Fast cuts or slow floaty
-ones, sped-up footage or ramps: the editor (the person, or Claude on their
-behalf) decides, and recent_cuts shows what was decided last time so the
-next video can be different on purpose.
+**The measured fields describe; they never prescribe.** find_shots filters
+on what a shot is and what it can do — smooth at 50%, holds 6 s at 200%, an
+orbit at golden hour — and returns the matches in a stable order. Nothing
+measured here says a shot is "good", and there is no house style or last
+shot. Fast cuts or slow floaty ones, sped-up footage or ramps: the editor
+(the person, or Claude on their behalf) decides, and recent_cuts shows what
+was decided last time so the next video can be different on purpose.
+
+**One field is an opinion, and is labelled as one.** Where a local model
+has looked at a shot (`looks`, docs/local-models.md L3), its line ends with
+`score NN`: that model's 0-100 guess at how usable the shot is, with a
+caption and a reason in `verbose`. It is never the default order and never
+a filter unless asked for (`order="score"`, `min_score`), and a shot nobody
+has looked at prints exactly as it did before scores existed.
 """
 
 import asyncio
 import io
 import re
-import threading
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Literal
 
 import structlog
@@ -32,68 +39,39 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.config import get_settings
-from framefound.db.models import (
-    Asset,
-    Cut,
-    CutPiece,
-    Frame,
-    Library,
-    ShotWindow,
-    catalogued,
-)
+from framefound.db.models import Asset, Cut, CutPiece, Look
 from framefound.mcp import compact
 from framefound.mcp.auth import open_session, principal
 from framefound.media import motion
+from framefound.nle import shotlist
+
+# The shot search, the lines and cut history live in nle/shotlist.py, where
+# the pages and jobs that draft a cut can reach them without the optional
+# mcp package. Every name this module had is still here, bound to that copy.
+from framefound.nle.shotlist import LIGHT_ALIASES as LIGHT_ALIASES
+from framefound.nle.shotlist import MOVE_ALIASES as MOVE_ALIASES
+from framefound.nle.shotlist import SKY_WORDS as SKY_WORDS
+from framefound.nle.shotlist import SPEED_CHOICES as SPEED_CHOICES
+from framefound.nle.shotlist import best_window as best_window
+from framefound.nle.shotlist import record_cut as record_cut
+from framefound.nle.shotlist import score_word as score_word
+from framefound.nle.shotlist import shot_looks as shot_looks
+from framefound.nle.shotlist import shot_snapshot as shot_snapshot
+from framefound.nle.shotlist import window_line as window_line
+from framefound.nle.shotlist import window_score as window_score
+from framefound.nle.shotlist import windows_for as windows_for
 
 log = structlog.get_logger()
 
 MAX_SHOTS = 100
 MAX_TILES = 24
 MAX_STRIPS = 8
-SCAN_LIMIT = 20000
+# This module's own, and passed to every search find_shots makes, so that
+# lowering it here (as a test does) still reaches the query.
+SCAN_LIMIT = shotlist.SCAN_LIMIT
 # A piece counts as having used a window when they overlap by a second, or
 # by half the piece if it is shorter than two.
-USED_OVERLAP_S = 1.0
-
-MOVE_ALIASES = {
-    "glide": "lateral glide",
-    "lateral": "lateral glide",
-    "truck": "lateral glide",
-    "drift": "top-down drift",
-    "top down": "top-down drift",
-    "topdown": "top-down drift",
-    "push": "push-in",
-    "push in": "push-in",
-    "pushin": "push-in",
-    "dolly in": "push-in",
-    "forward": "push-in",
-    "pull": "pull-out",
-    "pull out": "pull-out",
-    "pullout": "pull-out",
-    "dolly out": "pull-out",
-    "reveal": "pull-out",
-    "still": "static",
-    "locked off": "static",
-    "ascend": "rise",
-    "climb": "rise",
-    "boom up": "rise",
-    "sink": "descend",
-    "boom down": "descend",
-}
-LIGHT_ALIASES = {
-    "golden": "golden hour",
-    "sunset": "golden hour",
-    "sunrise": "golden hour",
-    "blue": "blue hour",
-    "dusk": "blue hour",
-    "low": "low sun",
-    "mid": "mid sun",
-    "midday": "high sun",
-    "high": "high sun",
-    "noon": "high sun",
-}
-SKY_WORDS = {"overcast": "overcast", "cloudy": "overcast", "direct": "direct", "sunny": "direct"}
-SPEED_CHOICES = tuple(int(s * 100) for s in motion.SPEEDS)
+USED_OVERLAP_S = shotlist.USED_OVERLAP_S
 
 
 # --- shapes (verbose answers) --------------------------------------------------
@@ -125,6 +103,23 @@ class ShotOut(BaseModel):
     source_fps: float | None
     speed_fit: dict[str, dict[str, Any]]
     used_in: list[str] = Field(description="Titles of earlier cuts that used this window")
+    score: int | None = Field(
+        default=None,
+        description="A local model's 0-100 opinion of how usable the shot is; "
+        "None when no model has looked at it. An opinion, not a measurement",
+    )
+    caption: str | None = Field(default=None, description="That model's caption of the shot")
+    score_reason: str | None = Field(default=None, description="That model's reason for its score")
+    looked_by: str | None = Field(
+        default=None,
+        description="Which build and question said it: "
+        "<repo>@<revision>[/<variant>]#<prompt version>. The variant names one build "
+        "of several in a repository (a quantisation such as Q4_K_M); a key too long "
+        "to store ends in ~<digest>",
+    )
+    made_up: bool = Field(
+        default=False, description="True when the demo's made-up model said it, not a real one"
+    )
 
 
 class FrameRef(BaseModel):
@@ -135,277 +130,68 @@ class FrameRef(BaseModel):
 # --- helpers -------------------------------------------------------------------
 
 
+@contextmanager
+def _as_tool_error() -> Iterator[None]:
+    """A filter shotlist cannot read reaches Claude as the connector's own
+    error, in the same words it always had."""
+    try:
+        yield
+    except shotlist.ShotError as err:
+        raise ToolError(str(err)) from None
+
+
 def _normalise_move(value: str) -> str:
-    key = value.strip().lower().replace("_", " ")
-    key = MOVE_ALIASES.get(key, key)
-    if key not in motion.MOVES and key.endswith("s") and key[:-1] in motion.MOVES:
-        key = key[:-1]
-    if key not in motion.MOVES:
-        raise ToolError(f"No move called {value!r}. Moves: {', '.join(motion.MOVES)}")
-    return key
+    with _as_tool_error():
+        return shotlist.normalise_move(value)
 
 
 def _normalise_light(value: str) -> tuple[str, str]:
     """('light', class) or ('sky', overcast|direct)."""
-    key = value.strip().lower().replace("_", " ")
-    if key in SKY_WORDS:
-        return "sky", SKY_WORDS[key]
-    key = LIGHT_ALIASES.get(key, key)
-    from framefound.media.sun import LIGHT_CLASSES
-
-    if key not in LIGHT_CLASSES:
-        raise ToolError(
-            f"No light called {value!r}. Light: {', '.join(LIGHT_CLASSES)}, overcast, direct"
-        )
-    return "light", key
+    with _as_tool_error():
+        return shotlist.normalise_light(value)
 
 
 def _speed(at_speed: int) -> float:
-    if at_speed not in SPEED_CHOICES:
-        raise ToolError(f"at_speed is a percentage, one of {', '.join(map(str, SPEED_CHOICES))}")
-    return at_speed / 100
+    with _as_tool_error():
+        return shotlist.speed_of(at_speed)
 
 
-def _smooth_at(window: ShotWindow, at_speed: int) -> float:
-    by = window.smooth_by_speed or {}
-    value = by.get(str(at_speed))
-    return float(value) if value is not None else float(window.smooth or 0.0)
+_smooth_at = shotlist.smooth_at
+
+# What "used in a cut" means, and the pieces it is read from, live in
+# nle/shotlist.py: the API and the job code apply the same rule and cannot
+# import this module (it needs the optional mcp package). The names here
+# are bound to that one copy.
+_overlap = shotlist._overlap
+_used = shotlist.used_by
+_pieces_by_asset = shotlist.pieces_by_asset
 
 
-def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
-    return max(0.0, min(a1, b1) - max(a0, b0))
-
-
-def _used(window: ShotWindow, pieces: list[tuple[int, int, str]]) -> list[str]:
-    titles: list[str] = []
-    w0, w1 = window.start_ms / 1000, window.end_ms / 1000
-    for in_ms, out_ms, title in pieces:
-        p0, p1 = in_ms / 1000, out_ms / 1000
-        need = min(USED_OVERLAP_S, 0.5 * (p1 - p0))
-        if _overlap(w0, w1, p0, p1) >= max(need, 0.05) and title not in titles:
-            titles.append(title)
-    return titles
-
-
-async def _pieces_by_asset(
-    db: AsyncSession, asset_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, list[tuple[int, int, str]]]:
-    out: dict[uuid.UUID, list[tuple[int, int, str]]] = {}
-    if not asset_ids:
-        return out
-    for chunk_start in range(0, len(asset_ids), 500):
-        chunk = asset_ids[chunk_start : chunk_start + 500]
-        rows = (
-            await db.execute(
-                select(CutPiece.asset_id, CutPiece.in_ms, CutPiece.out_ms, Cut.title)
-                .join(Cut, Cut.id == CutPiece.cut_id)
-                .where(CutPiece.asset_id.in_(chunk))
-            )
-        ).all()
-        for asset_id, in_ms, out_ms, title in rows:
-            out.setdefault(uuid.UUID(str(asset_id)), []).append(
-                (int(in_ms), int(out_ms), str(title))
-            )
-    return out
-
-
-def window_line(
-    window: ShotWindow,
-    at_speed: int = 100,
-    *,
-    sequence_fps: float = 29.97,
-    used: bool = False,
-    with_subjects: bool = True,
-) -> str:
-    """The compact description of one window, without the clip: times,
-    move, smoothness, energy, light, subjects, and flags."""
-    start, end = window.start_ms / 1000, window.end_ms / 1000
-    # ASCII dashes and two subjects: twenty lines must stay near 2 KB.
-    parts = [f"{start:.1f}-{end:.1f}s", window.move.replace(" ", "-")]
-    if window.direction and window.move != "static":
-        parts.append(window.direction)
-    if at_speed == 100:
-        parts.append(f"smooth {compact.score(window.smooth)}")
-    else:
-        parts.append(f"smooth@{at_speed}% {compact.score(_smooth_at(window, at_speed))}")
-    parts.append(f"energy {window.energy}")
-    if window.light:
-        parts.append(compact.LIGHT_SHORT.get(window.light, window.light))
-    sky = (window.look or {}).get("sky")
-    if sky == "overcast":
-        parts.append("overcast")
-    if with_subjects and window.subjects:
-        parts.append(",".join(list(window.subjects)[:2]))
-    if at_speed != 100:
-        length = (end - start) / (at_speed / 100)
-        parts.append(f"->{length:.1f}s")
-        if (
-            at_speed < 100
-            and window.source_fps
-            and window.source_fps * at_speed / 100 < sequence_fps * 0.97
-        ):
-            parts.append("dup")
-    if used:
-        parts.append("used")
-    return " ".join(parts)
-
-
-def shot_snapshot(window: ShotWindow | None, speed: float = 1.0) -> dict[str, Any]:
-    """What a piece's window was, for cut history."""
-    if window is None:
+def _look_fields(look: Look | None) -> dict[str, Any]:
+    """ShotOut's opinion fields; their defaults when no model looked."""
+    if look is None:
         return {}
-    key = motion.speed_key(speed)
     return {
-        "idx": window.idx,
-        "start_ms": window.start_ms,
-        "end_ms": window.end_ms,
-        "move": window.move,
-        "direction": window.direction,
-        "smooth": (window.smooth_by_speed or {}).get(key, window.smooth),
-        "energy": window.energy,
-        "light": window.light,
-        "sky": (window.look or {}).get("sky"),
-        "subjects": list((window.subjects or {}).keys())[:4],
+        "score": look.score,
+        "caption": look.caption or None,
+        "score_reason": look.reason or None,
+        "looked_by": look.key or None,
+        "made_up": bool(look.demo),
     }
-
-
-def best_window(windows: list[ShotWindow], in_s: float, out_s: float) -> ShotWindow | None:
-    best, overlap = None, 0.0
-    for window in windows:
-        found = _overlap(window.start_ms / 1000, window.end_ms / 1000, in_s, out_s)
-        if found > overlap:
-            best, overlap = window, found
-    return best
-
-
-async def windows_for(
-    db: AsyncSession, asset_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, list[ShotWindow]]:
-    out: dict[uuid.UUID, list[ShotWindow]] = {}
-    if not asset_ids:
-        return out
-    rows = (
-        (
-            await db.execute(
-                select(ShotWindow)
-                .where(ShotWindow.asset_id.in_(asset_ids))
-                .order_by(ShotWindow.asset_id, ShotWindow.idx)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for window in rows:
-        out.setdefault(uuid.UUID(str(window.asset_id)), []).append(window)
-    return out
-
-
-async def record_cut(
-    db: AsyncSession,
-    title: str,
-    pieces: list[tuple[Asset, float, float, float]],
-    *,
-    client: str | None,
-    profile: str | None,
-    created_by: uuid.UUID | None,
-    source: str = "mcp",
-    created_at: datetime | None = None,
-) -> Cut:
-    """Write a cut and its pieces, each with a snapshot of its window."""
-    libraries = {lib.id: lib for lib in (await db.execute(select(Library))).scalars()}
-    counts: dict[uuid.UUID, int] = {}
-    for asset, *_ in pieces:
-        counts[asset.library_id] = counts.get(asset.library_id, 0) + 1
-    library_id = max(counts, key=lambda k: counts[k]) if counts else None
-    library = libraries.get(library_id) if library_id else None
-    windows = await windows_for(db, list({asset.id for asset, *_ in pieces}))
-    cut = Cut(
-        title=title[:300],
-        client=(client or (library.name if library else ""))[:200],
-        library_id=library_id,
-        source=source,
-        profile=profile,
-        duration_s=round(sum((out - in_) / speed for _, in_, out, speed in pieces), 3),
-        piece_count=len(pieces),
-        created_by=created_by,
-    )
-    if created_at is not None:
-        cut.created_at = created_at
-    db.add(cut)
-    await db.flush()
-    for position, (asset, in_s, out_s, speed) in enumerate(pieces):
-        window = best_window(windows.get(asset.id, []), in_s, out_s)
-        db.add(
-            CutPiece(
-                cut_id=cut.id,
-                position=position,
-                asset_id=asset.id,
-                filename=asset.filename,
-                in_ms=int(round(in_s * 1000)),
-                out_ms=int(round(out_s * 1000)),
-                speed=speed,
-                shot=shot_snapshot(window, speed),
-            )
-        )
-    await db.commit()
-    return cut
 
 
 # --- stills for contact sheets -------------------------------------------------
 
-# A thread-side cap, not an asyncio one: grabs run in worker threads, and an
-# asyncio primitive created at import would bind to whichever loop used it
-# first.
-_extract_slots = threading.BoundedSemaphore(3)
-
-
-def _grab(src: Any, dst: Any, at_s: float, width: int) -> None:
-    from framefound.processing import scenes
-
-    with _extract_slots:
-        scenes.extract_frame(src, dst, at_s, max_width=width)
-
 
 async def _still(db: AsyncSession, asset: Asset, ts_ms: int) -> tuple[Any, int]:
-    """A picture of the clip at `ts_ms`, and the moment it actually shows.
-
-    In order: the still the analysis saved there, a sampled frame within
-    0.6 s, one grabbed from the proxy now (and kept, so the next sheet is
-    instant), and failing all of those the nearest sampled frame."""
-    from PIL import Image as PilImage
-
+    """A picture of the clip at `ts_ms`, and the moment it actually shows
+    (-1 with a grey tile when there is none). The looking, and the grab from
+    the proxy when no still was saved, are processing/shots.py `still_at`:
+    the one place a missing still is made, for a sheet here and for a page
+    alike."""
     from framefound.processing import shots
 
-    data_dir = get_settings().data_dir
-    saved = data_dir / shots.still_relpath(asset.id, ts_ms)
-    if saved.is_file():
-        return PilImage.open(saved).convert("RGB"), ts_ms
-    nearest = (
-        await db.execute(
-            select(Frame.ts_ms, Frame.relative_path)
-            .where(Frame.asset_id == asset.id)
-            .order_by(func.abs(Frame.ts_ms - ts_ms), Frame.ts_ms)
-            .limit(1)
-        )
-    ).first()
-    if nearest is not None and abs(int(nearest[0]) - ts_ms) <= 600:
-        path = data_dir / str(nearest[1])
-        if path.is_file():
-            return PilImage.open(path).convert("RGB"), int(nearest[0])
-    proxy = shots.proxy_path(data_dir, asset.id)
-    if proxy.is_file():
-        saved.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            await asyncio.to_thread(_grab, proxy, saved, ts_ms / 1000, shots.STILL_WIDTH)
-            return PilImage.open(saved).convert("RGB"), ts_ms
-        except Exception as exc:
-            log.warning("mcp.sheet_grab_failed", asset_id=str(asset.id), reason=str(exc)[:120])
-    if nearest is not None:
-        path = data_dir / str(nearest[1])
-        if path.is_file():
-            return PilImage.open(path).convert("RGB"), int(nearest[0])
-    blank = PilImage.new("RGB", (480, 270), (60, 60, 60))
-    return blank, -1
+    return await shots.still_at(db, asset, ts_ms, data_dir=get_settings().data_dir)
 
 
 _NUMBER = r"(\d+(?:\.\d+)?)"
@@ -462,7 +248,8 @@ def register(server: MCPServer) -> None:
         exclude_used: bool = False,
         real_frames_only: bool = False,
         sequence_fps: float = 29.97,
-        order: Literal["smooth", "length", "time"] = "smooth",
+        min_score: int = 0,
+        order: Literal["smooth", "length", "time", "score"] = "smooth",
         limit: int = 20,
         verbose: bool = False,
         profile: str | None = None,
@@ -487,12 +274,21 @@ def register(server: MCPServer) -> None:
         These describe; they do not choose. Pick by the edit's own pace and
         music. Cut a line with build_rough_cut (the id, in_s/out_s inside
         its range); look at lines with contact_sheet(shots=[...]).
-        `verbose` returns every field."""
+        `verbose` returns every field.
+
+        A line ending `score NN` is a local model's 0-100 opinion of how
+        usable that shot is — an opinion, not a measurement; `verbose` adds
+        its caption, reason and which model said it. `min_score` keeps only
+        shots scored at least that (so leaves out every shot no model has
+        looked at); `order="score"` puts the highest-scored first and
+        unscored shots last."""
         from framefound.mcp.server import _libraries, _library_id, _profile_map
 
         who = principal()
         limit = max(1, min(limit, MAX_SHOTS))
-        speed = _speed(at_speed)
+        _speed(at_speed)
+        if not 0 <= min_score <= 100:
+            raise ToolError("min_score is a local model's 0-100 opinion; give 0 to 100")
         wanted_moves = sorted({_normalise_move(m) for m in moves or [] if m.strip()})
         light_classes: list[str] = []
         skies: list[str] = []
@@ -504,89 +300,39 @@ def register(server: MCPServer) -> None:
         wanted_subjects = [s.strip().lower() for s in subjects or [] if s.strip()]
         async with open_session() as db:
             library_id = await _library_id(db, library)
-            query = (
-                select(ShotWindow, Asset)
-                .join(Asset, Asset.id == ShotWindow.asset_id)
-                .where(Asset.availability == "online", Asset.media_type == "video", catalogued())
-            )
-            if library_id is not None:
-                query = query.where(Asset.library_id == library_id)
-            if folder and folder.strip():
-                query = query.where(
-                    func.lower(Asset.relative_path).contains(
-                        folder.strip().lower(), autoescape=True
-                    )
+            with _as_tool_error():
+                after = shotlist.parse_when(captured_after) if captured_after else None
+                before = shotlist.parse_when(captured_before) if captured_before else None
+                scan = await shotlist.scan_shots(
+                    db,
+                    shotlist.ShotFilter(
+                        library_id=library_id,
+                        folder=folder or "",
+                        captured_after=after,
+                        captured_before=before,
+                        moves=wanted_moves,
+                        energy=list(energy or []),
+                        light=light_classes,
+                        skies=skies,
+                        subjects=wanted_subjects,
+                        min_smooth=min_smooth,
+                        at_speed=at_speed,
+                        min_length_s=min_length_s,
+                        exclude_used=exclude_used,
+                        real_frames_only=real_frames_only,
+                        sequence_fps=sequence_fps,
+                        min_score=min_score,
+                        order=order,
+                    ),
+                    scan_limit=SCAN_LIMIT,
                 )
-            for bound, is_after in ((captured_after, True), (captured_before, False)):
-                if bound:
-                    try:
-                        when = datetime.fromisoformat(bound)
-                    except ValueError:
-                        raise ToolError(f"{bound!r} is not an ISO date") from None
-                    if when.tzinfo is None:
-                        when = when.replace(tzinfo=UTC)
-                    query = query.where(
-                        Asset.captured_at >= when if is_after else Asset.captured_at <= when
-                    )
-            if wanted_moves:
-                query = query.where(ShotWindow.move.in_(wanted_moves))
-            if energy:
-                query = query.where(ShotWindow.energy.in_(list(energy)))
-            if light_classes:
-                query = query.where(ShotWindow.light.in_(light_classes))
-            rows = (await db.execute(query.limit(SCAN_LIMIT))).all()
-            analysed = int(
-                (
-                    await db.execute(
-                        select(func.count(func.distinct(ShotWindow.asset_id)))
-                        .join(Asset, Asset.id == ShotWindow.asset_id)
-                        .where(
-                            catalogued(),
-                            *([Asset.library_id == library_id] if library_id else []),
-                        )
-                    )
-                ).scalar_one()
-            )
-            pieces = await _pieces_by_asset(db, list({a.id for _, a in rows}))
+            analysed = await shotlist.analysed_clips(db, library_id)
             libraries = await _libraries(db)
             profiles = await _profile_map(db, profile)
 
-        matched: list[tuple[ShotWindow, Asset, list[str]]] = []
-        for window, asset in rows:
-            if _smooth_at(window, at_speed) < min_smooth:
-                continue
-            if (window.end_ms - window.start_ms) / 1000 / speed < min_length_s:
-                continue
-            if skies and (window.look or {}).get("sky") not in skies:
-                continue
-            if wanted_subjects:
-                have = [s.lower() for s in (window.subjects or {})]
-                if not any(any(w == h or w in h for h in have) for w in wanted_subjects):
-                    continue
-            if (
-                real_frames_only
-                and speed < 1.0
-                and (not window.source_fps or window.source_fps * speed < sequence_fps * 0.97)
-            ):
-                continue
-            used = _used(window, pieces.get(asset.id, []))
-            if exclude_used and used:
-                continue
-            matched.append((window, asset, used))
-
-        def key(item: tuple[ShotWindow, Asset, list[str]]) -> tuple[Any, ...]:
-            window, asset, _ = item
-            length = window.end_ms - window.start_ms
-            when = asset.captured_at.timestamp() if asset.captured_at else 0.0
-            if order == "length":
-                return (-length, asset.filename, window.idx)
-            if order == "time":
-                return (when, asset.filename, window.start_ms)
-            return (-round(_smooth_at(window, at_speed), 2), -length, asset.filename, window.idx)
-
-        matched.sort(key=key)
-        total = len(matched)
-        shown = matched[:limit]
+        look_of = scan.look_of
+        total = len(scan.shots)
+        shown = scan.shots[:limit]
 
         if verbose:
             from framefound.api.v1.panel import _translate_for
@@ -595,6 +341,7 @@ def register(server: MCPServer) -> None:
             for window, asset, used in shown:
                 lib = libraries.get(asset.library_id)
                 root = lib.root_path.rstrip("/") if lib else ""
+                seen = look_of(window, asset)
                 out.append(
                     ShotOut(
                         window_id=str(window.id),
@@ -626,6 +373,7 @@ def register(server: MCPServer) -> None:
                             sequence_fps,
                         ),
                         used_in=used,
+                        **_look_fields(seen),
                     )
                 )
             return compact.structured(out, f"{len(out)} of {total} shots")
@@ -633,20 +381,37 @@ def register(server: MCPServer) -> None:
         from framefound.api.v1.panel import _translate_for
 
         lines = []
+        scored = False
         for window, asset, used in shown:
-            line = f"{compact.short_id(asset.id)} {compact.clip_name(asset.filename)} " + (
-                window_line(window, at_speed, sequence_fps=sequence_fps, used=bool(used))
+            line = shotlist.shot_line(
+                asset, window, at_speed, sequence_fps=sequence_fps, used=bool(used)
             )
+            # After every measured word and before the path: the line's own
+            # words are pinned, and parse_shot reads them back.
+            score = score_word(look_of(window, asset))
+            scored = scored or bool(score)
             # Local paths only when asked for, by naming the computer.
             local = _translate_for(asset, profiles) if profiles else None
-            lines.append(line + (f" | {local}" if local else ""))
+            lines.append(line + score + (f" | {local}" if local else ""))
         speed_note = "" if at_speed == 100 else f" at {at_speed}% (->timeline length)"
         header = (
             f"{len(shown)} of {total} shots{speed_note} | "
             "id clip in-out move smooth energy light subjects"
         )
+        if scored:
+            header += " [score: a local model's 0-100 opinion]"
         footer = ""
-        if not rows:
+        if min_score and not scan.scanned and scan.any_scored:
+            footer = (
+                f"No shot here was scored {min_score} or more by a local model. "
+                "Lower min_score, or ask without it for the measured shots."
+            )
+        elif min_score and not scan.scanned and scan.any_window:
+            footer = (
+                "No shot here has a local model's score yet, so min_score left out every one. "
+                "Ask without min_score for the measured shots."
+            )
+        elif not scan.scanned:
             footer = (
                 f"No analysed shots match. {analysed} clip(s) in scope have been analysed; "
                 "shot analysis needs a proxy (python -m framefound.ops.shots backfill)."
@@ -779,7 +544,14 @@ def register(server: MCPServer) -> None:
         limit = max(1, min(limit, 50))
         async with open_session() as db:
             library_id = await _library_id(db, library)
-            query = select(Cut).order_by(Cut.created_at.desc()).limit(limit)
+            # A local model's draft that went nowhere is not a cut the next
+            # video should be different from.
+            query = (
+                select(Cut)
+                .where(shotlist.counts_as_used())
+                .order_by(Cut.created_at.desc())
+                .limit(limit)
+            )
             if library_id is not None:
                 query = query.where(Cut.library_id == library_id)
             if client and client.strip():

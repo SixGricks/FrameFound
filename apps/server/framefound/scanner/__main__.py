@@ -414,6 +414,37 @@ async def _collect_training_pairs(db: AsyncSession) -> None:
     log.info("scanner.training_pairs_queued")
 
 
+async def _ensure_ingest_looks(db: AsyncSession) -> None:
+    """Start the Looker on what a library's "look at new footage" switch is
+    waiting for, when no job is on it (looking/runner.py `ensure_ingest`).
+
+    The pipeline's own hook usually does this as each file arrives; this
+    catches the files whose hook was lost to a database blip, or ran on a
+    remote worker, where models cannot run and the hook does nothing. Where
+    models cannot run at all it returns before importing anything of local
+    AI. Never fails the maintenance pass."""
+    try:
+        from framefound.local_models import availability
+
+        if not availability().ok:
+            return
+        from framefound.looking import runner
+
+        # The wall clock, naive, as local AI reads it (L1's Deps.now).
+        made = await runner.ensure_ingest(db, runner.wall_clock())
+        await db.commit()
+    except Exception:
+        log.warning("scanner.ingest_looks_failed", exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            log.warning("scanner.ingest_looks_rollback_failed")
+        return
+    if made:
+        log.info("scanner.ingest_looks_started", libraries=made)
+        runner.wake_lane()
+
+
 async def _requeue_missing_transcripts(db: AsyncSession) -> None:
     """Re-queue audio that should have been transcribed and was not.
 
@@ -756,6 +787,7 @@ async def main() -> None:
                     await _reap_orphaned_jobs(db)
                     await _refresh_statistics(db)
                     await _collect_training_pairs(db)
+                    await _ensure_ingest_looks(db)
                     last_requeue = time.time()
                 if time.time() - last_visuals > VISUALS_SWEEP_EVERY_S:
                     await _requeue_missing_visuals(db)

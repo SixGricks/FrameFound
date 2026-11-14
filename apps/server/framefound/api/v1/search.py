@@ -10,17 +10,25 @@ Four retrievers answer every query (docs/architecture.md §search):
 - transcripts — Postgres full-text search against the GIN index from
   migration 0005, ranked by `ts_rank_cd`, with an any-word fallback when
   every-word finds too little; the SQLite test dialect falls back to LIKE;
-- filenames and folder paths — substring match (trigram index, 0026).
+- filenames and folder paths — substring match (trigram index, 0026);
+- captions a local model wrote (`looks`, docs/local-models.md L3) holding
+  every word of the query — the weakest reason, labelled as a model's.
 
 Each list is kept as-is for the per-strategy sections, and Reciprocal Rank
 Fusion (search/ranking.py) merges them into `results`: one row per asset,
 with the reasons it matched and the moment to jump to.
+
+A local model's use score never makes anything match. Among the matches it
+nudges the fused score by at most SCORE_NUDGE either way, so the better take
+of the same subject comes first; an asset with no score is untouched, and
+with no scores anywhere the ranking is exactly what it was before looks
+existed.
 """
 
 import asyncio
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from functools import lru_cache
 from typing import Any, Literal
@@ -28,10 +36,20 @@ from typing import Any, Literal
 import structlog
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import Select, func, literal, or_, select, text
+from sqlalchemy import Select, and_, func, literal, or_, select, text
 
 from framefound.auth.deps import CurrentUser, DbDep
-from framefound.db.models import Asset, AssetTag, Tag, Transcript, TranscriptSegment, catalogued
+from framefound.db.models import (
+    Asset,
+    AssetTag,
+    Look,
+    ShotWindow,
+    Tag,
+    Transcript,
+    TranscriptSegment,
+    catalogued,
+)
+from framefound.looking import LOOK_NUDGE
 from framefound.search.ranking import fuse
 
 log = structlog.get_logger()
@@ -91,6 +109,19 @@ class VisualHit(BaseModel):
     similarity: float
 
 
+class CaptionHit(BaseModel):
+    """A local model's caption of a photograph or of one shot that holds
+    every word of the query. `ts_ms` is the middle of the shot (None for a
+    photograph). The caption is the model's text: shown as text only."""
+
+    asset_id: uuid.UUID
+    filename: str
+    library_id: uuid.UUID
+    media_type: str
+    caption: str
+    ts_ms: int | None = None
+
+
 class FusedResult(BaseModel):
     """One asset in the fused ranking, with why it matched.
 
@@ -110,6 +141,12 @@ class FusedResult(BaseModel):
     frame_ms: int | None = None
     snippet: str | None = None
     tag: str | None = None
+    # A local model's 0-100 opinion of the asset (`assets.look_score`); None
+    # when no model has looked at it. It moved `score` by at most
+    # SCORE_NUDGE; it never made the asset match.
+    look_score: int | None = None
+    # The model's caption that matched, when "caption" is among `reasons`.
+    caption: str | None = None
 
 
 # Why visual search did or did not answer. "indexing": no frame has an
@@ -131,7 +168,8 @@ class SearchResponse(BaseModel):
     # which read only this.
     visual_available: bool = True
     tag_hits: list[TagHit] = []
-    # The four lists above fused into one, best first (search/ranking.py).
+    caption_hits: list[CaptionHit] = []
+    # The lists above fused into one, best first (search/ranking.py).
     results: list[FusedResult] = []
 
 
@@ -162,7 +200,17 @@ FUSION_WEIGHTS: dict[str, float] = {
     "transcript": 1.2,
     "visual": 1.0,
     "name": 0.8,
+    # A small local model's sentence: below a suggested tag, which at least
+    # names a subject the vocabulary knows.
+    "caption": 0.6,
 }
+
+# How far a local model's use score may move a fused score: 100 multiplies
+# it by 1 + SCORE_NUDGE, 0 by 1 - SCORE_NUDGE, 50 leaves it. RRF ranks by
+# evidence that an asset matches; a use score is only a prior among matches,
+# so it reorders neighbours and cannot stand in for a reason. The one figure
+# is looking's own (`looking.LOOK_NUDGE`), so tuning it there tunes search.
+SCORE_NUDGE = LOOK_NUDGE
 
 # Words too common to be worth an any-word transcript match on SQLite.
 # (Postgres drops its own English stopwords inside to_tsquery.)
@@ -634,7 +682,112 @@ async def _tag_search(
     ]
 
 
+def _caption_words(query: str) -> tuple[list[str], list[str]]:
+    """The words a caption must hold, and the -negated ones it must not.
+
+    Without the split, "farmhouse -barn" would ask for captions that say
+    "barn" — the opposite of what was typed.
+    """
+    wanted: list[str] = []
+    unwanted: list[str] = []
+    for token in query.split():
+        (unwanted if token.startswith("-") else wanted).extend(_query_words(token))
+    keep = [w for w in dict.fromkeys(wanted) if w not in _STOPWORDS]
+    return keep, list(dict.fromkeys(unwanted))
+
+
+async def _caption_search(
+    db: DbDep, q: str, library_id: uuid.UUID | None, limit: int, media_type: str | None
+) -> list[CaptionHit]:
+    """Current, successful looks whose caption holds every word of the
+    query, best-scored first, one per asset (its best shot).
+
+    A shot's look counts only while its times are still one of the clip's
+    windows, and a look of a whole clip only while the clip has none — the
+    rule `looking.store.after_reanalysis` retires looks by. A look recorded
+    while the clip was being analysed again, or windows rebuilt by a path
+    that did not retire the old looks, must not send the operator to a shot
+    that no longer exists."""
+    wanted, unwanted = _caption_words(q)
+    if not wanted:
+        return []
+    caption = func.lower(Look.caption)
+    same_window = (
+        select(ShotWindow.id)
+        .where(
+            ShotWindow.asset_id == Look.asset_id,
+            ShotWindow.start_ms == Look.start_ms,
+            ShotWindow.end_ms == Look.end_ms,
+        )
+        .exists()
+    )
+    any_window = select(ShotWindow.id).where(ShotWindow.asset_id == Look.asset_id).exists()
+    best_first = (Look.score.desc().nullslast(), Look.start_ms, Look.id)
+    # One row per asset is picked in SQL, before the limit: many shots of a
+    # long clip can say the same thing, and taking rows first and assets
+    # after let two such clips fill the whole list.
+    matching = (
+        select(
+            Look.id.label("look_id"),
+            func.row_number().over(partition_by=Look.asset_id, order_by=best_first).label("place"),
+        )
+        .where(
+            Look.current.is_(True),
+            Look.ok.is_(True),
+            or_(and_(Look.start_ms.is_(None), ~any_window), same_window),
+            *(caption.contains(word, autoescape=True) for word in wanted),
+            *(~caption.contains(word, autoescape=True) for word in unwanted),
+        )
+        .subquery()
+    )
+    stmt = (
+        _filtered(
+            select(Look, Asset)
+            .join(matching, matching.c.look_id == Look.id)
+            .join(Asset, Asset.id == Look.asset_id),
+            library_id,
+            media_type,
+        )
+        .where(matching.c.place == 1)
+        .order_by(*best_first)
+        .limit(limit)
+    )
+    hits: dict[uuid.UUID, CaptionHit] = {}
+    for look, asset in (await db.execute(stmt)).all():
+        middle = None
+        if look.start_ms is not None and look.end_ms is not None:
+            middle = (look.start_ms + look.end_ms) // 2
+        hits[asset.id] = CaptionHit(
+            asset_id=asset.id,
+            filename=asset.filename,
+            library_id=asset.library_id,
+            media_type=asset.media_type,
+            caption=look.caption,
+            ts_ms=middle,
+        )
+    return list(hits.values())
+
+
+async def _look_scores(db: DbDep, asset_ids: set[uuid.UUID]) -> dict[str, int]:
+    """The use scores of the candidate assets that have one, in one query."""
+    if not asset_ids:
+        return {}
+    rows = await db.execute(
+        select(Asset.id, Asset.look_score).where(
+            Asset.id.in_(asset_ids), Asset.look_score.is_not(None)
+        )
+    )
+    return {str(asset_id): int(score) for asset_id, score in rows.all() if score is not None}
+
+
 # ---------------------------------------------------------------- fusion
+
+
+def score_factor(score: int) -> float:
+    """What a use score multiplies a fused score by: 1 ± SCORE_NUDGE at the
+    ends, 1 at 50. A score outside 0-100 is held to it."""
+    held = max(0, min(100, score))
+    return 1.0 + SCORE_NUDGE * (held - 50) / 50
 
 
 def fuse_results(
@@ -644,11 +797,19 @@ def fuse_results(
     transcript_hits: list[TranscriptHit],
     filename_hits: list[FilenameHit],
     limit: int,
+    look_scores: Mapping[str, int] | None = None,
+    caption_hits: Sequence[CaptionHit] = (),
 ) -> list[FusedResult]:
-    """One row per asset from the four lists, by weighted RRF.
+    """One row per asset from the lists, by weighted RRF.
 
     No queries: everything needed is already in the hits. An asset's moment
-    is its best transcript segment if speech matched, else its best frame.
+    is its best transcript segment if speech matched, else its best frame,
+    else the middle of the shot whose caption matched.
+
+    `look_scores` (asset id -> 0-100) nudges each scored asset's fused score
+    by `score_factor` before the cut to `limit`, and the list is re-sorted
+    the way RRF sorts it. With the defaults this computes exactly what it
+    did before captions and scores existed.
     """
     info: dict[str, Any] = {}
     confirmed: list[str] = []
@@ -675,6 +836,11 @@ def fuse_results(
         frames.setdefault(key, visual)
     for named in filename_hits:
         info.setdefault(str(named.asset_id), named)
+    captioned: dict[str, CaptionHit] = {}
+    for caption_hit in caption_hits:  # best first
+        key = str(caption_hit.asset_id)
+        info.setdefault(key, caption_hit)
+        captioned.setdefault(key, caption_hit)
 
     fused = fuse(
         {
@@ -683,15 +849,29 @@ def fuse_results(
             "visual": list(frames),
             "transcript": list(spoken),
             "name": list(dict.fromkeys(str(n.asset_id) for n in filename_hits)),
+            "caption": list(captioned),
         },
         weights=FUSION_WEIGHTS,
     )
+    scores = look_scores or {}
+    if scores:
+        for nudged in fused:
+            if nudged.key in scores:
+                nudged.score *= score_factor(scores[nudged.key])
+        fused.sort(key=lambda h: (-h.score, h.key))
 
     results: list[FusedResult] = []
     for ranked in fused[:limit]:
         first = info[ranked.key]
         moment = spoken.get(ranked.key)
         frame = frames.get(ranked.key)
+        described = captioned.get(ranked.key)
+        if moment is not None:
+            at: int | None = moment.start_ms
+        elif frame is not None:
+            at = frame.ts_ms
+        else:
+            at = described.ts_ms if described is not None else None
         results.append(
             FusedResult(
                 asset_id=first.asset_id,
@@ -700,10 +880,12 @@ def fuse_results(
                 media_type=first.media_type,
                 score=round(ranked.score, 6),
                 reasons=ranked.reasons,
-                ts_ms=moment.start_ms if moment else (frame.ts_ms if frame else None),
+                ts_ms=at,
                 frame_ms=frame.ts_ms if frame else None,
                 snippet=moment.text if moment else None,
                 tag=tag_name.get(ranked.key),
+                look_score=scores.get(ranked.key),
+                caption=described.caption if described is not None else None,
             )
         )
     return results
@@ -738,6 +920,7 @@ async def run_search(
     name_rows = await _name_search(db, q, library_id, limit, media_type)
     visual_hits, visual_status = await _visual_search(db, q, library_id, limit, media_type)
     tag_hits = await _tag_search(db, q, library_id, limit, media_type)
+    caption_hits = await _caption_search(db, q, library_id, limit, media_type)
 
     transcript_hits = [
         TranscriptHit(
@@ -761,6 +944,12 @@ async def run_search(
         )
         for a in name_rows
     ]
+    candidates = {
+        hit.asset_id
+        for hits in (tag_hits, visual_hits, transcript_hits, filename_hits, caption_hits)
+        for hit in hits
+    }
+    look_scores = await _look_scores(db, candidates)
     return SearchResponse(
         query=q,
         visual_hits=visual_hits,
@@ -769,12 +958,15 @@ async def run_search(
         tag_hits=tag_hits,
         transcript_hits=transcript_hits,
         filename_hits=filename_hits,
+        caption_hits=caption_hits,
         results=fuse_results(
             tag_hits=tag_hits,
             visual_hits=visual_hits,
             transcript_hits=transcript_hits,
             filename_hits=filename_hits,
             limit=limit,
+            look_scores=look_scores,
+            caption_hits=caption_hits,
         ),
     )
 

@@ -1,0 +1,67 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. One weights file of 16,750,372,454 bytes (15.6 GB): about 18.8 GB in memory, so it only fits the overnight budget at the defaults.",
+  "id": "mlx-community/demo-large-4bit",
+  "author": "mlx-community",
+  "sha": "9999999999999999999999999999999999999999",
+  "lastModified": "2026-09-06T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "mlx-vlm",
+    "image-text-to-text",
+    "base_model:google/demo-large",
+    "base_model:quantized:google/demo-large",
+    "4-bit",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "base_model": "google/demo-large",
+    "license": "apache-2.0"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 700
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 9000
+    },
+    {
+      "rfilename": "config.json",
+      "size": 2100
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 16750372454,
+      "lfs": {
+        "sha256": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+        "size": 16750372454
+      }
+    },
+    {
+      "rfilename": "processor_config.json",
+      "size": 1316
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ]
+}

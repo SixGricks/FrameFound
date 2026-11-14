@@ -49,7 +49,7 @@ from framefound.db.models import PAIRED_PROXY_STATUS, Asset, Job, Library
 from framefound.processing import derivatives as deriv
 from framefound.processing.probe import probe_media
 from framefound.scanner.paths import PathValidationError, safe_join
-from framefound.storage import worker_roots
+from framefound.storage import stores, worker_roots
 from framefound.storage.reachability import unreachable_reason
 from framefound.storage.worker_roots import (
     UnmappedRoot,
@@ -214,6 +214,16 @@ async def _with_asset(task_name: str, asset_id: uuid.UUID, handler: LoadedHandle
                 job.status = "succeeded"
             except Reject:
                 raise  # a hand-back: the Job row is already filled in
+            except worker_roots.NotHere as err:
+                # Found out inside the stage (the server keeps this kind of
+                # file somewhere this machine has no setting for): the same
+                # hand-back as a share that is not mounted here.
+                await db.rollback()
+                # The rollback expired the job's row, and `_hand_back` reads
+                # it: without this it raised from inside the session instead
+                # of handing anything back.
+                await db.refresh(job)
+                await _hand_back(job, str(err))
             except Exception as exc:
                 await db.rollback()
                 job.status = "failed"
@@ -571,8 +581,16 @@ async def _sample_frames(db: AsyncSession, asset: Asset, library: Library, path:
             rel = str(sources[ts].relative_to(data_dir)).replace("\\", "/")
             target = sources[ts]
         else:
+            # Through the stills' one way to a name: written beside it, read
+            # back as a picture, then moved in. Pointing ffmpeg at the frame's
+            # own name left half a JPEG there when a worker was stopped
+            # mid-write, and a look that only finds stills on disk
+            # (shotlist.still_path) was then handed it. 640 is the width
+            # search frames have always had (extract_frame's own default).
+            from framefound.processing import shots as stills
+
             try:
-                await asyncio.to_thread(scenes.extract_frame, path, target, ts)
+                await asyncio.to_thread(stills._grab, path, target, ts, 640)
             except Exception as exc:
                 # One unreadable timestamp must not fail the whole asset.
                 log.warning("frames.timestamp_skipped", ts=ts, reason=str(exc)[:120])
@@ -684,6 +702,20 @@ async def _embed_frames(db: AsyncSession, asset: Asset, library: Library, path: 
 
         if asset.media_type == "video" and await shots.has_windows(db, asset.id):
             describe_shots.delay(str(asset.id))
+        await _nudge_looker(db, asset, library)
+
+
+async def _nudge_looker(db: AsyncSession, asset: Asset, library: Library) -> None:
+    """A file the Looker could now look at: when its library looks at new
+    footage, an ingest job is made sure of (looking/runner.py). After the
+    stage's own work and commit; looking must never fail the stage, so
+    nothing here raises — even the import."""
+    try:
+        from framefound.looking import runner
+
+        await runner.nudge(db, asset, library)
+    except Exception:
+        log.warning("looks.nudge_unavailable", exc_info=True)
 
 
 @celery_app.task(
@@ -705,15 +737,18 @@ def embed_frames(asset_id: str) -> None:
 async def _analyze_motion(db: AsyncSession, asset: Asset, library: Library, path: Path) -> None:
     from framefound.processing import shots
 
+    # The id is taken first: the pass lets a local model's looks follow the
+    # new windows, and a failure there rolls back, which expires `asset`.
+    asset_id = asset.id
     try:
-        await shots.analyse_motion(db, asset, library, path)
+        await shots.motion_pass(db, asset, library, path)
     except shots.NoProxy:
         # Not an error: proxies may be off for this library. The backfill
         # asks for them by name; the sweep only picks clips that have one.
-        log.info("shots.no_proxy", asset_id=str(asset.id))
+        log.info("shots.no_proxy", asset_id=str(asset_id))
         return
-    if await shots.has_embeddings(db, asset.id):
-        describe_shots.delay(str(asset.id))
+    if await shots.has_embeddings(db, asset_id):
+        describe_shots.delay(str(asset_id))
 
 
 @celery_app.task(
@@ -738,6 +773,7 @@ async def _describe_shots(db: AsyncSession, asset: Asset, library: Library, path
     from framefound.processing import shots
 
     await shots.describe_shots(db, asset)
+    await _nudge_looker(db, asset, library)
 
 
 @celery_app.task(
@@ -1198,6 +1234,14 @@ def _round_key(embedding: list[float] | None) -> str:
     return ",".join(f"{v:.3f}" for v in embedding[:16])
 
 
+def _scratch_dir() -> Path:
+    """Where a file is built before it goes to its store: always this
+    machine's own disk, whatever the store is (storage/stores.py)."""
+    scratch = get_settings().data_dir / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    return scratch
+
+
 @celery_app.task(
     name="framefound.fetch_basemap",
     queue="exports",
@@ -1214,28 +1258,44 @@ def fetch_basemap(name: str, bbox: str) -> None:
     `pmtiles extract` fetches only the tiles inside the bounding box — which is
     the reason the format was chosen over an mbtiles + tileserver stack.
 
-    Written to a `.part` file and renamed on success, so an interrupted run
-    never leaves something that looks like a usable basemap.
+    Extracted to a `.part` file on this machine's own disk and moved into the
+    basemap store only when whole, so neither an interrupted run nor a share
+    that drops for a minute in four hours leaves something that looks like a
+    usable basemap. If the store cannot take the finished file, it is kept
+    on this machine (`basemaps.waiting_path`) and put in place by the next
+    request for the same basemap, without extracting again.
     """
     import shutil
     import subprocess
 
-    from framefound.api.v1.basemaps import PLANET_URL
+    from framefound.api.v1.basemaps import PLANET_URL, waiting_path
 
-    settings = get_settings()
-    directory = settings.data_dir / "basemaps"
-    directory.mkdir(parents=True, exist_ok=True)
-    final = directory / f"{name}.pmtiles"
-    partial = directory / f"{name}.pmtiles.part"
-
-    if final.exists():
+    relative_path = f"basemaps/{name}.pmtiles"
+    try:
+        deriv.store_ready("basemaps")
+    except deriv.OutOfSpace as exc:  # its store is away
+        log.warning("basemap.paused", name=name, reason=str(exc))
+        return
+    if stores.path_for(relative_path).exists():
+        return
+    waiting = waiting_path(get_settings().data_dir, name)
+    if waiting.is_file():
+        # Extracted on an earlier run, when the store could not take it.
+        try:
+            stores.put_in_place(waiting, stores.path_for(relative_path))
+        except OSError as exc:
+            log.warning("basemap.still_waiting", name=name, reason=str(exc)[:300])
+            return
+        log.info("basemap.put_in_place", name=name)
         return
     if shutil.which("pmtiles") is None:
         log.error("basemap.tool_missing", name=name)
         raise RuntimeError("The pmtiles tool is not installed in this image")
 
+    partial = _scratch_dir() / f"basemap-{name}.pmtiles.part"
     partial.unlink(missing_ok=True)
     log.info("basemap.extract_started", name=name, bbox=bbox)
+    extracted = False
     try:
         completed = subprocess.run(  # noqa: S603 - fixed binary, argv form, no shell
             [  # noqa: S607 - resolved from PATH in our own image
@@ -1258,12 +1318,62 @@ def fetch_basemap(name: str, bbox: str) -> None:
             raise RuntimeError(tail or "pmtiles extract failed")
         if not partial.is_file() or partial.stat().st_size < 1024:
             raise RuntimeError("extraction produced no usable archive")
-        partial.rename(final)
-        log.info("basemap.extract_finished", name=name, bytes=final.stat().st_size)
+        size = partial.stat().st_size
+        # Whole from here on, and under a name that says so: whatever
+        # happens to the store next, this file is not made again.
+        partial.replace(waiting)
+        extracted = True
+        # Asked again, hours later: the store may have gone, or be in the
+        # last steps of a move (waited for, then the file goes where
+        # basemaps now live).
+        deriv.store_ready("basemaps")
+        stores.put_in_place(waiting, stores.path_for(relative_path))
+        log.info("basemap.extract_finished", name=name, bytes=size)
+    except (deriv.OutOfSpace, OSError) as exc:
+        if not extracted:
+            partial.unlink(missing_ok=True)
+            log.error("basemap.extract_failed", name=name, error=str(exc)[:300])
+            raise
+        # The store is away, being moved, or dropped during the copy. The
+        # extract stays on this machine; the Basemaps page says it is
+        # waiting, and asking for it again puts it in place.
+        log.warning("basemap.waiting_for_store", name=name, reason=str(exc)[:300])
     except Exception as exc:
         partial.unlink(missing_ok=True)
         log.error("basemap.extract_failed", name=name, error=str(exc)[:300])
         raise
+
+
+@celery_app.task(
+    name="framefound.move_storage_kind",
+    # With the renders and exports it may be moving, on the server's own
+    # workers: the folders in the stores file are the server's paths.
+    queue="exports",
+    # No autoretry: a move that failed is waiting for the operator (connect
+    # the drive, choose another folder), and one that starts again by itself
+    # hours later is a surprise. Asked for again, it carries on from what
+    # was already copied.
+    max_retries=0,
+)
+def move_storage_kind(move_id: str) -> None:
+    """Move one kind of bulk storage to another folder: the move the Storage
+    page asked for and recorded under `move_id` (storage/move_job.py).
+
+    It runs inside the worker that writes proxies and renders, so it stops
+    and restarts nothing — that would be this task killing itself, and the
+    queue handing it back to be run again. The kind's writers are paused
+    through the stores file for the last short pass instead.
+    """
+    from framefound.storage import move_job
+
+    async def run() -> None:
+        engine = create_async_engine(get_settings().db_url)
+        try:
+            await move_job.run(async_sessionmaker(engine, expire_on_commit=False), move_id)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 @celery_app.task(
@@ -1395,9 +1505,15 @@ def render_slideshow(slideshow_id: str) -> None:
                 show.segments_done = 0
                 await db.commit()
 
+                # The pieces are made on this machine's own disk whatever store
+                # the finished video is bound for (storage/stores.py).
                 workdir = settings.data_dir / "renders" / "work" / str(show.id)
+                relative_path = f"renders/{show.id}.mp4"
                 try:
+                    await asyncio.to_thread(deriv.store_ready, "renders")
                     ensure_space(settings.data_dir)
+                    if stores.is_separate("renders"):
+                        ensure_space(stores.kind_folder("renders"))
                     spec = await _slideshow_spec(db, show)
                     pipeline.check_sources(spec)
                     await asyncio.to_thread(pipeline.choose_encoder, spec)
@@ -1410,8 +1526,24 @@ def render_slideshow(slideshow_id: str) -> None:
                             show.segments_done = piece.index + 1
                             await db.commit()
 
-                    output = settings.data_dir / "renders" / f"{show.id}.mp4"
-                    result = await asyncio.to_thread(pipeline.stitch, spec, pieces, workdir, output)
+                    result = await asyncio.to_thread(pipeline.assemble, spec, pieces, workdir)
+                    # Asked again, minutes later and with the video whole:
+                    # the store may have gone, or be in the last steps of a
+                    # move (waited for; the video then goes where renders
+                    # now live).
+                    await asyncio.to_thread(deriv.store_ready, "renders")
+                    await asyncio.to_thread(
+                        stores.put_in_place, result.path, stores.path_for(relative_path)
+                    )
+                except deriv.OutOfSpace as exc:
+                    # Nothing wrong with the slideshow: its store is away or
+                    # being moved, or a disk is full. "Failed" is the status
+                    # the page shows a reason for and offers Render again on.
+                    await db.rollback()
+                    show.status = "failed"
+                    show.error = str(exc)[:500]
+                    await db.commit()
+                    log.warning("slideshow.paused", slideshow_id=slideshow_id, reason=str(exc))
                 except Exception as exc:
                     await db.rollback()
                     show.status = "failed"
@@ -1424,7 +1556,7 @@ def render_slideshow(slideshow_id: str) -> None:
                     raise
                 else:
                     show.status = "ready"
-                    show.relative_path = f"renders/{show.id}.mp4"
+                    show.relative_path = relative_path
                     show.duration_seconds = result.seconds
                     show.size_bytes = result.size_bytes
                     show.error = None
@@ -1510,6 +1642,60 @@ async def _slideshow_spec(db: AsyncSession, show: Any) -> Any:
     )
 
 
+# (asset id, the asset's relative path, its library's root): plain values, so
+# the file half can run in a thread, which must never read an ORM object.
+RenderPlace = tuple[uuid.UUID, str, str]
+
+
+async def plan_render_sources(
+    db: AsyncSession, rows: Any
+) -> tuple[list[RenderPlace], dict[uuid.UUID, str]]:
+    """The database half of `_render_sources`: where each photograph lives,
+    and the newest finished object-removal result of those that have one
+    (asset id → path under the data folder). Touches no file. `rows` are
+    (item, asset, library)."""
+    from sqlalchemy import select
+
+    from framefound.db.models import AssetInpaint
+
+    ids = [asset.id for _item, asset, _library in rows]
+    newest: dict[uuid.UUID, str] = {}
+    if ids:
+        removals = await db.execute(
+            select(AssetInpaint.asset_id, AssetInpaint.relative_path)
+            .where(AssetInpaint.asset_id.in_(ids), AssetInpaint.status == "ready")
+            .order_by(AssetInpaint.asset_id, AssetInpaint.version)
+        )
+        for asset_id, relpath in removals.all():  # ascending: the newest version wins
+            if relpath:
+                newest[asset_id] = relpath
+    places = [
+        (asset.id, str(asset.relative_path), str(library.root_path))
+        for _item, asset, library in rows
+    ]
+    return places, newest
+
+
+def locate_render_sources(
+    data_dir: Path, places: list[RenderPlace], removed: dict[uuid.UUID, str]
+) -> dict[uuid.UUID, tuple[Path, bool]]:
+    """The file half of `_render_sources`: every look at the data folder and
+    at a library's share happens here (`safe_join` resolves the path, which
+    stats each part of it). Blocking, so a caller on a server's event loop
+    runs it in a thread with a time limit (`colour_jobs.render_sources`)."""
+    sources: dict[uuid.UUID, tuple[Path, bool]] = {}
+    for asset_id, relative_path, root_path in places:
+        relpath = removed.get(asset_id)
+        if relpath and (data_dir / relpath).is_file():
+            sources[asset_id] = (data_dir / relpath, True)
+            continue
+        try:
+            sources[asset_id] = (safe_join(local_root(root_path), relative_path), False)
+        except (PathValidationError, UnmappedRoot):
+            continue
+    return sources
+
+
 async def _render_sources(
     db: AsyncSession, data_dir: Path, rows: Any
 ) -> dict[uuid.UUID, tuple[Path, bool]]:
@@ -1521,39 +1707,14 @@ async def _render_sources(
     zip will carry. It used to judge the original — the photograph with the
     removed trash can still in it. A source that fails path validation is
     left out; callers treat a missing entry as an unreadable photograph.
+
+    The local model and the listing preview use the same two halves
+    (`colour_jobs.render_sources`), so they judge the pixels Apply and the zip
+    use. Here both halves run in turn: a worker owns its event loop, so a
+    stat that waits on a share holds nothing else.
     """
-    from sqlalchemy import select
-
-    from framefound.db.models import AssetInpaint
-
-    ids = [asset.id for _item, asset, _library in rows]
-    newest: dict[uuid.UUID, str] = {}
-    if ids:
-        removals = (
-            await db.execute(
-                select(AssetInpaint)
-                .where(AssetInpaint.asset_id.in_(ids), AssetInpaint.status == "ready")
-                .order_by(AssetInpaint.asset_id, AssetInpaint.version)
-            )
-        ).scalars()
-        for removal in removals:  # ascending: the newest version wins
-            if removal.relative_path:
-                newest[removal.asset_id] = removal.relative_path
-
-    sources: dict[uuid.UUID, tuple[Path, bool]] = {}
-    for _item, asset, library in rows:
-        relpath = newest.get(asset.id)
-        if relpath and (data_dir / relpath).is_file():
-            sources[asset.id] = (data_dir / relpath, True)
-            continue
-        try:
-            sources[asset.id] = (
-                safe_join(local_root(library.root_path), asset.relative_path),
-                False,
-            )
-        except (PathValidationError, UnmappedRoot):
-            continue
-    return sources
+    places, removed = await plan_render_sources(db, rows)
+    return locate_render_sources(data_dir, places, removed)
 
 
 @celery_app.task(
@@ -1701,15 +1862,20 @@ def export_listing_zip(
                 # Object-removal results replace the original as the source.
                 sources = await _render_sources(db, settings.data_dir, rows)
 
-                out_dir = settings.data_dir / "exports" / "listings"
-                out_dir.mkdir(parents=True, exist_ok=True)
-                zip_path = out_dir / f"{listing.id}.zip"
+                # Built on this machine's own disk and moved to the export
+                # store whole (storage/stores.py): a share that drops while
+                # the zip is being written must not leave half of one under
+                # the name the download serves.
+                relative_path = f"exports/listings/{listing.id}.zip"
+                zip_path = _scratch_dir() / f"export-{listing.id}.zip"
+                megabytes = 0.0
                 skipped: list[str] = []
                 written = 0
                 index_rows: list[photo_index.IndexRow] = []
                 tiles: list[tuple[str, Any]] = []
                 sheets: list[bytes] = []
                 try:
+                    await asyncio.to_thread(deriv.store_ready, "exports")
                     # JPEGs do not compress again; ZIP_STORED skips the wasted CPU.
                     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
                         for item, asset, _library in rows:
@@ -1773,6 +1939,25 @@ def export_listing_zip(
                             archive.writestr(
                                 "_index/photo-index.csv", photo_index.index_csv(index_rows)
                             )
+                    megabytes = round(zip_path.stat().st_size / 1024**2, 1)
+                    # Asked again with the zip whole: the store may have
+                    # gone while it was made, or be in the last steps of a
+                    # move (waited for; the zip then goes where exports now
+                    # live).
+                    await asyncio.to_thread(deriv.store_ready, "exports")
+                    await asyncio.to_thread(
+                        stores.put_in_place, zip_path, stores.path_for(relative_path)
+                    )
+                except deriv.OutOfSpace as exc:
+                    # Nothing wrong with the listing: the export store is
+                    # away or being moved. "Failed" is the status the page
+                    # shows a reason for and offers Export again on.
+                    await db.rollback()
+                    zip_path.unlink(missing_ok=True)
+                    listing.export_status = "failed"
+                    listing.export_error = str(exc)[:500]
+                    await db.commit()
+                    log.warning("listing.export_paused", listing_id=listing_id, reason=str(exc))
                 except Exception as exc:
                     await db.rollback()
                     zip_path.unlink(missing_ok=True)
@@ -1783,7 +1968,7 @@ def export_listing_zip(
                     raise
                 else:
                     listing.export_status = "ready"
-                    listing.export_relpath = f"exports/listings/{listing.id}.zip"
+                    listing.export_relpath = relative_path
                     listing.export_fingerprint = fingerprint
                     listing.exported_at = datetime.now(UTC)
                     listing.export_error = (
@@ -1800,7 +1985,7 @@ def export_listing_zip(
                         listing_id=listing_id,
                         images=written,
                         skipped=len(skipped),
-                        megabytes=round(zip_path.stat().st_size / 1024**2, 1),
+                        megabytes=megabytes,
                     )
         finally:
             await engine.dispose()
@@ -1919,6 +2104,36 @@ def inpaint_asset(inpaint_id: str) -> None:
     asyncio.run(run())
 
 
+def proposal_as_seen(made: datetime | None, seen: datetime) -> bool:
+    """Whether a stored proposal is still the one the operator was shown.
+
+    `seen` is the `made_at` the page read (`api/v1/listing_suggestions.py`
+    gives it to the second, in UTC), so the stored moment is compared at the
+    same precision. Asking again rewrites the row with a new moment; a row
+    rewritten within the same second as the one shown would pass, which no
+    operator can do by hand.
+    """
+    if made is None:
+        return False
+    stored = made.replace(tzinfo=UTC) if made.tzinfo is None else made.astimezone(UTC)
+    shown = seen.replace(tzinfo=UTC) if seen.tzinfo is None else seen.astimezone(UTC)
+    return stored.replace(microsecond=0) == shown.replace(microsecond=0)
+
+
+def left_for_newer_proposals(count: int) -> str:
+    """The one sentence Apply gives for photographs it left because the local
+    model suggested something new for them after the operator looked."""
+    if count == 1:
+        return (
+            "1 photograph was left because the local model made a new suggestion "
+            "for it after you looked."
+        )
+    return (
+        f"{count} photographs were left because the local model made new suggestions "
+        "for them after you looked."
+    )
+
+
 @celery_app.task(
     name="framefound.ai_edit_listing",
     # media rather than metadata: sky compositing needs the segmentation
@@ -1930,7 +2145,12 @@ def inpaint_asset(inpaint_id: str) -> None:
     # continues past individual failures.
     max_retries=0,
 )
-def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "ai") -> None:
+def ai_edit_listing(
+    listing_id: str,
+    sky_name: str | None = None,
+    mode: str = "ai",
+    options: dict[str, Any] | None = None,
+) -> None:
     """Auto-edit a listing's photographs.
 
     mode "ai": the recipe-picker judges each photograph, and names it in the
@@ -1945,6 +2165,21 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
     operator confirmed are skipped: nothing would change, and each one is a
     paid API call.
 
+    mode "local": apply what the local model already proposed
+    (`listing_edit_suggestions` rows still `proposed`; asking it is a job on
+    the local-AI lane, `processing/colour_jobs.py`). Nothing here talks to a
+    model or reads a key: the tone is the learned look's, or the preset's;
+    the straightening and the name are the stored proposal's. `options`
+    (read only in this mode): `item_ids` (the photographs the operator
+    ticked; None = every proposal), `straighten`, `names`, `sky`
+    ("suggested": only where the model would replace it; "all": wherever
+    segmentation finds sky), `user_id` (who pressed Apply) and `made_at`
+    (item id → when the proposal the operator saw was made; absent from older
+    clients, and then nothing is compared). Each applied proposal becomes
+    `applied` with the version it wrote, in the same commit; one the model
+    replaced after the operator looked, or while this ran, is left waiting,
+    and the run's message says how many and why.
+
     Sequential by design: the point is per-photo judgment, not throughput,
     and one preview in flight at a time keeps the operator's API bill and
     rate limits boring. Failures on individual photos are logged and
@@ -1954,9 +2189,27 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
     from sqlalchemy.exc import IntegrityError
 
     from framefound.ai import recipe_picker
-    from framefound.db.models import AssetEdit, Listing, ListingItem
+    from framefound.db.models import AssetEdit, Listing, ListingEditSuggestion, ListingItem
     from framefound.media import develop as develop_lib
+    from framefound.media import photo_judge
     from framefound.media.maps_store import load_ai_edit_config
+
+    local = mode == "local"
+    chosen = options or {}
+    # Absent for every message queued before the local mode existed, and
+    # unread by the other modes.
+    straighten = bool(chosen.get("straighten", True))
+    rename = bool(chosen.get("names", True))
+    sky_everywhere = chosen.get("sky") == "all"
+    ticked = chosen.get("item_ids")
+    decided_by = uuid.UUID(chosen["user_id"]) if chosen.get("user_id") else None
+    # What the operator saw when they pressed Apply. Asking again between the
+    # press and this read rewrites a row in place; applying it would edit a
+    # photograph with values nobody looked at (L4-web2's race).
+    seen: dict[uuid.UUID, datetime] = {
+        uuid.UUID(str(item)): datetime.fromisoformat(str(moment))
+        for item, moment in (chosen.get("made_at") or {}).items()
+    }
 
     def _sky_fraction_for(source: Path, normalized: bool) -> float:
         """How much sky a photograph has, or 0.0 when segmentation is not
@@ -1985,8 +2238,27 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
         image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
         return recipe_picker.preview_bytes(image), looks.predict(look, image)
 
+    def tone_of(source: Path, normalized: bool, look: Any) -> dict[str, float]:
+        """The learned look's tone alone, decoded at the size the proposal's
+        preview predicts it at, so what lands is what the operator saw."""
+        from framefound.media import looks
+
+        image = develop_lib.open_for_render(source, already_normalized=normalized, max_edge=1024)
+        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        return looks.predict(look, image)
+
     async def run() -> None:
-        from sqlalchemy import func, select, update
+        from sqlalchemy import String, cast, func, select, update
+
+        # Imported here, not at the top: colour_jobs imports this module.
+        from framefound.processing import colour_jobs
+
+        # When a proposal was made, as the database's own text. Asking again
+        # rewrites the same row with a new `created_at`, so this tells Apply
+        # whether the row is still the proposal it read. Text, not a datetime:
+        # SQLite keeps a stamp it made itself without the microseconds a bound
+        # datetime carries, so the two would never compare equal.
+        proposal_stamp = cast(ListingEditSuggestion.created_at, String)
 
         settings = get_settings()
         engine = create_async_engine(settings.db_url)
@@ -2060,6 +2332,42 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                         .order_by(ListingItem.position)
                     )
                 ).all()
+                # The local mode's proposals, as plain values for the same
+                # reason as `photos` below: only those still waiting, and only
+                # the photographs the operator ticked.
+                proposals: dict[uuid.UUID, Any] = {}
+                newer: list[uuid.UUID] = []
+                if local:
+                    wanted = select(
+                        ListingEditSuggestion.item_id,
+                        ListingEditSuggestion.id,
+                        ListingEditSuggestion.rotate,
+                        ListingEditSuggestion.keystone,
+                        ListingEditSuggestion.sky_worth_replacing,
+                        ListingEditSuggestion.caption,
+                        ListingEditSuggestion.slug,
+                        ListingEditSuggestion.created_at,
+                        proposal_stamp.label("stamp"),
+                    ).where(
+                        ListingEditSuggestion.listing_id == listing_uuid,
+                        ListingEditSuggestion.state == colour_jobs.PROPOSED,
+                    )
+                    if ticked is not None:
+                        wanted = wanted.where(
+                            ListingEditSuggestion.item_id.in_([uuid.UUID(str(i)) for i in ticked])
+                        )
+                    proposals = {row.item_id: row for row in (await db.execute(wanted)).all()}
+                    # A proposal made after the operator looked is not the one
+                    # they ticked: left waiting for them to look again. From
+                    # here to the commit, the stamp below keeps it so.
+                    newer = [
+                        item
+                        for item, row in proposals.items()
+                        if item in seen and not proposal_as_seen(row.created_at, seen[item])
+                    ]
+                    for item in newer:
+                        del proposals[item]
+                    rows = [row for row in rows if row[0].id in proposals]
                 sources = await _render_sources(db, settings.data_dir, rows)
                 # Plain values, taken before the loop: a failed photograph
                 # rolls the session back, which expires every ORM object in
@@ -2121,7 +2429,29 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                             continue
                         naming: dict[str, str] | None = None
                         learned: dict[str, float] | None = None
-                        if look is not None:
+                        proposal = proposals.get(item_id)
+                        if proposal is not None:
+                            # The local mode: the model was asked on its own
+                            # lane, and the operator ticked what it said. The
+                            # tone is decided exactly as the other modes decide
+                            # it (photo_judge.proposed_recipe).
+                            tone = (
+                                await asyncio.to_thread(tone_of, path, normalized, look)
+                                if look is not None
+                                else None
+                            )
+                            recipe = photo_judge.proposed_recipe(
+                                tone,
+                                float(proposal.rotate or 0.0),
+                                float(proposal.keystone or 0.0),
+                                straighten=straighten,
+                            )
+                            if rename:
+                                naming = {
+                                    "caption": proposal.caption or "",
+                                    "slug": proposal.slug or "",
+                                }
+                        elif look is not None:
                             preview, learned = await asyncio.to_thread(
                                 analyse, path, normalized, look
                             )
@@ -2145,12 +2475,16 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                                 "caption": picked.get("caption", ""),
                                 "slug": picked.get("slug", ""),
                             }
-                        else:
+                        elif proposal is None:
                             recipe = dict(develop_lib.LISTING_PRESET)
                         if learned is not None:
                             recipe = looks.combine(learned, recipe)
 
-                        if sky_name:
+                        # The model's sky verdict narrows the operator's pick
+                        # and never makes one: no sky chosen, no sky added.
+                        if sky_name and (
+                            proposal is None or sky_everywhere or proposal.sky_worth_replacing
+                        ):
                             fraction = await asyncio.to_thread(_sky_fraction_for, path, normalized)
                             if fraction >= 0.04:
                                 recipe["sky"] = {"name": sky_name}
@@ -2165,6 +2499,39 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                             ).scalar_one() + 1
                             db.add(AssetEdit(asset_id=asset_id, version=version, recipe=cleaned))
                             try:
+                                if proposal is not None:
+                                    # In the edit's own commit: a proposal is
+                                    # never marked applied without the version
+                                    # it wrote, nor a version left unrecorded.
+                                    # Only the proposal that was read: asking
+                                    # again (redo) on the other lane can
+                                    # replace the row while this photograph
+                                    # renders, and marking the new one would
+                                    # record values this edit never used and
+                                    # take it off the waiting list. A row
+                                    # dismissed meanwhile is still marked: the
+                                    # edit is made, and its row must say so.
+                                    marked: Any = await db.execute(
+                                        update(ListingEditSuggestion)
+                                        .where(
+                                            ListingEditSuggestion.id == proposal.id,
+                                            proposal_stamp == proposal.stamp,
+                                        )
+                                        .values(
+                                            state=colour_jobs.APPLIED,
+                                            applied_version=version,
+                                            decided_at=datetime.now(UTC),
+                                            decided_by=decided_by,
+                                        )
+                                        .execution_options(synchronize_session=False)
+                                    )
+                                    if not marked.rowcount:
+                                        # The outer handler rolls this
+                                        # photograph's version back and counts
+                                        # it skipped; the new proposal waits.
+                                        raise RuntimeError(
+                                            "its suggestion changed while applying — apply it again"
+                                        )
                                 await db.commit()
                                 break
                             except IntegrityError:
@@ -2200,6 +2567,8 @@ def ai_edit_listing(listing_id: str, sky_name: str | None = None, mode: str = "a
                     summary = f"{edited} {verb}"
                     if skipped:
                         summary += f", {skipped} skipped — first: {first_problem}"
+                    if newer:
+                        summary += f". {left_for_newer_proposals(len(newer))}"
                     await set_state("done" if edited or not photos else "failed", summary)
                 log.info(
                     "ai_edit.finished",

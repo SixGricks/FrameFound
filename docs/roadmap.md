@@ -3,6 +3,289 @@
 Versioning: SemVer. MVP = end of Milestone 8 ≈ v0.9; v1.0 after beta feedback.
 Each milestone maps to a GitHub Milestone; items become issues at milestone start.
 
+### 2026-11-14 — Built: local AI models, the Claude chat panel, bulk storage on the NAS
+
+Every phase of the 2026-11-12 plan below is built, on the server and in the
+web app. "Built" means written and tested, nothing more: **nothing has run
+with a real model or on a Mac**, and the chat panel has not yet talked to
+the real Claude API. Every model answer in the tests comes from a stand-in.
+How to use it: [local-models.md](local-models.md) (one status line per
+phase), [chat.md](chat.md), [storage.md](storage.md#bulk-storage-a-folder-per-kind),
+and the AI models page in [mac.md](mac.md#local-ai-models). Decisions:
+ADR-0023 (models and the software that runs them are managed from the UI)
+and ADR-0024 (Compare measures agreement with decisions already made, not
+quality). Migrations **0031–0036**.
+
+The Mac install happened first in the end: FrameFound was installed on
+the mini and the catalogue migrated on 2026-11-13, and that Mac is now
+the production server. It runs the release before this work, so all of
+it reaches the Mac with its first `framefound update` — which needs the
+hand steps below.
+
+**What the owner can now do:**
+
+- **Keep everything bulky on the NAS (S1).** One folder holds proxies,
+  slideshow videos, listing exports, basemaps, backup copies and the model
+  library, each kind in its own subfolder and movable on its own. The new
+  **Storage** page (and `framefound storage`) shows where each kind lives
+  and whether its drive is connected, moves one kind at a time (copy,
+  check, switch — never a delete), removes old copies only when asked, and
+  can make missing proxies again. The database, thumbnails and frames stay
+  on the Mac. `framefound install --store <folder>` sets the folder at
+  install.
+- **Ask Claude from any page (C1).** **Ask Claude** in the top bar opens a
+  chat panel that runs the connector's tools on the server, as the person
+  signed in, and knows the page, folder or selection on screen. Deciding
+  tags, a paid review and a folder review wait for a yes; Stop hangs up at
+  once; the monthly budget is checked before every request; pictures are
+  on by default with a switch per conversation; the model is chosen on
+  Security. Conversations are private to each account.
+- **Manage models from the UI (L1).** Manage → **AI models**: check a model
+  on Hugging Face before downloading it (publisher, what it was built from,
+  licence, size, memory), download it into the library, give the **Looker**
+  and **Editor** roles, Test it on a picture, and install, update or roll
+  back the software that runs it. Also there: day and overnight memory
+  budgets, the overnight window, Pause, Unload now, the three publisher
+  lists (makers, converters, blocked), a Hugging Face token that is never
+  shown, and recent activity. Two new services on the Mac — the model
+  server and a lowest-priority local-AI worker — and `framefound doctor`
+  checks them.
+- **Compare models on your own footage (L2).** AI models › Compare
+  models: a sample from finished cuts' shots, a folder or a listing; every
+  model sees the same frozen pictures; each column shows its answers and
+  how often they agree with tags already decided and shots already used —
+  counts, never a grade. The owner records which model looks, or "none
+  yet". Nothing a comparison says reaches the catalogue.
+- **Have the local model look (L3).** **Review with AI** on a folder or a
+  library (from Browse's new Folders view or Libraries) says what is left
+  to look at and about how long, then Start now or Tonight; clips are made
+  ready first and Cancel keeps what was looked at. A per-library switch
+  looks at new footage as it arrives. A look gives tag suggestions
+  (labelled "local model" on Tags), a caption and a 0–100 score, used by
+  Browse, Search (a nudge of at most 10%, and an "AI caption" reason),
+  listing culling, `find_shots` and a clip's new Shots list. Reviews show
+  on Processing; Claude can start one from the panel, always asking first.
+- **Colour (L4).** A **Look card** on every clip: the model's suggestion,
+  your learned look and no change side by side; choose, adjust with eight
+  sliders, and download a `.cube` LUT for Premiere (or a folder's as one
+  zip) — [video-looks.md](video-looks.md). On a listing, **Ask the local
+  model** proposes straightening, whether the sky is worth replacing, a
+  caption and a file name; Apply uses only the ones ticked, and nothing
+  leaves the building.
+- **Draft rough cuts (L5).** A **Cuts** page lists every rough cut, one
+  line per family of versions. Draft a cut from a brief and a folder, from
+  clips ticked in Search, from a clip's page, from a folder in Browse, or
+  by asking Claude in the chat panel; every shot is checked before the
+  timeline is written. Versions sit side by side with Compare; Download for
+  Premiere works for any computer; Ask Claude to review keeps Claude's
+  better version beside the draft. A local draft marks its shots as used
+  only once it is downloaded.
+- **A second runtime (L6).** llama.cpp runs GGUF builds, installed from
+  GitHub's checksummed release archive. The Check lists a repository's
+  builds and suggests one; a model on llama.cpp is asked about once before
+  it gets a role, until Compare has seen it.
+
+**Also done:**
+- The three faults from the first Mac install: Homebrew's rsync is
+  installed beside macOS's older one, the `framefound` command is in place
+  before the database starts, and every service starts with a UTF-8 locale
+  (Postgres would not start without one). `doctor` gains `locale` and
+  `rsync` lines; an update that git refuses names the edited files in the
+  way and never discards them.
+- `framefound update` backs up the catalogue first and stops if that
+  fails (`--skip-backup` to skip it). A nightly backup whose copy to the
+  NAS fails — a full or dropped share — is kept on the Mac and says so.
+- `framefound ops shots backfill` with no `--library` does every library.
+- Every page names itself in the browser tab. The viewer from Tags now
+  opens on People, listings and slideshows too, and People opens a clip at
+  the face.
+- A folder review that never ended (its count passing its total, e.g.
+  "20 of 8") is fixed. A clip with shots on record but no ready
+  shot-analysis file is made ready like any other; if it never becomes
+  ready, it is looked at shot by shot from the shots on record, never from
+  one still. A review never asks the same model about an item twice, and
+  its count never passes its total. The backfill run on the Mac on
+  2026-11-13 writes the shot-analysis file before the shots, so it could
+  not have caused this.
+- A final QA pass across every page fixed what it found (CHANGELOG,
+  Fixed 2026-11-14).
+- Checks, on the final code: ruff and mypy clean; the server suite
+  3,811 passed locally on SQLite (the one failure is the known
+  Windows-only slideshow path test); web lint, type check, 747 tests and
+  the production build pass. Not deployed.
+
+**Needs the owner / not known yet:**
+
+1. **Nothing has run with a real model or on a Mac.** Every model answer
+   in the tests comes from a stand-in. How well the models tag, score,
+   grade and cut this footage, and how long they take, is unknown until
+   they run on the mini. Compare on Brookside is how to find
+   out; the measured "which model looks" (or "none yet") is still to come.
+2. **The chat panel has not yet had a conversation with the real Claude
+   API.** The first one is the test.
+3. **Migrations 0031–0036 run on the real catalogue** at the mini's first
+   `framefound update`. Several queries (`cast(created_at, String)`, the
+   `made_at` comparisons for listing proposals) have only run on SQLite,
+   never on PostgreSQL.
+4. **The mini's first update runs the old update code**, which does not
+   back up and stops on the hand edit made during the install. Once, one
+   command at a time ([mac.md](mac.md#updating) has the detail):
+
+   ```bash
+   framefound backup
+   ```
+   ```bash
+   git -C ~/FrameFound/src stash
+   ```
+   ```bash
+   framefound update
+   ```
+
+   If the update succeeded (it ends `FrameFound is running:`):
+
+   ```bash
+   git -C ~/FrameFound/src stash drop
+   ```
+
+   If it failed with `framefound: git failed (exit 1)` (the release never
+   arrived), do not restart FrameFound or the Mac; put the edit back
+   instead:
+
+   ```bash
+   git -C ~/FrameFound/src stash pop
+   ```
+
+   If it got further (it ends `framefound: uv failed` or with a message
+   from the new release), do not `stash pop`: run `framefound update`
+   again and drop the edit once it succeeds ([mac.md](mac.md#updating)).
+
+   Later updates back up on their own (`--skip-backup` to skip). After it,
+   set the bulk folder on the Storage page and move each kind that already
+   has files, and add every NAS share to Login Items so libraries are not
+   offline after a restart.
+5. **44 publishers are blocked out of the box.** Read the list once on the
+   AI models page. No model from a Chinese lab is suggested anywhere; the
+   blocked list refuses them and anything built from them.
+6. `/storage/proxies/rebuild` (Make the missing proxies again) may be slow
+   on a large catalogue.
+7. `videotoolbox_proxy_args()` in
+   `apps/server/framefound/processing/ffmpeg.py` is left for the owner;
+   proxies stay libx264 until it is filled.
+8. Backup-before-update has only been tested on Windows, never on a Mac.
+9. Other API handlers still call the queue directly and can hold a request
+   for about 5 s when the queue (Valkey) is down; production keeps it up.
+   Tag answers and Re-learn no longer do.
+10. Smaller unknowns, first seen on the mini: the memory figure of the
+    first Test against Activity Monitor; the model server answering only on
+    the Mac itself (not from other computers); whether macOS runs the unpacked llama.cpp program; a
+    `.cube` loaded in Premiere. A clip's Shots list shows the sampled frame
+    nearest each shot until the server serves a shot's own still.
+
+### 2026-11-12 — Planned: local AI models, a Claude chat panel, and bulk storage on the NAS
+
+Plan only; nothing is built. Full design: [local-models.md](local-models.md).
+
+**The goal:** open-weight models running on the mini at no per-use cost
+that tag video and photographs, grade them (score each shot *and* suggest a
+colour grade) and draft a rough cut — chosen and managed from the UI, with
+new models and the software that runs them updated from the UI, no PR and
+no console. Alongside: a chat panel with Claude in the web UI, and bulk
+storage kept on the NAS.
+
+**Decided 2026-11-12:**
+- Grading means both scoring and colour.
+- The local model drafts a cut; Claude is an optional second opinion under
+  the existing budget.
+- **No Chinese models.** Approved makers start as US organisations (Google,
+  Ai2, NVIDIA, Apple); where the software that runs a model comes from is
+  not restricted.
+- Models are added from the UI from approved publishers.
+- Gated downloads (Cosmos Reason 2) are a last resort.
+- Overnight is **21:30–05:30**.
+- A folder can be reviewed on request, for older footage.
+- Photographs as well as video.
+- Bulk storage goes on the NAS wherever it can: a `Framefound` folder on
+  the Photos drive.
+- A chat panel with Claude, shown pictures by default.
+
+**The five candidates, checked 2026-11-12** (none has run on the mini):
+
+| Model | Ready on the mini? | Role it is headed for |
+|---|---|---|
+| Gemma 4 E4B (Google) | Yes — MLX-VLM, about 6 GB | Looking: tags, scores, colour. Fits beside Adobe |
+| Gemma 4 12B (Google) | Text yes; pictures patchy on MLX | Assembly (it reasons over the shot list as text) |
+| Molmo2-O-7B (Ai2) | No Mac-ready build that avoids running repository code | Watch list |
+| Nemotron 3 Nano Omni 30B (NVIDIA) | No MLX build; GGUF exists; about 17–18 GB | Overnight only, after the second runtime |
+| Cosmos Reason 2 8B (NVIDIA) | No MLX build of the 8B; GGUF exists; gated | Back of the queue: gated, and built for robotics |
+
+**How it is designed:**
+- Models are shown the three stills FrameFound already keeps per shot (or a
+  photograph's preview), plus the measured facts, so any picture-reading
+  model can do the job.
+- Two roles, one model each, assigned in the UI: a **Looker** (pictures →
+  tags, caption, score, colour numbers) and an **Editor** (text → a cut).
+- The programs that run models (**runtimes**: MLX-VLM first, llama.cpp
+  second) are installed, updated and rolled back from the UI, in their own
+  folders, so a new model never needs a FrameFound release.
+- An **"AI models" page**: installed, add (with a preflight), test, compare
+  side by side, remove, runtime versions.
+- **Three publisher lists**, edited in the UI: *makers* (who trained it),
+  *converters* (who packaged it for the Mac: mlx-community), and *blocked*
+  (the main Chinese labs, pre-filled; it wins over the other two). A
+  conversion must name a maker's model as its source.
+- **Safety:** weights only, never code from a model's repository; every
+  download pinned to a revision; loopback only; everything a model says is
+  a suggestion (tags → review queue, cuts → drafts, colour → a proposal).
+- **Adobe first:** a daytime memory budget (8 GB) and an overnight one
+  (20 GB, 21:30–05:30); one model loaded at a time; its own lowest-priority
+  lane.
+- **Review with AI** on any folder or library: shows what has not been
+  looked at, queues missing proxies and shot analysis first, estimates the
+  time, and runs now (daytime model) or tonight (larger model).
+- **Photographs:** the same tags, captions and scores; the score joins the
+  existing culling suggestions; listing auto-edit gains a `local` mode
+  (straightening, sky decision, caption, file name) with tone still from
+  the learned look.
+- **Chat panel:** Claude in the web UI with the connector's existing tools
+  run on the server, aware of the folder or clip on screen, changes
+  confirmed before they happen, under the existing monthly budget. It does
+  not depend on the local models or the mini.
+- **Storage in two classes:** fast on the Mac (database, thumbnails,
+  frames, models in use) and bulk on the NAS (proxies, renders, exports,
+  basemaps, the model library, backup copies), each kind movable on its own
+  from a Storage page.
+
+**Phases, in the order recommended** (each judged before the next):
+- **S1** — NAS bulk store and Storage page. Best done before L0, so the
+  migration puts files where they will live.
+- **L0** — the Mac install running and the catalogue migrated. *Not started.*
+- **C1** — chat panel with Claude. Independent; can be built at any time.
+- **L1** — model manager, MLX-VLM runtime, Gemma 4 E4B and 12B added from
+  the page. Done when a model added in the UI answers a Test button.
+- **L2** — Compare, on a sample of Brookside shots: is any model good
+  enough at looking? A measured yes or no.
+- **L3** — looking: at ingest for new footage and photographs, and Review
+  with AI on a folder for older material.
+- **L4** — colour: a LUT for Premiere per clip; the `local` mode for
+  listing photographs. Judged by eye against the learned look.
+- **L5** — assembly: a local draft rough cut, and "Ask Claude to review"
+  through the chat panel.
+- **L6** — second runtime (llama.cpp), opening overnight Nemotron Omni;
+  Cosmos Reason 2 only if a gap remains.
+
+**Settled with the operator 2026-11-12** (nothing left open):
+- The bulk store is a `Framefound` folder on the NAS's Photos drive
+  (`/Volumes/Photos/Framefound` on the mini). The mini's own disk is
+  assumed to have room; bulk still goes to the NAS.
+- The chat panel shows Claude pictures by default, with a switch to turn
+  them off.
+- Memory budgets start at 8 GB by day and 20 GB overnight.
+
+**If the mini is installed before S1 is built:** create `Framefound` on the
+Photos drive and install with
+`--proxies "/Volumes/Photos/Framefound/proxies"` — the same place S1 will
+use, so nothing has to move later.
+
 ### 2026-11-11 — FrameFound installs on the Mac mini as a program
 
 The 2012 Mac Pro's limits (no AVX, x264 and Whisper on Westmere cores) are

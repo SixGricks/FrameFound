@@ -17,6 +17,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -185,6 +186,13 @@ class Library(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Have the Looker (framefound/looking) look at what arrives in this
+    # library. Off unless an administrator turns it on: folders are reviewed
+    # when somebody asks. `look_since` is the moment it went on, and nothing
+    # older is swept up by it — switching it on must not quietly start a
+    # review of ten years of footage (migration 0034).
+    look_at_ingest: Mapped[bool] = mapped_column(Boolean, default=False)
+    look_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     assets: Mapped[list["Asset"]] = relationship(back_populates="library")
     path_mappings: Mapped[list["PathMapping"]] = relationship(
@@ -285,6 +293,23 @@ class Asset(Base):
     proxy_of_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("assets.id", ondelete="SET NULL"), default=None, index=True
     )
+
+    # What a local model made of it (framefound/looking), rolled up so
+    # Browse, search and culling can sort by it without a join per row. For
+    # a photograph it is its look; for a clip, its best-scoring shot's. All
+    # NULL until something has been looked at (migration 0034).
+    # `look_score` NOT NULL means "a model has an opinion"; `looked_at` NOT
+    # NULL means "nothing in it still needs looking at" — a clip with one
+    # shot still to do has a score and no `looked_at`.
+    look_score: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    look_caption: Mapped[str | None] = mapped_column(String(300), default=None)
+    look_reason: Mapped[str | None] = mapped_column(String(200), default=None)
+    looked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None, index=True
+    )
+    # The key its looks share (`Look.key`: `<repo>@<revision>[/<variant>]#<prompt
+    # version>`), or "mixed".
+    looked_by: Mapped[str | None] = mapped_column(String(300), default=None)
 
     library: Mapped[Library] = relationship(back_populates="assets")
 
@@ -523,14 +548,24 @@ class AssetTag(Base):
     source: Mapped[str] = mapped_column(String(16), default="manual", index=True)
     confidence: Mapped[float | None] = mapped_column(default=None)
     # Who proposed a suggestion: "clip" (the learner), "claude" (the API
-    # reviewer), "mcp" (Claude through the connector). Null on rows older
-    # than migration 0025, which were all the learner's. Informational —
-    # every suggestion is judged by the operator the same way.
+    # reviewer), "mcp" (Claude through the connector), "local" (a model on
+    # this Mac, framefound/looking). Null on rows older than migration 0025,
+    # which were all the learner's. Informational — every suggestion is
+    # judged by the operator the same way.
     origin: Mapped[str | None] = mapped_column(String(20), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), default=None
     )
+    # The look that proposed it (origin "local"): which shot, which build,
+    # what else the model said. That row is text and points at no model, so
+    # removing a model never touches a tag. Indexed because deleting an
+    # asset deletes its looks, and each must find the tags pointing at it.
+    look_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("looks.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # The moment in a clip the suggestion is about, so the Tags page opens there.
+    at_ms: Mapped[int | None] = mapped_column(default=None)
 
     tag: Mapped["Tag"] = relationship(back_populates="asset_links")
 
@@ -810,7 +845,7 @@ class AiUsage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
-    # tag_review | recipe | describe
+    # tag_review | recipe | describe | chat
     purpose: Mapped[str] = mapped_column(String(30))
     model: Mapped[str] = mapped_column(String(100))
     input_tokens: Mapped[int] = mapped_column(default=0)
@@ -837,6 +872,9 @@ class ShotWindow(Base):
     Rows are rebuilt whole when a clip is re-analysed, so nothing else
     keys on their ids for long: cut history keeps a snapshot instead.
     Descriptors, not tags: nothing here enters the tag review queue.
+    A local model's opinion of a shot is not stored here either: it lives
+    in `looks`, keyed by the shot's times, so a re-analysis that finds the
+    same shot keeps it.
     """
 
     __tablename__ = "shot_windows"
@@ -890,6 +928,12 @@ class Cut(Base):
     ops/shots.py import-cut). The pieces are kept with a snapshot of what
     each shot was (move, light, subjects, smoothness), so the summary of a
     past cut does not change when a clip is re-analysed.
+
+    Cuts that revise one another are a family: every version shares
+    `coalesce(root_id, id)`, and nothing is ever overwritten. A local
+    model's draft (`source` "local") counts as footage that went somewhere
+    only once its Premiere file has been downloaded (`sent_at`); until then
+    it marks no shot used (`nle.shotlist.counts_as_used`).
     """
 
     __tablename__ = "cuts"
@@ -902,7 +946,7 @@ class Cut(Base):
     library_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("libraries.id", ondelete="SET NULL"), default=None, index=True
     )
-    source: Mapped[str] = mapped_column(String(20), default="mcp")  # mcp | import
+    source: Mapped[str] = mapped_column(String(20), default="mcp")  # mcp | import | local
     profile: Mapped[str | None] = mapped_column(String(100), default=None)
     duration_s: Mapped[float] = mapped_column(Float, default=0.0)
     piece_count: Mapped[int] = mapped_column(default=0)
@@ -912,6 +956,27 @@ class Cut(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    # The family: the first version's id (NULL on the first version itself)
+    # and the cut this one revises. Neither is a foreign key: deleting
+    # version 1 must not un-group versions 2 and 3, and a deleted parent
+    # reads as "an earlier version, since deleted".
+    root_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None, index=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    # 1 + the highest in the family when written. Two written at the same
+    # instant may share a number, so readers order by (version, created_at).
+    version: Mapped[int] = mapped_column(default=1)
+    # The first time its Premiere file was downloaded from the Cuts page.
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Which build drafted it, as text (the provenance names every table of
+    # answers uses): removing a model must not touch a cut. NULL on cuts no
+    # local model wrote.
+    model: Mapped[str | None] = mapped_column(String(200), default=None)
+    model_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+    # Part of what makes a build (as on `local_models`); "" when none.
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    runtime: Mapped[str | None] = mapped_column(String(30), default=None)
+    runtime_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), default=None)
 
     pieces: Mapped[list["CutPiece"]] = relationship(
         back_populates="cut", cascade="all, delete-orphan", order_by="CutPiece.position"
@@ -935,5 +1000,874 @@ class CutPiece(Base):
     # The window the piece came from, as it was described then: move,
     # direction, light, subjects, smoothness at this speed, idx.
     shot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Why the piece is there (the cut's marker). Kept so a cut can be
+    # downloaded again with its markers and shown with a reason per shot.
+    # Model text when a local model drafted it: shown only as text.
+    note: Mapped[str] = mapped_column(String(500), default="")
 
     cut: Mapped[Cut] = relationship(back_populates="pieces")
+
+
+# --------------------------------------------------------------------------
+# The chat panel (framefound/chat, docs/chat.md)
+# --------------------------------------------------------------------------
+
+
+class ChatConversation(Base):
+    """One conversation with Claude in the web panel, private to its owner.
+
+    `model` and `prefix_hash` are fixed when the conversation starts: the
+    instructions and the tool list Claude was first sent are kept (as a file
+    named by that hash) and sent again unchanged on every later request, so
+    an update to FrameFound cannot change the start of a conversation Claude
+    has already reasoned about. `state_at` is a heartbeat while a turn runs;
+    a `running` row nobody has touched for a few minutes belonged to a
+    process that died and is treated as idle.
+    """
+
+    __tablename__ = "chat_conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), default="")
+    model: Mapped[str] = mapped_column(String(100))
+    # Whether previews Claude asks to look at are sent to it. Switching it
+    # changes what later tool results carry, never what was already sent.
+    pictures: Mapped[bool] = mapped_column(Boolean, default=True)
+    prefix_hash: Mapped[str] = mapped_column(String(64), default="")
+    # idle | running | awaiting_confirmation
+    state: Mapped[str] = mapped_column(String(24), default="idle")
+    state_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # How the last turn ended (end | awaiting_confirmation | budget | steps |
+    # refusal | max_tokens | error) and the sentence that went with it, so a
+    # panel that was closed while the turn ran can still say what happened.
+    turn_reason: Mapped[str | None] = mapped_column(String(24), default=None)
+    turn_message: Mapped[str | None] = mapped_column(String(500), default=None)
+    spent_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class ChatMessage(Base):
+    """One turn as the Claude API has it: `content` is the content-block
+    array exactly as it was sent or received, thinking blocks included,
+    because the API rejects a conversation whose earlier turns were altered.
+
+    The one substitution is a picture: its bytes live in a file beside the
+    conversation and the block here is
+    `{"type": "image", "blob": "<sha256>", "media_type": "image/jpeg"}`.
+    The column is JSON, not JSONB, on purpose: JSONB reorders keys.
+    """
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq", name="uq_chat_messages_conversation_seq"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_conversations.id", ondelete="CASCADE"), index=True
+    )
+    seq: Mapped[int] = mapped_column()
+    role: Mapped[str] = mapped_column(String(10))  # user | assistant
+    content: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # What the operator typed and the page they were on, for showing the
+    # thread again; what Claude was sent is `content`.
+    text: Mapped[str | None] = mapped_column(Text, default=None)
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    usage: Mapped[dict[str, int] | None] = mapped_column(JSON, default=None)
+    cost_usd: Mapped[float | None] = mapped_column(Float, default=None)
+    stop_reason: Mapped[str | None] = mapped_column(String(30), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatToolCall(Base):
+    """A tool Claude asked for in a conversation, and what became of it.
+
+    `state` is one of six, and every row says which (there is no default:
+    a row that forgot would otherwise read as waiting for a yes):
+
+    - `running`: being run now, with no answer yet. An at-once call from
+      the moment Claude asks; a call that needed a yes from the moment the
+      yes is given. A row still `running` when no turn is, was interrupted.
+    - `ran`: run at once, and it answered.
+    - `pending`: waiting for the operator's yes or no (the tools that
+      change the catalogue or spend money). Never run.
+    - `approved`: the operator said yes, it was run, and it answered.
+    - `declined`: the operator said no, or wrote a new message instead of
+      answering. Never run.
+    - `failed`: Claude was told it did not work. That covers a tool that
+      was run and reported an error (at once or after a yes), a call that
+      was interrupted with its effect unknown, and a call that was never
+      run because Claude's answer was cut off before it was complete. So
+      `failed` does not mean "was run": `result` says which it was.
+
+    `decided_at` and `decided_by` are set by a yes or a no. `result` is
+    what Claude was told, plus the pictures the operator is shown.
+    """
+
+    __tablename__ = "chat_tool_calls"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_conversations.id", ondelete="CASCADE"), index=True
+    )
+    # The assistant turn that asked for it.
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(default=0)
+    tool_use_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(60))
+    input: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    needs_confirm: Mapped[bool] = mapped_column(Boolean, default=False)
+    # running | ran | pending | approved | declined | failed (see above)
+    state: Mapped[str] = mapped_column(String(12))
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    artifact_name: Mapped[str | None] = mapped_column(String(200), default=None)
+    artifact_path: Mapped[str | None] = mapped_column(String(1024), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+
+# --------------------------------------------------------------------------
+# Local AI models (framefound/local_models, docs/local-models.md)
+# --------------------------------------------------------------------------
+
+
+class LocalModel(Base):
+    """One build of a model from Hugging Face that was added to this install.
+
+    A build is a repository at one commit (and, where a repository holds
+    several, one variant of it), so the same model at a newer commit is a
+    second row. `repo_key` is the name casefolded: Hugging Face tells
+    capitals apart and neither the Mac's disk nor a network share does, so
+    two names that differ only in capitals must not become two folders that
+    are one.
+
+    `chain` is the model and everything it says it was built from, as read
+    when it was added. Approval is judged again from it each time the model
+    is used, so blocking a publisher today stops a model added last month.
+    `files` is exactly what is downloaded and checked, nothing else.
+
+    No path is stored: where the files are is worked out from the storage
+    settings each time, so moving the model library changes no row. Nothing
+    in the catalogue points here; what a model said is recorded beside the
+    result as text, so removing a model never touches a tag or a cut.
+    """
+
+    __tablename__ = "local_models"
+    __table_args__ = (
+        UniqueConstraint("repo_key", "revision", "variant", name="uq_local_models_build"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # `publisher/name`, as Hugging Face spells it.
+    repo_id: Mapped[str] = mapped_column(String(200))
+    repo_key: Mapped[str] = mapped_column(String(200))
+    # The commit every file is fetched at.
+    revision: Mapped[str] = mapped_column(String(64))
+    # Which build inside the repository; "" when the repository is one build.
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    publisher: Mapped[str] = mapped_column(String(100))
+    # [{"repo_id", "publisher", "bases", "found"}], this model first.
+    chain: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    licence: Mapped[str] = mapped_column(String(100), default="")
+    licence_name: Mapped[str] = mapped_column(String(200), default="")
+    licence_url: Mapped[str | None] = mapped_column(String(500), default=None)
+    # "" when anyone may download it; else how access is granted ("auto", ...).
+    gated: Mapped[str] = mapped_column(String(10), default="")
+    # The kind of program that runs it (local_models/kinds.py): mlx-vlm | demo
+    runtime: Mapped[str] = mapped_column(String(30))
+    # What it takes, as its page says: ["text", "image"].
+    takes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # [{"path", "size", "sha256", "blob_id"}]
+    files: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Worked out from the size of the weights until a real answer has been
+    # measured; then `measured_memory_gb` holds the highest figure ever
+    # seen, never the last one (a short test uses less than a long prompt).
+    memory_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    measured_memory_gb: Mapped[float | None] = mapped_column(Float, default=None)
+    # downloading | installed | incomplete
+    state: Mapped[str] = mapped_column(String(12), default="downloading")
+    # Why it is incomplete, as a sentence.
+    error: Mapped[str | None] = mapped_column(String(500), default=None)
+    # "mlx-vlm/0.7.12": the program and version it last loaded under, so a
+    # load that fails after an update can say which version to go back to.
+    last_loaded_with: Mapped[str | None] = mapped_column(String(60), default=None)
+    # When this build was published, for display.
+    hub_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    added_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LocalAiRole(Base):
+    """Which model does a job: one row for the Looker, one for the Editor.
+
+    `model_id` has the role. `pending_model_id` gets it once its files have
+    been copied to this machine and checked; until then the old model keeps
+    the role, so a share that drops half-way through a copy does not leave
+    the role with nobody. Two columns rather than one JSON value, so the
+    page changing one role and a finished copy completing the other cannot
+    overwrite each other.
+
+    A model that holds or is waiting for a role is not removed: that rule is
+    kept in code (local_models/registry.py), not left to these foreign keys.
+    """
+
+    __tablename__ = "local_ai_roles"
+
+    # looker | editor (local_models.ROLES)
+    role: Mapped[str] = mapped_column(String(20), primary_key=True)
+    model_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("local_models.id", ondelete="SET NULL"), default=None
+    )
+    pending_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("local_models.id", ondelete="SET NULL"), default=None
+    )
+    # When and by whom the model in `model_id` was given the role.
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+
+class LocalAiJob(Base):
+    """One piece of local-AI work: a download, a copy to this machine, a
+    runtime install, a test, and whatever later phases ask of a model.
+
+    The row is the job. The queue only carries a wake-up, so progress,
+    cancel, "waiting until 21:30" and "the worker died" all survive a tab
+    closing and a process restarting, and a message delivered twice finds
+    nothing left to do.
+
+    Two parties write a row: the runner (progress, by naming the columns it
+    writes) and the API (`cancel_requested`, and nothing else writes that).
+    Neither ever writes the whole row back from a copy read earlier, which
+    is how a Cancel pressed mid-progress would be lost.
+    """
+
+    __tablename__ = "local_ai_jobs"
+    __table_args__ = (Index("ix_local_ai_jobs_state", "state", "priority", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # download | place | runtime_install | test; later phases add kinds.
+    kind: Mapped[str] = mapped_column(String(30))
+    # What it is about, in words: "mlx-community/gemma-4-e4b-it-4bit@475b9088".
+    subject: Mapped[str] = mapped_column(String(300), default="")
+    model_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("local_models.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # The role a job asked by name, when it asked a role rather than a model.
+    role: Mapped[str | None] = mapped_column(String(20), default=None)
+    # Lower runs first: 0 somebody pressed a button and is watching,
+    # 5 asked for, 9 background.
+    priority: Mapped[int] = mapped_column(SmallInteger, default=5)
+    # queued | waiting | running | done | failed | cancelled
+    state: Mapped[str] = mapped_column(String(12), default="queued")
+    # For `waiting`: not before this moment.
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    phase: Mapped[str] = mapped_column(String(20), default="")
+    # Bytes for a transfer; items for a batch.
+    done: Mapped[int] = mapped_column(BigInteger, default=0)
+    total: Mapped[int] = mapped_column(BigInteger, default=0)
+    # The one line the row shows: why it waits, how it failed.
+    message: Mapped[str] = mapped_column(String(500), default="")
+    # The installer's or the runtime's last lines.
+    detail: Mapped[str | None] = mapped_column(Text, default=None)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    # What answered, for a job that asked a model. The same five names, as
+    # text, wherever an answer is recorded: a job row is history and may be
+    # pruned, and removing a model must not change what it once said.
+    model: Mapped[str | None] = mapped_column(String(200), default=None)
+    model_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+    runtime: Mapped[str | None] = mapped_column(String(30), default=None)
+    runtime_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    memory_gb: Mapped[float | None] = mapped_column(Float, default=None)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # The runner's heartbeat: a `running` row nobody has touched for a while
+    # belonged to a worker that died.
+    beat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+# --------------------------------------------------------------------------
+# Comparing local models on a fixed sample (framefound/local_models/
+# comparisons.py, docs/local-models.md "Comparing models")
+# --------------------------------------------------------------------------
+
+
+class Comparison(Base):
+    """A fixed sample of footage that installed models are asked about.
+
+    Everything a model is shown is frozen when the comparison is made: the
+    items (asset plus time span, never a shot-window id, which a re-analysis
+    deletes), the sentence each item's facts are told as, the vocabulary,
+    the pictures (files under `<data_dir>/compare/<id>/`) and the ground
+    truth — the tags a person had decided and the shots the counted cuts
+    used, as of `truth_at`. Truth read after a model has looked could be the
+    model's own suggestions confirmed, so it is never refreshed; "compare
+    again on the same sample" makes a new comparison instead.
+
+    Nothing a model says here reaches the catalogue. The owner's decision
+    (`verdict`) is a record; it changes no role by itself.
+    """
+
+    __tablename__ = "local_ai_comparisons"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
+    # folder | listing | cuts | comparison
+    source_kind: Mapped[str] = mapped_column(String(12))
+    # The request's `source` as asked, ids as text: a record, not a key.
+    source: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # The sample in words, as it read that day.
+    source_label: Mapped[str] = mapped_column(String(300), default="")
+    # shots | photos | both
+    what: Mapped[str] = mapped_column(String(8), default="both")
+    # Items actually in the sample.
+    size: Mapped[int] = mapped_column(default=0)
+    # Pictures per shot: 3 (start, middle, end) or 1 (the middle).
+    stills: Mapped[int] = mapped_column(SmallInteger, default=3)
+    # What drew the sample.
+    seed: Mapped[int] = mapped_column(BigInteger, default=0)
+    # The question's version (looking/prompt.py); an older one can be read,
+    # not added to.
+    prompt_version: Mapped[str] = mapped_column(String(40))
+    # [[name, count], ...] as every model is told it.
+    vocabulary: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # [{"id", "title", "source"}]: the cuts that define "used".
+    counted_cuts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # {"photos", "shots", "clips", "used", "unused", "footage_with_tags",
+    #  "yes", "no", "pool": {...}, "left_out": {...}}
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # When the ground truth was read.
+    truth_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # "" | chosen | none
+    verdict: Mapped[str] = mapped_column(String(8), default="")
+    # The chosen column. No foreign key: it would point both ways between
+    # this table and the columns' table; the code checks it.
+    verdict_entry_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    verdict_note: Mapped[str] = mapped_column(Text, default="")
+    verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    verdict_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class ComparisonItem(Base):
+    """One piece of the sample: a photograph, or a shot of a clip.
+
+    A shot is the clip plus `start_ms`/`end_ms`, because shot windows are
+    rebuilt by a re-analysis and their ids do not survive it. The facts,
+    the facts sentence and the truth are copies as they were that day.
+    `asset_id` is NULL once the file has left the catalogue (and may point
+    at nothing on SQLite, which does not enforce foreign keys); the item
+    and its frozen pictures stay. `position` also names the picture files
+    (`<position:04d>-<n>.jpg`); `picture_ms` says how many there are.
+    """
+
+    __tablename__ = "local_ai_comparison_items"
+    __table_args__ = (
+        UniqueConstraint("comparison_id", "position", name="uq_local_ai_comparison_items_position"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    comparison_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("local_ai_comparisons.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column()
+    # photo | shot
+    kind: Mapped[str] = mapped_column(String(8))
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # For display after the asset is gone.
+    library_name: Mapped[str] = mapped_column(String(200), default="")
+    relative_path: Mapped[str] = mapped_column(String(2048), default="")
+    filename: Mapped[str] = mapped_column(String(512), default="")
+    media_type: Mapped[str] = mapped_column(String(10), default="")
+    start_ms: Mapped[int | None] = mapped_column(default=None)
+    end_ms: Mapped[int | None] = mapped_column(default=None)
+    # sampling.window_facts as it was: for the page.
+    facts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Exactly what every model is told about this item ("" for a photograph).
+    facts_line: Mapped[str] = mapped_column(String(400), default="")
+    # The moment of each frozen picture.
+    picture_ms: Mapped[list[int]] = mapped_column(JSON, default=list)
+    # [{"slug", "name"}] decided on this asset as of the comparison's truth_at.
+    truth_yes: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
+    truth_no: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
+    # NULL: not a shot, or no cut history was counted.
+    used: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    # Titles of the counted cuts that used it.
+    used_in: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class ComparisonModel(Base):
+    """One model's column in a comparison, and the state of its turn.
+
+    The handler (and Cancel) write `state`; what the page shows is worked
+    out from this row and its job together, so a worker that died reads as
+    stopped rather than running for ever, and pruning job rows loses
+    nothing. Which build answered is kept as text (the provenance names
+    every table of answers uses); `model_id` is NULL once the model is
+    removed, and the column with its answers stays.
+
+    `variant` is part of what makes a build (as on `local_models`): two
+    builds of one repository at one commit — two quantisations of a GGUF
+    repository — are two columns, not "the same build twice".
+    """
+
+    __tablename__ = "local_ai_comparison_models"
+    __table_args__ = (
+        UniqueConstraint(
+            "comparison_id",
+            "model",
+            "model_revision",
+            "variant",
+            name="uq_local_ai_comparison_models_build",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    comparison_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("local_ai_comparisons.id", ondelete="CASCADE"), index=True
+    )
+    model_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("local_models.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # The repository and its pinned commit, as text.
+    model: Mapped[str] = mapped_column(String(200))
+    model_revision: Mapped[str] = mapped_column(String(64))
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    model_name: Mapped[str] = mapped_column(String(200), default="")
+    # Filled by the first answer.
+    runtime: Mapped[str | None] = mapped_column(String(30), default=None)
+    runtime_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    prompt_version: Mapped[str] = mapped_column(String(40))
+    # queued | running | waiting | done | stopped | failed
+    state: Mapped[str] = mapped_column(String(12), default="queued")
+    message: Mapped[str] = mapped_column(String(500), default="")
+    # The runtime's last lines, when a load failed.
+    detail: Mapped[str | None] = mapped_column(Text, default=None)
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # The job running it, or the last one. No foreign key: job rows may be
+    # pruned.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    # Answers stored: ok, not ok. Progress is these, not the job's counts.
+    done: Mapped[int] = mapped_column(default=0)
+    failed: Mapped[int] = mapped_column(default=0)
+    load_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    # this_machine | library
+    ran_from: Mapped[str | None] = mapped_column(String(14), default=None)
+    # The most any answer reported, and how it was measured (runtime | process).
+    memory_gb: Mapped[float | None] = mapped_column(Float, default=None)
+    memory_source: Mapped[str | None] = mapped_column(String(10), default=None)
+    added_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    # Also the order of the columns on the page.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class ComparisonAnswer(Base):
+    """What one model said about one item, or why it said nothing usable.
+
+    One row per column and item, committed as soon as it is had: "the items
+    with no answer row" is where a restart, a second delivery, a step aside
+    and Carry on all resume, and the unique key makes a doubled answer
+    impossible. Model text is untrusted and is only ever shown as text.
+    """
+
+    __tablename__ = "local_ai_comparison_answers"
+    __table_args__ = (
+        UniqueConstraint("entry_id", "item_id", name="uq_local_ai_comparison_answers_entry_item"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    entry_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("local_ai_comparison_models.id", ondelete="CASCADE"), index=True
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("local_ai_comparison_items.id", ondelete="CASCADE"), index=True
+    )
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    # bad_answer | died | timeout | runtime_error | no_picture
+    problem: Mapped[str | None] = mapped_column(String(20), default=None)
+    message: Mapped[str] = mapped_column(String(300), default="")
+    # [{"name", "slug", "confidence", "in_vocabulary"}], strongest first.
+    tags: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    caption: Mapped[str] = mapped_column(String(300), default="")
+    # 0-100
+    score: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    # What the model wrote, when worth keeping (a failure, a second try);
+    # at most 4,000 characters.
+    raw: Mapped[str | None] = mapped_column(Text, default=None)
+    seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    attempts: Mapped[int] = mapped_column(SmallInteger, default=1)
+    memory_gb: Mapped[float | None] = mapped_column(Float, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# --------------------------------------------------------------------------
+# Looking: a local model looking at the catalogue (framefound/looking,
+# docs/local-models.md "Looking")
+# --------------------------------------------------------------------------
+
+
+class LookRequest(Base):
+    """A review somebody asked for: a folder (and everything beneath it)
+    looked at by a local model, now or overnight.
+
+    The work itself is a `local_ai_jobs` row (plus one that makes clips
+    ready); this row is what was asked and how far it got, and it outlives
+    those jobs, which L1 may prune — hence no foreign key to them.
+
+    Three parties write a row: the look job (its counters, `state`,
+    `message`, the times), the make-ready job (`prep_*`) and the API
+    (`state` on cancel). Each writes by naming its columns in an UPDATE,
+    never by flushing a copy read earlier, which is how a Cancel pressed
+    mid-progress would be lost.
+    """
+
+    __tablename__ = "look_requests"
+    __table_args__ = (Index("ix_look_requests_state", "state", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    library_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("libraries.id", ondelete="CASCADE"), index=True
+    )
+    # Cleaned (media/folders.py); "" is the whole library. Always means
+    # "and everything beneath it".
+    folder: Mapped[str] = mapped_column(String(2048), default="")
+    # now | tonight. Tonight runs only inside the overnight window, however
+    # many nights that takes.
+    run_when: Mapped[str] = mapped_column(String(10), default="now")
+    # Look again at what another build or question already looked at.
+    redo: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Make clips ready (a playable copy, their shots) first.
+    prepare: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The model asked for; NULL = whoever is the Looker when it runs. No
+    # foreign key: nothing outside L1's own tables points at `local_models`.
+    model_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    model_name: Mapped[str] = mapped_column(String(200), default="")
+    # active | done | failed | cancelled
+    state: Mapped[str] = mapped_column(String(12), default="active")
+    # The closing sentence.
+    message: Mapped[str] = mapped_column(String(500), default="")
+    look_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    prepare_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    # Items: photographs and shots.
+    done: Mapped[int] = mapped_column(default=0)
+    total: Mapped[int] = mapped_column(default=0)
+    failed: Mapped[int] = mapped_column(default=0)
+    tags_suggested: Mapped[int] = mapped_column(default=0)
+    new_tags: Mapped[int] = mapped_column(default=0)
+    # Suggestions kept back (a tag's queue full, too many new tags).
+    held: Mapped[int] = mapped_column(default=0)
+    # Clips judged from one still because no playable copy could be made.
+    stills_only: Mapped[int] = mapped_column(default=0)
+    # Making clips ready: "" | running | done; counted in clips.
+    prep_state: Mapped[str] = mapped_column(String(10), default="")
+    prep_total: Mapped[int] = mapped_column(default=0)
+    prep_ready: Mapped[int] = mapped_column(default=0)
+    prep_gave_up: Mapped[int] = mapped_column(default=0)
+    prep_queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    prep_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class Look(Base):
+    """One attempt by a local model to look at a photograph or a shot.
+
+    The ledger of "looked at": a shot is keyed by its times on its asset,
+    never by a `shot_windows` id, because those rows are rebuilt on every
+    re-analysis and a caption kept on one would vanish while the asset still
+    said done. A failure is a row too (`ok` false, `note` the reason), which
+    is how one review never asks about the same bad file twice.
+
+    Which build answered is text (`model`, `model_revision`, `variant`,
+    `runtime`, `runtime_version`, `prompt_version`) with no foreign key to
+    `local_models`: removing a model must not change what it once said.
+    Nothing is pruned; an asset's looks go with the asset.
+    """
+
+    __tablename__ = "looks"
+    __table_args__ = (
+        Index("ix_looks_asset_span", "asset_id", "start_ms", "end_ms"),
+        Index("ix_looks_model_created", "model", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"))
+    # Both NULL: the whole item (a photograph). Otherwise the shot's times.
+    start_ms: Mapped[int | None] = mapped_column(default=None)
+    end_ms: Mapped[int | None] = mapped_column(default=None)
+    # False: tried and produced nothing usable.
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    # At most one current row per (asset_id, start_ms, end_ms); kept so by
+    # the one writer (looking/store.py).
+    current: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 0-100: how usable the model thought it.
+    score: Mapped[int | None] = mapped_column(SmallInteger, default=None)
+    caption: Mapped[str] = mapped_column(String(300), default="")
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    # The cleaned answer and what became of each tag; model text, shown
+    # only as text.
+    answer: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    # Why it failed.
+    note: Mapped[str] = mapped_column(String(200), default="")
+    # `<repo>@<revision>#<prompt version>`, or `<repo>@<revision>/<variant>#…`
+    # for a build that has a variant: "already looked at by this build and
+    # question" is a comparison of this, and two quantisations of one GGUF
+    # repository at one commit are two builds.
+    key: Mapped[str] = mapped_column(String(300), default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    model_revision: Mapped[str] = mapped_column(String(64), default="")
+    # Part of what makes a build (as on `local_models`); "" for a repository
+    # with one build.
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    runtime: Mapped[str] = mapped_column(String(30), default="")
+    runtime_version: Mapped[str] = mapped_column(String(40), default="")
+    prompt_version: Mapped[str] = mapped_column(String(40), default="")
+    seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    # Answered by the demo's made-up model; the page says so.
+    demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The review that asked; NULL = looking at what arrived (ingest).
+    request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("look_requests.id", ondelete="SET NULL"), default=None, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# --------------------------------------------------------------------------
+# Colour: a look per clip, exported as a LUT, and a local model's proposals
+# for a listing's photographs (media/clip_look.py, media/lut.py,
+# docs/video-looks.md)
+# --------------------------------------------------------------------------
+
+
+class ClipLook(Base):
+    """A colour look for one clip: what a local model suggested, and what a
+    person chose.
+
+    At most two rows per clip, one of each kind, and each has one writer:
+    `suggested` is written only by the `local_ai` lane's job and `chosen`
+    only by the API, so a suggestion arriving can never overwrite a choice
+    (nor the reverse), and nothing is ever chosen for anyone. Keyed on the
+    asset, never on a `shot_windows` id, which a re-analysis deletes.
+
+    `recipe` holds only what a LUT can carry (`lut.lut_recipe`); white
+    balance and levels are frozen in `measured` on the still at
+    `still_ts_ms`, which is why the same recipe can be written as the same
+    `.cube` file every time. The LUT itself is never stored. A chosen look
+    that came from the model copies the suggestion's provenance, so it stays
+    self-describing after the clip is suggested again.
+    """
+
+    __tablename__ = "clip_looks"
+    __table_args__ = (UniqueConstraint("asset_id", "kind", name="uq_clip_looks_asset_kind"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    # suggested | chosen. Indexed: the video look learns from every chosen row.
+    kind: Mapped[str] = mapped_column(String(10), index=True)
+    # Where the sliders came from: model | learned | none | custom. A
+    # suggested row is always `model`.
+    source: Mapped[str] = mapped_column(String(10), default="model")
+    # Cleaned, LUT-carried sliders only; {} is "as shot".
+    recipe: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # {"levels": ..., "wb_gains": ...} frozen on the reference still.
+    measured: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Slider keys a LUT could not carry, named rather than dropped in silence.
+    left_out: Mapped[list[str]] = mapped_column(JSON, default=list)
+    still_ts_ms: Mapped[int] = mapped_column(default=0)
+    # compare.features of that still: what the video look learns from.
+    features: Mapped[list[float]] = mapped_column(JSON, default=list)
+    # The model's one line; model text, shown only as text.
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    # Which build answered, as text (the provenance names every table of
+    # answers uses): removing a model must not change what it once said.
+    model: Mapped[str | None] = mapped_column(String(200), default=None)
+    model_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+    # Part of what makes a build (as on `local_models`): two quantisations of
+    # one GGUF repository at one commit. "" when none, or when no model answered.
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    runtime: Mapped[str | None] = mapped_column(String(30), default=None)
+    runtime_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    # Answered by the demo's made-up model; the page and the file say so.
+    demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Who chose (chosen rows).
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ListingEditSuggestion(Base):
+    """What a local model proposes for one photograph of a listing, until a
+    person applies or dismisses it.
+
+    Asking writes these rows and touches nothing else; Apply (the `local`
+    mode of auto-edit, which never talks to a model) reads the ticked ones
+    and writes edit versions exactly as the other modes do. One row per
+    listing item: asking again replaces it. The row is the provenance of
+    what Apply wrote, so `asset_edits` and `listing_items` are not altered.
+    """
+
+    __tablename__ = "listing_edit_suggestions"
+    __table_args__ = (UniqueConstraint("item_id", name="uq_listing_edit_suggestions_item_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE"), index=True
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("listing_items.id", ondelete="CASCADE"))
+    # Indexed: deleting an asset has to find its rows here, and without an
+    # index that is a scan of the table per asset on PostgreSQL.
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    # Straightening, cleaned (media/photo_judge.py).
+    rotate: Mapped[float] = mapped_column(Float, default=0.0)
+    keystone: Mapped[float] = mapped_column(Float, default=0.0)
+    sky_worth_replacing: Mapped[bool] = mapped_column(Boolean, default=False)
+    caption: Mapped[str] = mapped_column(String(300), default="")
+    slug: Mapped[str] = mapped_column(String(80), default="")
+    note: Mapped[str] = mapped_column(String(300), default="")
+    # proposed | applied | dismissed
+    state: Mapped[str] = mapped_column(String(12), default="proposed")
+    # The asset_edits.version Apply wrote.
+    applied_version: Mapped[int | None] = mapped_column(default=None)
+    model: Mapped[str | None] = mapped_column(String(200), default=None)
+    model_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+    # As on `clip_looks`: "" when the build has none.
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    runtime: Mapped[str | None] = mapped_column(String(30), default=None)
+    runtime_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+
+# --------------------------------------------------------------------------
+# Assembly: a local model drafting a rough cut (framefound/nle/drafts.py,
+# docs/cuts.md)
+# --------------------------------------------------------------------------
+
+
+class CutDraft(Base):
+    """A request to the Editor (a local model) for a rough cut, and how it went.
+
+    A draft that succeeded is an ordinary cut in `cuts` (`source` "local"),
+    written by the same function as Claude's; this row is the request. One
+    that waits for the overnight window, failed or was cancelled lives only
+    here, so no reader of `cuts` has to learn about states. Only the job
+    writes the state once the row is queued (`waiting` is never stored: it is
+    read off the job row).
+
+    The shots the Editor was offered are kept by clip and span, never by a
+    `shot_windows` id, which a re-analysis deletes. Model text (`answer_text`,
+    `problems`) is shown only as text.
+    """
+
+    __tablename__ = "cut_drafts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # queued | running | done | failed | cancelled
+    state: Mapped[str] = mapped_column(String(12), default="queued")
+    # Why it failed, in a sentence.
+    message: Mapped[str] = mapped_column(String(500), default="")
+    title: Mapped[str] = mapped_column(String(120), default="")
+    brief: Mapped[str] = mapped_column(Text, default="")
+    # The footage asked about (drafts.Scope) plus its `label` for the page.
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    target_s: Mapped[float] = mapped_column(Float, default=30.0)
+    min_shot_s: Mapped[float] = mapped_column(Float, default=1.5)
+    max_shot_s: Mapped[float] = mapped_column(Float, default=8.0)
+    exclude_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    # [{"n", "asset_id", "filename", "start_ms", "end_ms", "view", "line"}]
+    candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # For "62 of 480 shots, from 41 clips".
+    shots_in_scope: Mapped[int] = mapped_column(default=0)
+    clips: Mapped[int] = mapped_column(default=0)
+    # What the model wrote, cut to 20,000 characters.
+    answer_text: Mapped[str | None] = mapped_column(Text, default=None)
+    # The check's sentences: what was repaired or dropped.
+    problems: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # The cut it became; a deleted cut leaves the request.
+    cut_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("cuts.id", ondelete="SET NULL"), default=None, index=True
+    )
+    # "Draft again": the cut whose family gets the next version. History,
+    # so no foreign key.
+    revises_cut_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    # The local_ai_jobs row. No foreign key: job rows may be pruned.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
+    origin: Mapped[str] = mapped_column(String(10), default="web")  # web | chat
+    # Which build was asked, kept here too so a draft that failed still says
+    # which model failed.
+    model: Mapped[str | None] = mapped_column(String(200), default=None)
+    model_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+    variant: Mapped[str] = mapped_column(String(100), default="")
+    runtime: Mapped[str | None] = mapped_column(String(30), default=None)
+    runtime_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), default=None)
+    seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

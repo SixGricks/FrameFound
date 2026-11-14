@@ -5,9 +5,10 @@ Importing this package registers its Celery tasks.
 """
 
 from framefound.processing import (
+    local_ai_tasks,  # noqa: F401  (registers the local-AI lane's tick)
     tag_review_tasks,  # noqa: F401  (registers the Claude reviewer)
     tag_tasks,  # noqa: F401  (registers tag learning)
     tasks,  # noqa: F401
 )
 
-__all__ = ["tag_review_tasks", "tag_tasks", "tasks"]
+__all__ = ["local_ai_tasks", "tag_review_tasks", "tag_tasks", "tasks"]

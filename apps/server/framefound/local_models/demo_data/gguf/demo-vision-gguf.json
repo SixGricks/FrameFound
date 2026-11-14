@@ -1,0 +1,86 @@
+{
+  "framefound_note": "An invented model: no such repository exists. A maker publishing GGUF builds itself, so no converter is needed. The sizes are those L6 design 9.2 gives; every other value is a stand-in. Two projectors of one size, so the rule that picks F16 over BF16 is what decides; an imatrix file whose suffix is not .gguf.",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "id": "google/demo-vision-gguf",
+  "author": "google",
+  "sha": "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b",
+  "lastModified": "2026-10-01T00:00:00.000Z",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "gguf",
+    "image-text-to-text",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "license": "apache-2.0"
+  },
+  "config": {},
+  "gguf": {
+    "architecture": "demo_vision",
+    "context_length": 131072
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1655
+    },
+    {
+      "rfilename": "LICENSE",
+      "size": 11358
+    },
+    {
+      "rfilename": "README.md",
+      "size": 6120
+    },
+    {
+      "rfilename": "demo-vision-Q4_K_M.gguf",
+      "size": 2489757856,
+      "lfs": {
+        "sha256": "b2a3adf6292189cc799db9080975717d28b0d11ee6a4c1dc24717c07943f628c",
+        "size": 2489757856
+      }
+    },
+    {
+      "rfilename": "demo-vision-Q8_0.gguf",
+      "size": 4130226336,
+      "lfs": {
+        "sha256": "f18c3f5748dbcb9d8c25533b69248eed72bcc1ee3faffa476d8d6c5c751833be",
+        "size": 4130226336
+      }
+    },
+    {
+      "rfilename": "demo-vision-F16.gguf",
+      "size": 7767803424,
+      "lfs": {
+        "sha256": "ae2c77e7f16ac3c6aab63c04086066ec13d2c7c91ae87f26d4c439cabf92a16b",
+        "size": 7767803424
+      }
+    },
+    {
+      "rfilename": "imatrix.gguf_file",
+      "size": 4404224,
+      "lfs": {
+        "sha256": "4f6a6d6739b6cafb6aa31a8340623c974c3a5f23858cf137f07259e142613287",
+        "size": 4404224
+      }
+    },
+    {
+      "rfilename": "mmproj-demo-vision-BF16.gguf",
+      "size": 851251104,
+      "lfs": {
+        "sha256": "92b4606eb9e4bdda1b351fc2feb0880e052a9b28f1780d730fd1ceb409cfbab2",
+        "size": 851251104
+      }
+    },
+    {
+      "rfilename": "mmproj-demo-vision-F16.gguf",
+      "size": 851251104,
+      "lfs": {
+        "sha256": "2243b3513816fe61cb4e3e8e6cda854aa186c56f741cbcea07bdf1aa2f7b2dfe",
+        "size": 851251104
+      }
+    }
+  ]
+}

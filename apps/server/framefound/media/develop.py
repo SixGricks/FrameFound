@@ -12,6 +12,12 @@ property that matters: what the operator saw is what the zip contains. The
 adjustments are per-pixel and scale-free, so applying them after downscaling
 (cheap) renders the same image as before (expensive), with the one honest
 exception of auto-levels' percentiles, which differ immeasurably.
+
+The colour maths is `grade`; `measure` is what two of its steps (auto-levels,
+auto white balance) first read off a whole picture. `apply_recipe` is the two
+together on a photograph. They are kept apart so that something that is not
+a photograph — a table of colours on its way to becoming a LUT — goes
+through the very same arithmetic, with the readings taken from a still.
 """
 
 import contextlib
@@ -25,6 +31,33 @@ from PIL import Image
 
 # Rec. 709 luma weights — the standard answer to "how bright is this pixel".
 _LUMA = (0.2126, 0.7152, 0.0722)
+
+
+def _brightness(arr: Any, np: Any) -> Any:
+    """How bright each colour of a float32 (..., 3) array is: float32 (...).
+
+    Written out channel by channel, not as `arr @ _LUMA`. NumPy hands that
+    product to the machine's BLAS, and what a BLAS returns for one colour may
+    depend on where the colour sits in the array: OpenBLAS already gave a
+    picture exactly one pixel wide a different last place of the float than
+    the same colours in a wider one, and Apple's Accelerate (NumPy's BLAS on
+    a Mac) was never tried. A LUT is this engine run on a lattice of colours
+    and is promised to be the engine's own answer for each of them, so a
+    colour must get the same float in a table as in a photograph. Three
+    multiplies and two adds, element by element, cannot depend on position,
+    and are the same floats on every machine.
+
+    Same floats as the product it replaced wherever that was checked:
+    OpenBLAS's Nehalem, Sandy Bridge, Haswell and Zen kernels, 58 million
+    values each, on arrays two or more colours wide.
+    """
+    red, green, blue = np.asarray(_LUMA, dtype=np.float32)
+    # Added in place: on a 45 MP export each of these is 180 MB, and one at a
+    # time is enough.
+    luma = arr[..., 0] * red
+    luma += arr[..., 1] * green
+    luma += arr[..., 2] * blue
+    return luma
 
 
 def open_for_render(
@@ -265,6 +298,105 @@ def _keystone(image: Image.Image, amount: float) -> Image.Image:
     )
 
 
+# The sliders that need nothing but the pixel itself, and the two steps that
+# first read something off the whole picture. A colour table (a LUT) can carry
+# the first group as it stands and the second once measured on a still.
+# shadows is per-pixel when negative and reads the illumination map when positive.
+POINTWISE_KEYS: tuple[str, ...] = (
+    "exposure",
+    "temperature",
+    "tint",
+    "contrast",
+    "saturation",
+    "vibrance",
+)
+MEASURED_KEYS: tuple[str, ...] = ("auto", "auto_wb")
+# Where each measured step's reading is kept in the dict `measure` returns.
+_MEASURED_AS = {"auto": "levels", "auto_wb": "wb_gains"}
+
+
+def reads_neighbours(recipe: dict[str, Any]) -> list[str]:
+    """The keys of a cleaned recipe that need more than the pixel itself, in
+    the engine's order: shadows (when > 0), highlights, window_pull,
+    local_contrast."""
+    keys = []
+    if (recipe.get("shadows") or 0.0) > 0:
+        keys.append("shadows")
+    keys.extend(key for key in ("highlights", "window_pull", "local_contrast") if recipe.get(key))
+    return keys
+
+
+def measure(image: Image.Image, recipe: dict[str, Any]) -> dict[str, Any]:
+    """What the data-dependent steps read off this picture, frozen.
+
+    `{"levels": [[low, high], [low, high], [low, high]]}` when the recipe has
+    `auto`; `{"wb_gains": [r, g, b]}` when it has `auto_wb` — the gains as
+    applied (strength folded in), measured AFTER auto-levels, as the engine
+    applies them; `[1, 1, 1]` when the engine would leave the picture alone.
+    Empty when the recipe has neither.
+
+    Handing the result to `grade` on the same picture renders exactly what
+    measuring afresh would. Handing it to `grade` on anything else is the
+    point: a colour table, or another frame of the same clip, gets the
+    correction this picture called for. Plain floats: it goes into JSON.
+    """
+    recipe = clean_recipe(recipe)
+    measured: dict[str, Any] = {}
+    if not (recipe.get("auto") or recipe.get("auto_wb")):
+        return measured
+
+    import numpy as np
+
+    arr = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    if recipe.get("auto"):
+        measured["levels"] = _levels(arr, np)
+        _apply_levels(arr, measured["levels"])
+    if wb := recipe.get("auto_wb"):
+        measured["wb_gains"] = _wb_gains(arr, wb, np)
+    return measured
+
+
+def grade(
+    arr: Any,
+    recipe: dict[str, Any],
+    *,
+    measured: dict[str, Any] | None = None,
+    pointwise: bool = False,
+) -> Any:
+    """The colour maths. float32 (..., 3) in 0..1 in; clipped float32 out;
+    `arr` is not modified. `recipe` must already be cleaned.
+
+    `measured=None` measures `arr` itself (a picture: what `apply_recipe`
+    does). With `measured` (from `measure`), auto-levels and auto white
+    balance apply what was read off that other picture instead; a reading it
+    lacks is still taken from `arr`.
+
+    `pointwise=True` is for anything that is not a picture (a lattice of
+    colours on its way to becoming a LUT). It raises ValueError if the recipe
+    has a key from `reads_neighbours()`, or a MEASURED key with no entry in
+    `measured`: a lattice pushed through those steps would be white-balanced
+    and box-filtered as if it were a photograph, and the table that comes out
+    looks plausible and is wrong.
+    """
+    frozen = _frozen(measured)
+    if pointwise:
+        if spatial := reads_neighbours(recipe):
+            raise ValueError(
+                f"{', '.join(spatial)} read the pixels around each pixel, which only a picture has"
+            )
+        unmeasured = [
+            key for key in MEASURED_KEYS if recipe.get(key) and _MEASURED_AS[key] not in frozen
+        ]
+        if unmeasured:
+            raise ValueError(
+                f"{', '.join(unmeasured)} must be measured on a picture first (develop.measure)"
+            )
+
+    import numpy as np
+
+    return _grade(np.array(arr, dtype=np.float32), recipe, frozen, np)
+
+
 def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     """Render a recipe onto an image. The input image is not modified."""
     recipe = clean_recipe(recipe)
@@ -273,17 +405,59 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
 
     import numpy as np
 
-    arr = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    # Straight to the working copy: `grade` would copy a second time, which
+    # on a 45 MP export is half a gigabyte held for nothing.
+    arr = _grade(np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0, recipe, {}, np)
+    return Image.fromarray((arr * 255.0 + 0.5).astype("uint8"), "RGB")
 
+
+def _frozen(measured: dict[str, Any] | None) -> dict[str, Any]:
+    """`measured` as numbers the maths can trust, or ValueError.
+
+    It comes back out of a JSON column like a recipe does, and a reading of
+    the wrong shape would otherwise surface as a numpy broadcasting error or,
+    worse, as a tint nobody chose.
+    """
+    import math
+
+    if not measured:
+        return {}
+    levels, gains = measured.get("levels"), measured.get("wb_gains")
+    out: dict[str, Any] = {}
+    try:
+        # Python floats on purpose: numpy treats them as the array's own
+        # precision, which is what keeps a frozen reading bit-for-bit equal
+        # to a fresh one.
+        if levels is not None:
+            out["levels"] = [[float(low), float(high)] for low, high in levels]
+        if gains is not None:
+            out["wb_gains"] = [float(gain) for gain in gains]
+    except (TypeError, ValueError) as err:
+        raise ValueError("measured levels and wb_gains must be numbers") from err
+    pairs: list[list[float]] = out.get("levels", [])
+    scales: list[float] = out.get("wb_gains", [])
+    numbers = [*scales, *(value for pair in pairs for value in pair)]
+    if (
+        any(len(reading) != 3 for reading in out.values())
+        or not all(math.isfinite(value) for value in numbers)
+        or any(high <= low for low, high in pairs)
+        or any(gain <= 0 for gain in scales)
+    ):
+        raise ValueError("measured levels and wb_gains must be three channels each, in order")
+    return out
+
+
+def _grade(arr: Any, recipe: dict[str, Any], frozen: dict[str, Any], np: Any) -> Any:
+    """`grade` on an array the caller owns: it is worked on in place."""
     # Auto first: it establishes a sane base the manual sliders then shape,
     # so toggling it does not invert the meaning of the other adjustments.
     if recipe.get("auto"):
-        arr = _auto_levels(arr, np)
+        _apply_levels(arr, frozen.get("levels") or _levels(arr, np))
 
     # Auto white balance before the manual temperature/tint, so those stay
     # a creative nudge on top of a neutral base rather than fighting a cast.
     if wb := recipe.get("auto_wb"):
-        arr = _neutralise(arr, wb, np)
+        arr *= np.asarray(frozen.get("wb_gains") or _wb_gains(arr, wb, np), dtype=np.float32)
 
     if ev := recipe.get("exposure"):
         arr *= 2.0**ev
@@ -309,8 +483,13 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     shadows, highlights = recipe.get("shadows"), recipe.get("highlights")
     pull = recipe.get("window_pull")
     if shadows or highlights or pull:
-        luma = np.clip(arr @ np.asarray(_LUMA, dtype=np.float32), 1e-4, 1.0)
-        illum = np.clip(_illumination(luma, np), 1e-4, 1.0)
+        luma = np.clip(_brightness(arr, np), 1e-4, 1.0)
+        # Darkening the shadows (negative) is per-pixel and never reads the
+        # map, so it is not built for it: that is what lets a lattice, which
+        # has no rows and columns to filter over, take that slider.
+        illum: Any = None
+        if (shadows and shadows > 0) or highlights or pull:
+            illum = np.clip(_illumination(luma, np), 1e-4, 1.0)
         if shadows and shadows > 0:
             # Even the lighting: raise regions the ROOM lights dimly toward
             # a mid target, leaving intrinsically dark objects their depth
@@ -336,7 +515,7 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     if punch := recipe.get("local_contrast"):
         from PIL import ImageFilter
 
-        luma = np.clip(arr @ np.asarray(_LUMA, dtype=np.float32), 1e-4, 1.0)
+        luma = np.clip(_brightness(arr, np), 1e-4, 1.0)
         blur_img = Image.fromarray((luma * 255.0).astype("uint8"), "L")
         radius = max(4.0, arr.shape[0] / 16.0)
         blurred = (
@@ -350,7 +529,7 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
 
     vibrance, saturation = recipe.get("vibrance"), recipe.get("saturation")
     if vibrance or saturation:
-        luma = (arr @ np.asarray(_LUMA, dtype=np.float32))[..., None]
+        luma = (_brightness(arr, np))[..., None]
         if saturation:
             arr = luma + (arr - luma) * (1.0 + saturation)
         if vibrance:
@@ -361,8 +540,7 @@ def apply_recipe(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
             factor = 1.0 + vibrance * np.clip(1.0 - 2.0 * chroma, 0.0, 1.0)
             arr = luma + (arr - luma) * factor[..., None]
 
-    arr = np.clip(arr, 0.0, 1.0)
-    return Image.fromarray((arr * 255.0 + 0.5).astype("uint8"), "RGB")
+    return np.clip(arr, 0.0, 1.0)
 
 
 # A warm camera-JPEG interior wall sits near 0.3 saturation; grass, red brick
@@ -372,8 +550,9 @@ NEUTRAL_MAX_SATURATION = 0.42
 NEUTRAL_MIN_FRACTION = 0.02
 
 
-def _neutralise(arr: Any, strength: float, np: Any) -> Any:
-    """Remove the measured colour cast, by strength.
+def _wb_gains(arr: Any, strength: float, np: Any) -> list[float]:
+    """The channel gains that remove the measured colour cast, by strength.
+    `[1.0, 1.0, 1.0]` when there is nothing to correct; multiply to apply.
 
     The cast is measured on the mid-to-bright band (40th–95th luminance
     percentile) — in an interior that band is walls and ceilings, the
@@ -390,35 +569,45 @@ def _neutralise(arr: Any, strength: float, np: Any) -> Any:
     bake-off, Sep 2026). A photograph with almost nothing neutral in it is
     left as it is: there is nothing to measure a cast against.
     """
-    luma = arr @ np.asarray(_LUMA, dtype=np.float32)
+    luma = _brightness(arr, np)
     low, high = np.percentile(luma, (40.0, 95.0))
     brightest = arr.max(axis=-1)
     saturation = (brightest - arr.min(axis=-1)) / np.maximum(brightest, 1e-4)
     band = (luma >= low) & (luma <= high) & (saturation <= NEUTRAL_MAX_SATURATION)
     if band.sum() < NEUTRAL_MIN_FRACTION * luma.size:
-        return arr
+        return [1.0, 1.0, 1.0]
     means = arr[band].reshape(-1, 3).mean(axis=0)
     target = float(means.mean())
     if target <= 1e-4:
-        return arr
+        return [1.0, 1.0, 1.0]
     gains = np.clip(target / np.maximum(means, 1e-4), 0.7, 1.4)
     applied = 1.0 + (gains - 1.0) * strength
-    return arr * applied[None, None, :]
+    # float32 values as Python floats: exact, so the same three numbers come
+    # back whether they went through JSON or straight into the multiply.
+    return [float(gain) for gain in applied]
 
 
-def _auto_levels(arr: Any, np: Any) -> Any:
-    """Gentle per-channel stretch: put the 0.5th percentile near black and
+def _levels(arr: Any, np: Any) -> list[list[float]]:
+    """Where auto-levels puts black and white, per channel: `[low, high]`.
+
+    Gentle per-channel stretch: put the 0.5th percentile near black and
     the 99.5th near white, per channel, which both opens up a flat exposure
     and pulls out most colour casts. Gains are bounded so a photograph that
-    is genuinely all one tone (a wall, a sky) is nudged, not shredded."""
-    out = arr.copy()
+    is genuinely all one tone (a wall, a sky) is nudged, not shredded. A
+    channel left alone reads `[0.0, 1.0]`, which divides out exactly."""
+    levels: list[list[float]] = []
     for channel in range(3):
-        low, high = np.percentile(out[..., channel], (0.5, 99.5))
+        low, high = np.percentile(arr[..., channel], (0.5, 99.5))
         low = min(float(low), 0.25)
         high = max(float(high), 0.75)
-        if high - low > 1e-3:
-            out[..., channel] = (out[..., channel] - low) / (high - low)
-    return out
+        levels.append([low, high] if high - low > 1e-3 else [0.0, 1.0])
+    return levels
+
+
+def _apply_levels(arr: Any, levels: list[list[float]]) -> None:
+    """Stretch each channel of `arr` between its two levels, in place."""
+    for channel, (low, high) in enumerate(levels):
+        arr[..., channel] = (arr[..., channel] - low) / (high - low)
 
 
 # The listing preset: the deterministic auto-edit used when no AI key is

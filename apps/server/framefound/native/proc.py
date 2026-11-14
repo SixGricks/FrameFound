@@ -55,6 +55,42 @@ def run(
     return done
 
 
+def spawn(
+    argv: Sequence[str | Path],
+    *,
+    env: Mapping[str, str],
+    cwd: Path | None = None,
+    stdout: IO[Any] | int | None = None,
+    stderr: IO[Any] | int | None = None,
+) -> subprocess.Popen[bytes]:
+    """Start `argv` and return at once; the caller waits, stops and reads it.
+
+    `env` is required and is the child's WHOLE environment: nothing of this
+    process's own is added. The one caller is the model server, which runs
+    with framefound.env loaded (database and queue passwords, the sealing
+    key); a default of "inherit" would hand all of it to a program running a
+    model somebody else made. Build `env` with `kinds.child_env`.
+
+    The child reads nothing from a terminal, and stays in this process's
+    group, so launchd stopping the service takes the child with it.
+    """
+    words = [str(word) for word in argv]
+    if cwd is not None and not cwd.is_dir():
+        raise CommandFailed(f"{cwd} is not a folder, so {words[0]} could not be started")
+    try:
+        return subprocess.Popen(  # noqa: S603 - argv list, no shell
+            words,
+            env=dict(env),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            close_fds=True,
+        )
+    except FileNotFoundError as err:
+        raise CommandFailed(f"{words[0]} is not installed or not on PATH") from err
+
+
 def port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):

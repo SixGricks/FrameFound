@@ -1,0 +1,63 @@
+{
+  "framefound_note": "Recorded from huggingface.co on 2026-11-12 (L1 design 9.2): id, author, and that its card names no base model. Stand-ins, not read from the site: everything else.",
+  "id": "google/gemma-4-12B-it",
+  "author": "google",
+  "sha": "3333333333333333333333333333333333333333",
+  "lastModified": "2026-06-30T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "transformers",
+  "pipeline_tag": "text-generation",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "gemma4",
+    "text-generation",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "license": "apache-2.0"
+  },
+  "config": {
+    "model_type": "gemma4"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 21034
+    },
+    {
+      "rfilename": "config.json",
+      "size": 3980
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors",
+      "size": 12884901888,
+      "lfs": {
+        "sha256": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "size": 12884901888
+      }
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors",
+      "size": 11274289152,
+      "lfs": {
+        "sha256": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+        "size": 11274289152
+      }
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 32169626,
+      "lfs": {
+        "sha256": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+        "size": 32169626
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 2740
+    }
+  ]
+}

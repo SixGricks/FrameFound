@@ -1,0 +1,75 @@
+{
+  "framefound_note": "An invented repository with real sizes. Recorded from huggingface.co on 2026-11-12 (L6 design G1, G2) in a third party's GGUF build of a model by nvidia: the commit, the six files' sizes and the shape of the page (no library_name, no pipeline_tag, config {}, a gguf object, cardData.base_model as a list). Stand-ins: the publisher and every name, the checksums, the date, the gguf object's architecture and chat_template.",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "id": "example-gguf/demo-omni-30b-GGUF",
+  "author": "example-gguf",
+  "sha": "49a5b1ae335e30e775d4eb03f822b52a63ea4271",
+  "lastModified": "2026-11-03T00:00:00.000Z",
+  "tags": [
+    "gguf",
+    "base_model:nvidia/demo-omni-30b",
+    "base_model:quantized:nvidia/demo-omni-30b",
+    "license:other"
+  ],
+  "cardData": {
+    "base_model": [
+      "nvidia/demo-omni-30b"
+    ],
+    "license": "other",
+    "license_name": "nvidia-open-model-agreement"
+  },
+  "config": {},
+  "gguf": {
+    "total": 31577940288,
+    "architecture": "demo_omni_moe",
+    "context_length": 262144,
+    "chat_template": "{% for message in messages %}{{ message.content }}{% endfor %}",
+    "bos_token": "<s>",
+    "eos_token": "</s>",
+    "totalFileSize": 24515129536
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 2582
+    },
+    {
+      "rfilename": "demo-omni-30b-Q4_K_M.gguf",
+      "size": 24515129536,
+      "lfs": {
+        "sha256": "94c61de1e7e13d9a77470a993ea5416c56293b546afa19777786cd1f96fb34ab",
+        "size": 24515129536
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-Q6_K.gguf",
+      "size": 33508166848,
+      "lfs": {
+        "sha256": "56da0fc87592a9b711e5f354e2d198ad5c1a9a073c82e4d529240c304d9a1874",
+        "size": 33508166848
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-Q8_0.gguf",
+      "size": 33585495232,
+      "lfs": {
+        "sha256": "fa913fe3458a8895b1204650988d6f9dea94a88a3f5cc9256315b0912df1a4b8",
+        "size": 33585495232
+      }
+    },
+    {
+      "rfilename": "README.md",
+      "size": 2324
+    },
+    {
+      "rfilename": "mmproj-demo-omni-30b-BF16.gguf",
+      "size": 1589506176,
+      "lfs": {
+        "sha256": "805d2cac9f74fdbbd0acce9f9174db442309fc502b7bf895870812c1bd310598",
+        "size": 1589506176
+      }
+    }
+  ]
+}

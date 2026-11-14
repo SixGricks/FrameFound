@@ -15,7 +15,12 @@ fast work never waits behind slow work.
     worker-media   proxies, frame sampling, motion, exports and renders
     worker-vision  CLIP embeddings, faces
     worker-ai      transcription (one at a time)
-    backup         hourly check; a new archive when the newest is a day old
+    model-server   local AI: loads a model when asked, unloads it when idle;
+                   the runtime that answers is its child, never a service
+    worker-local-ai  local AI's work: downloads, copies, installs, tests and
+                   later every question to a model (one at a time, last in
+                   line for the CPU)
+    backup        hourly check; a new archive when the newest is a day old
 
 launchd runs `python -m framefound.native run <service>`, never the program
 itself: the launcher reads framefound.env first, so no password is ever
@@ -33,6 +38,15 @@ LABEL_PREFIX = "com.framefound."
 
 # Homebrew is not on launchd's PATH; Apple silicon first, Intel second.
 BASE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# The locale every service is started with, and the one the database cluster
+# is created with (database.initialise), so the two cannot drift apart.
+# launchd gives an agent no LANG or LC_ALL at all, and without one Postgres
+# will not start in the background: on the first real install it logged
+# "postmaster became multithreaded during startup" every 15 seconds, while
+# the same command worked from a Terminal, which sets LANG itself. macOS
+# always has this locale.
+LOCALE = "en_US.UTF-8"
 
 
 @dataclass(frozen=True)
@@ -75,6 +89,17 @@ SERVICES: tuple[Service, ...] = (
         "worker-vision", "embeddings and faces", nice=10, exit_timeout_s=120, waits_for=DB_AND_QUEUE
     ),
     Service("worker-ai", "transcription", nice=10, exit_timeout_s=600, waits_for=DB_AND_QUEUE),
+    # Needs no database and is healthy with nothing installed, so it waits
+    # for nothing. 40 s: uvicorn gives a request in hand 5 s, then the
+    # supervisor gives the runtime 20 s to stop and 5 s more to die; at 30
+    # launchd's SIGKILL would land on the last of those.
+    Service("model-server", "local AI model server", nice=10, exit_timeout_s=40),
+    # The highest nice of any service, so it is the first to give way to
+    # Adobe. 120 s: a restart must not wait an hour for a download to end;
+    # the job then reads "stopped — start it again", and Resume carries on.
+    Service(
+        "worker-local-ai", "local AI models", nice=15, exit_timeout_s=120, waits_for=DB_AND_QUEUE
+    ),
     Service("backup", "nightly backup", nice=10, waits_for=DB, every_s=3600),
 )
 
@@ -82,7 +107,9 @@ SERVICES: tuple[Service, ...] = (
 # database's clients are gone before it is asked to shut down.
 BY_NAME = {service.name: service for service in SERVICES}
 # What reads framefound.env's application settings, and so needs a restart
-# when one changes (a new proxy store, say).
+# when one changes (a new proxy store, say). The model server is one of
+# them: a restart unloads its model, which is loaded again on the next
+# request.
 APP_SERVICES = tuple(
     s.name for s in SERVICES if s.name not in ("postgres", "valkey", "web", "caddy", "backup")
 )
@@ -95,6 +122,10 @@ LANES: dict[str, tuple[str, str | None, int]] = {
     # Two Whisper models resident is the profile that got this lane killed
     # on the old server; one at a time is a rule, not a setting.
     "worker-ai": ("transcribe", None, 1),
+    # One local-AI job at a time is a rule too: one model is loaded at a
+    # time, and a second job would swap a model in under a running batch.
+    # Nothing else consumes this queue, here or on a remote worker.
+    "worker-local-ai": ("local_ai", None, 1),
 }
 
 # Sized for a 32 GB Mac that is also running Adobe: enough that pgvector
@@ -224,6 +255,29 @@ def launch(name: str, layout: Layout, env: dict[str, str]) -> Launch:
             ],
             server,
         )
+    if name == "model-server":
+        return Launch(
+            [
+                str(bin_ / "uvicorn"),
+                "framefound.local_models.server:create_app",
+                "--factory",
+                # Never beyond this machine: a model answers anyone who can
+                # reach it, and its port is not behind Caddy's rules.
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port(env, "FRAMEFOUND_MODEL_SERVER_PORT")),
+                # The server refuses anything not from loopback by the
+                # connection's own address; a forwarded header must not
+                # stand in for it.
+                "--no-proxy-headers",
+                # A generation in hand can take minutes. Stopping waits 5 s
+                # for it, then the supervisor stops the runtime.
+                "--timeout-graceful-shutdown",
+                "5",
+            ],
+            server,
+        )
     if name == "backup":
         return Launch([str(layout.python), "-m", "framefound.native", "backup", "--if-due"], server)
     raise KeyError(f"unknown service {name!r}")
@@ -243,6 +297,10 @@ def process_environment(layout: Layout, env: dict[str, str]) -> dict[str, str]:
         # Runtime and CoreML both trigger — unless this is set.
         "OBJC_DISABLE_INITIALIZE_FORK_SAFETY": "YES",
         "NEXT_TELEMETRY_DISABLED": "1",
+        # Both: LC_ALL is the one that settles it whatever else is set, LANG
+        # is the one programs that read the environment themselves look at.
+        "LC_ALL": LOCALE,
+        "LANG": LOCALE,
     }
 
 

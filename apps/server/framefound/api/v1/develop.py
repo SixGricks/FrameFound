@@ -667,6 +667,11 @@ class AiEditSettingsOut(BaseModel):
     review_model: str = ""
     review_auto: bool = False
     review_batch: int = 40
+    # The chat panel (docs/chat.md): the model a new conversation starts
+    # on, and the ones it may be set to. Only priced models are offered:
+    # one the price table does not know would spend outside the budget.
+    chat_model: str = ""
+    chat_models: list[str] = []
 
 
 class AiEditSettingsIn(BaseModel):
@@ -678,10 +683,12 @@ class AiEditSettingsIn(BaseModel):
     review_model: str | None = Field(default=None, min_length=1, max_length=100)
     review_auto: bool | None = None
     review_batch: int | None = Field(default=None, ge=1, le=500)
+    chat_model: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 async def _ai_settings_out(db: DbDep, settings: SettingsDep) -> AiEditSettingsOut:
     from framefound.ai import spend
+    from framefound.chat import engine as chat
     from framefound.media import looks
     from framefound.media.maps_store import load_ai_edit_config
 
@@ -696,6 +703,8 @@ async def _ai_settings_out(db: DbDep, settings: SettingsDep) -> AiEditSettingsOu
         review_model=config.review_model or config.model,
         review_auto=config.review_auto,
         review_batch=config.review_batch,
+        chat_model=chat.model_for(config),
+        chat_models=chat.models(),
     )
 
 
@@ -708,9 +717,26 @@ async def ai_settings(_user: CurrentUser, db: DbDep, settings: SettingsDep) -> A
 async def update_ai_settings(
     body: AiEditSettingsIn, _user: CurrentUser, db: DbDep, settings: SettingsDep
 ) -> AiEditSettingsOut:
+    from framefound.chat import engine as chat
     from framefound.media.maps_store import load_ai_edit_config, save_ai_edit_config
 
     config = await load_ai_edit_config(db)
+    if body.chat_model is not None:
+        # Before anything is changed: a refusal must not half-apply the
+        # rest of the form.
+        chosen = body.chat_model.strip()
+        why_not = chat.why_not(chosen)
+        if why_not is not None:
+            # The reason is the engine's: "no price" is true of an unknown
+            # model and untrue of a priced one that takes another request.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"The chat panel cannot use {chosen}: {why_not}. "
+                    "Choose one of: " + ", ".join(chat.models()) + "."
+                ),
+            )
+        config.chat_model = chosen
     if body.api_key is not None:
         config.with_api_key(body.api_key.strip())
     if body.enabled is not None:
@@ -731,5 +757,6 @@ async def update_ai_settings(
         configured=bool(config.api_key_sealed),
         budget_usd=config.monthly_budget_usd,
         review_auto=config.review_auto,
+        chat_model=config.chat_model,
     )
     return await _ai_settings_out(db, settings)

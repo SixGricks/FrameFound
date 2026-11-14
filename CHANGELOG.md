@@ -6,6 +6,154 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (2026-11-14) — local AI models, the Claude chat panel, bulk storage on the NAS
+Nothing below has run with a real model, on a Mac, or against the real
+Claude API; model answers in the tests come from a stand-in
+(docs/local-models.md).
+- **Bulk storage, a folder per kind** (docs/storage.md): proxies, renders,
+  exports, basemaps, backup copies and the model library each live in a
+  subfolder of one bulk folder, or anywhere of their own. A **Storage**
+  page and `framefound storage` / `framefound storage move <kind> <folder>`
+  move one kind at a time (copy, check, switch; never a delete), with
+  Remove old copies and **Make the missing proxies again**
+  (`POST /storage/proxies/rebuild`). `framefound install --store <folder>`,
+  `FRAMEFOUND_BULK_DIR`.
+- **Chat panel with Claude** (docs/chat.md): **Ask Claude** on every page;
+  the connector's tools run on the server as the signed-in user, with the
+  page's context; streaming turns; tag decisions, paid reviews and folder
+  reviews ask first (`chat.tool_approved` / `chat.tool_declined` in the
+  audit log); **Stop**; the monthly budget checked before every request
+  (ledger purpose `chat`); pictures on by default with a per-conversation
+  switch; **Chat model** on Security. `/api/v1/chat`, migration 0031.
+  Panel-only tools `local_cut_draft` and `start_folder_review`; the
+  external connector does not gain them.
+- **AI models page** (Manage → AI models, Mac install; docs/mac.md, ADR-0023):
+  check a Hugging Face model before downloading (publisher, source,
+  licence, files, size, memory, runtime), download, resume, remove; the
+  **Looker** and **Editor** roles, copied to this Mac first when the
+  library is on a share; **Test**; the software that runs models (MLX-VLM,
+  then llama.cpp) installed, updated and rolled back from the page; day and
+  overnight memory budgets, the overnight window, Pause, Unload now; makers,
+  converters and blocked publisher lists (44 blocked built in); a sealed
+  Hugging Face token; recent activity. `/api/v1/local-models`, migration
+  0032. New Mac services `model-server` and `worker-local-ai` (queue
+  `local_ai`); `FRAMEFOUND_RUNTIMES_DIR`; `framefound doctor` local-AI lines.
+- **Compare** (AI models › Compare models; ADR-0024): a frozen sample from
+  finished cuts' shots, a folder, a listing or an earlier comparison; one
+  `compare_model` job per model; answers side by side with agreement
+  against decided tags and used shots given as counts; the owner's
+  decision and an optional "Make it the Looker". Nothing reaches the
+  catalogue. `/api/v1/local-models/compare`, migration 0033.
+- **Looking** (docs/local-models.md): **Review with AI** on a folder or
+  library, Start now or Tonight, clips made ready first, Cancel keeps what
+  was looked at; a per-library "Look at new footage with AI" switch; tag
+  suggestions of origin `local` with the moment in the clip; a caption and
+  0–100 score per photograph and shot. Browse gains a **Folders** view and
+  a viewer; reviews show on Processing; an item's page shows what the
+  model saw and a clip's page lists its **Shots**. Search ranks by the
+  score (±10% at most) and matches "AI caption"; listing culling and
+  `find_shots` (`min_score`, `order="score"`) use it. `/api/v1/looks`,
+  `GET /assets/{id}/shots`, migration 0034.
+- **Colour** (docs/video-looks.md): a **Look card** on each clip (the
+  model's suggestion, the learned look, no change), Suggest a look for a
+  clip or a folder, Adjust with eight sliders, a `.cube` LUT (33 or 65
+  points) or a folder's as one zip; on a listing, **Ask the local model**
+  for straightening, sky, caption and file name, applied with auto-edit
+  mode `local`. `/api/v1/clip-looks`, `/listings/{id}/local-edit`,
+  migration 0035.
+- **Rough cuts from the local Editor**: a **Cuts** page (`/cuts`, one line
+  per family of versions) and a page per cut with its shots, Compare of
+  two versions, Download for Premiere for any path profile, Draft again,
+  Delete this version and Ask Claude to review. **Draft a cut** from the
+  Cuts form, Search's ticked clips, a clip's page or a folder in Browse.
+  `build_rough_cut` takes `parent` to keep a revision beside the cut.
+  `/api/v1/cuts`, job `draft_cut`, migration 0036 (versions, provenance,
+  `sent_at`, piece notes, `cut_drafts`).
+- **llama.cpp** as a second runtime for GGUF builds, from GitHub's pinned,
+  checksummed release archive, by version or daily build; the Check lists
+  a repository's builds and suggests one; a model on llama.cpp not yet
+  compared asks "Make it the Looker anyway?" before a role.
+- `framefound update` backs up the catalogue first and stops if the backup
+  fails; `framefound update --skip-backup`.
+- `framefound doctor`: `locale` and `rsync` lines.
+- `GET /cuts` pages with `offset` and `more`.
+- Demo mode for review on any machine (`FRAMEFOUND_LOCAL_AI_DEMO=1`, made-up
+  answers, ignored on a real install) and a dev seed for every new page
+  (`seed_dev.py`, `--local-ai-only`).
+- Docs: docs/chat.md, docs/local-models.md (now the guide as built),
+  docs/video-looks.md, ADR-0023, ADR-0024; docs/mac.md gains Updating,
+  Bulk storage and Local AI models.
+
+### Changed (2026-11-14)
+- `framefound ops shots backfill` with no `--library` does every library
+  in turn.
+- The viewer from Tags (← →, Y / N, Esc) is the one viewer on People,
+  listings and slideshows too; People opens a clip at the moment the face
+  appears.
+- Every page has its own browser-tab title instead of plain "FrameFound".
+- The shot search, cut history and rough-cut writer moved out of the
+  connector into `framefound/nle/`, so `ops.shots import-cut` and the
+  Cuts API work without the `mcp` extra; connector answers are unchanged.
+- An update git refuses ends with a plain message naming the files edited
+  on this Mac, instead of `git failed (exit 1)`; an edit is never discarded.
+- Answering a tag suggestion and Re-learn no longer wait on the queue.
+- Storage lists the model library like any other kind (no longer
+  "Reserved"); Basemaps says where its maps are kept.
+- The Manage menu works from the keyboard.
+
+### Fixed (2026-11-14)
+- **Mac install:** Homebrew's rsync is installed beside macOS's older one;
+  the `framefound` command is in place before the database and services
+  start; every service starts with `LC_ALL`/`LANG` `en_US.UTF-8`, so
+  Postgres starts as a background service.
+- A nightly backup whose copy to the NAS fails (full or dropped share) is
+  kept on the Mac and says so, instead of failing.
+- A folder review could ask about the same clip again and again and never
+  finish ("20 of 8") when a clip had shots on record but no ready
+  shot-analysis file. Such a clip is made ready like any other, and if it
+  never becomes ready it is looked at shot by shot from the shots on
+  record. A review never asks the same model about an item twice and its
+  count never passes its total; an answer that did not count shows as
+  "could not be looked at" with a plain sentence, and the answer and its
+  tag suggestions are kept.
+- Applying a listing's local edits leaves out a photograph whose
+  suggestion was made again after you looked, and says how many.
+- The Draft a cut folder picker counts clips in sub-folders; a draft from
+  footage holding more than 20,000 shots is refused in plain words, from
+  the page and the chat panel alike.
+- Sampled search frames are written whole or not at all.
+- Send to Premiere from a search result found by its AI caption starts at
+  the matching shot, instead of at 0 s.
+- `ops.shots backfill --inline` drops a shot's old AI look when the shot's
+  boundaries change, and no longer stops after one clip fails.
+- The model server refuses a model whose llama.cpp program was deleted with
+  a sentence, instead of an internal error; Compare holds back a model
+  whose software is not installed.
+- A model download that drops reports the amount actually kept.
+- Slideshows: Render while the queue is down no longer leaves a slideshow
+  stuck at "queued", and a finished video stays playable.
+- A clip's page says why a clip will not play instead of showing a dead
+  player; Develop on a phone puts the photograph above the sliders.
+- Listings: Add photos › Search finds photos by tags and captions, not
+  only file names; a quick local Apply says when it has finished.
+- Tailscale on a Mac: the Security card reads the Tailscale app's real
+  state and shows the Mac app's steps.
+- Review with AI says what was already looked at by kind ("6 photographs
+  and 2 clips (6 shots)") instead of a count like "12 items" for 8 files,
+  and its progress names its unit ("4 of 4 photographs and shots").
+- Counts read as English ("1 person", "1 tag").
+- A folder review whose model could never run as things stood (a
+  llama.cpp model before llama.cpp is installed) crashed while ending
+  itself and stayed "active" for ever; it now ends "failed" with the
+  reason at once. Review with AI and the chat panel now refuse such a
+  model up front (409), as Compare does, and the dialog shows it as not
+  available with a link to Software that runs models.
+- Review with AI: after a review ends, "See what is left here" no longer
+  keeps the old "Also look again at …" sentence; a count left by an older
+  build is never shown as "N of M" with N past M.
+- A clip that cannot play here: its shot buttons no longer say "Play",
+  and the Look card no longer mentions a player that is not there.
+
 ### Added (2026-11-11) — FrameFound as a program on a Mac
 - **Native macOS install** (docs/mac.md, ADR-0022):
   `infrastructure/mac/install.sh` and the `framefound` command

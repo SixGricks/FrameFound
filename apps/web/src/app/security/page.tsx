@@ -29,6 +29,8 @@ import { copyText } from "@/lib/clipboard";
 import { relativeTime } from "@/lib/format";
 import { usePageTitle } from "@/lib/hooks";
 
+import { holdInView, jumpTo } from "./jump";
+
 const MODES = [
   {
     id: "local",
@@ -181,6 +183,27 @@ export default function SecurityPage() {
   useEffect(() => {
     load().catch((e) => setError(e.message));
   }, [load]);
+
+  // A link to a section (/security#services, from the chat panel or
+  // anywhere else) arrives before the sections exist: the page is
+  // "Loading…" until its data is here. So the page goes there itself once
+  // they are drawn, and again whenever the hash changes on this page.
+  const drawn = remote !== null && user !== null;
+  useEffect(() => {
+    if (!drawn) return;
+    let release: () => void = () => undefined;
+    const go = () => {
+      release();
+      const target = jumpTo(window.location.hash, (id) => document.getElementById(id));
+      if (target) release = holdInView(target);
+    };
+    go();
+    window.addEventListener("hashchange", go);
+    return () => {
+      window.removeEventListener("hashchange", go);
+      release();
+    };
+  }, [drawn]);
 
   function flash(message: string) {
     setNotice(message);

@@ -1,0 +1,237 @@
+{
+  "framefound_note": "An invented repository with real names and sizes. Recorded from huggingface.co on 2026-11-12 in a third party's GGUF build of a model by nvidia: the build ids of its 21 model files (each name's ending), the three projectors' names, the imatrix file's name, and every size (the 21 model files' sizes as read through a fetch tool's summary of the listing; four of them agree with L6 design G2). Stand-ins: the publisher, the part of each name before the build id, the commit, the checksums, the date.",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "id": "example-gguf/demo-many-builds-GGUF",
+  "author": "example-gguf",
+  "sha": "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c",
+  "lastModified": "2026-11-05T00:00:00.000Z",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "gguf",
+    "image-text-to-text",
+    "base_model:nvidia/demo-omni-30b",
+    "base_model:quantized:nvidia/demo-omni-30b",
+    "license:other"
+  ],
+  "cardData": {
+    "base_model": "nvidia/demo-omni-30b",
+    "license": "other"
+  },
+  "config": {},
+  "gguf": {
+    "architecture": "demo_omni_moe",
+    "context_length": 1048576
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 3489
+    },
+    {
+      "rfilename": "demo-omni-30b-MXFP4_MOE.gguf",
+      "size": 21731806656,
+      "lfs": {
+        "sha256": "cec16a3bc5bf76c9404be7d59bac7ec6cad9bd769e8bb4a9c864c49843118ab8",
+        "size": 21731806656
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-Q8_0.gguf",
+      "size": 33585499584,
+      "lfs": {
+        "sha256": "79d5c57908438c3847ef05ff6bd134cb18408495c272fa23567954e99e2106ce",
+        "size": 33585499584
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ2_M.gguf",
+      "size": 18499970496,
+      "lfs": {
+        "sha256": "4143be855f37fa263d4327d9190a0b89c2a0c8a9b0c686beeac377e8053d0bed",
+        "size": 18499970496
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ2_XXS.gguf",
+      "size": 18499970496,
+      "lfs": {
+        "sha256": "acca15a5ed90c8196cdbcdedec649c629506db035b453fdf0e47a4df93ce4448",
+        "size": 18499970496
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ3_S.gguf",
+      "size": 18820767168,
+      "lfs": {
+        "sha256": "39de5faa4561b6e7f5a95c8f135ae7a1c834c162eee49b0280d579d06ec586d9",
+        "size": 18820767168
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ3_XXS.gguf",
+      "size": 19459349952,
+      "lfs": {
+        "sha256": "bb3633f9540f2b77ca717c768f9614a23aa1f9c97e55083ac700dc282a36146d",
+        "size": 19459349952
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ4_NL.gguf",
+      "size": 19536678336,
+      "lfs": {
+        "sha256": "85b4bd69bb0603553393a786249aa5d8d2b7a1169a97b9e698c34f93572e4271",
+        "size": 19536678336
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ4_NL_XL.gguf",
+      "size": 19536678336,
+      "lfs": {
+        "sha256": "6d2efdbf90b4cac025befffe82f26996c7230fbad3711a0881b96f2f308d0fc6",
+        "size": 19536678336
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-IQ4_XS.gguf",
+      "size": 19536678336,
+      "lfs": {
+        "sha256": "2f65f5955cd99821a55a5c95c9cd19aeeeaabd6134876cdb5013ab81ea5c3166",
+        "size": 19536678336
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q2_K_XL.gguf",
+      "size": 18502550976,
+      "lfs": {
+        "sha256": "15961c0a993f720439aa4e2f2d5bc2fab2ce42b2beda8b570b1ad82c1d08a000",
+        "size": 18502550976
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q3_K_M.gguf",
+      "size": 19536678336,
+      "lfs": {
+        "sha256": "63668bcaa147b3f188b8209c088529ad6abd7a36d1f59e54aa943b92841230ac",
+        "size": 19536678336
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q3_K_XL.gguf",
+      "size": 19536678336,
+      "lfs": {
+        "sha256": "eb63669023baf6646ad44c40f8d64a50a4119c323df808520e82e2811a4c71a1",
+        "size": 19536678336
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q4_K_M.gguf",
+      "size": 23887023552,
+      "lfs": {
+        "sha256": "e559dfbfd48712e5c6cf0b9d6e27299868c298948deea9fc42219ce725332657",
+        "size": 23887023552
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q4_K_S.gguf",
+      "size": 23048883648,
+      "lfs": {
+        "sha256": "439caad872dac1636fcbddeffa3841c55a6e0e8be5f7c710a9a8acba8b808eef",
+        "size": 23048883648
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q4_K_XL.gguf",
+      "size": 23926934976,
+      "lfs": {
+        "sha256": "88c25a319ed6971e0a002b0b95be49637e83db89e6caf7188a54e47408bfdab4",
+        "size": 23926934976
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q5_K_M.gguf",
+      "size": 28995685824,
+      "lfs": {
+        "sha256": "ff7958b0c89f9549a139d3533dce9717a114e8b3ab7dee9484e7d7fedf3a9a85",
+        "size": 28995685824
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q5_K_S.gguf",
+      "size": 24804986304,
+      "lfs": {
+        "sha256": "dab43765a7f2f515c07a79924bbaad136f1e1be369836b716daec757b6338ae8",
+        "size": 24804986304
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q5_K_XL.gguf",
+      "size": 29195242944,
+      "lfs": {
+        "sha256": "60515e3e16a0774114a17851459b462a0569010ed89ac1124f4e48570797feac",
+        "size": 29195242944
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q6_K.gguf",
+      "size": 33585499584,
+      "lfs": {
+        "sha256": "f38560aa682511a8fec3b496e872623ef4f7c155754b58bb17b8b09b964051fd",
+        "size": 33585499584
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q6_K_XL.gguf",
+      "size": 33585499584,
+      "lfs": {
+        "sha256": "382a6836dddb425c7b7f0edbc37713fc78481063522f29afc781a35692288820",
+        "size": 33585499584
+      }
+    },
+    {
+      "rfilename": "demo-omni-30b-UD-Q8_K_XL.gguf",
+      "size": 35400222144,
+      "lfs": {
+        "sha256": "ab6187fe1d376f59599c05c9e94af0c6d5631fb38ec505f47d8ad1e14547f785",
+        "size": 35400222144
+      }
+    },
+    {
+      "rfilename": "README.md",
+      "size": 47191
+    },
+    {
+      "rfilename": "imatrix_unsloth.gguf_file",
+      "size": 55314720,
+      "lfs": {
+        "sha256": "7ea7c72032806d4344a2ef0560f72d89b7c4b60ecbb7cf77c64d439d4a490727",
+        "size": 55314720
+      }
+    },
+    {
+      "rfilename": "mmproj-BF16.gguf",
+      "size": 1589506304,
+      "lfs": {
+        "sha256": "483294ed916170b5bb4c587365b3699f5b2d6afcb4bb01fa74f48d1e63c96b0c",
+        "size": 1589506304
+      }
+    },
+    {
+      "rfilename": "mmproj-F16.gguf",
+      "size": 1587540224,
+      "lfs": {
+        "sha256": "d003fe3fec63b4ddfcb9512dee6a9cfc736dd151c89a49d55af945be05293d8c",
+        "size": 1587540224
+      }
+    },
+    {
+      "rfilename": "mmproj-F32.gguf",
+      "size": 3167613184,
+      "lfs": {
+        "sha256": "123b201ec0e5671c7df8458eb6dcb8f4ef4171eb7ec8a1704f7f12a06a96a9f3",
+        "size": 3167613184
+      }
+    }
+  ]
+}

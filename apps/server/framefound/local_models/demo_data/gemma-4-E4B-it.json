@@ -1,0 +1,79 @@
+{
+  "framefound_note": "Recorded from huggingface.co on 2026-11-12 (L1 design 9.2): id, author, library_name, pipeline_tag, cardData.license, and cardData.base_model (a list). Stand-ins, not read from the site: sha, lastModified, the tags other than the two base_model ones, cardData.license_link, config, and every file with its size and checksum.",
+  "id": "google/gemma-4-E4B-it",
+  "author": "google",
+  "sha": "1111111111111111111111111111111111111111",
+  "lastModified": "2026-06-30T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "transformers",
+  "pipeline_tag": "any-to-any",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "gemma4",
+    "any-to-any",
+    "conversational",
+    "base_model:google/gemma-4-E4B",
+    "base_model:finetune:google/gemma-4-E4B",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "cardData": {
+    "base_model": [
+      "google/gemma-4-E4B"
+    ],
+    "license": "apache-2.0",
+    "license_link": "https://www.apache.org/licenses/LICENSE-2.0"
+  },
+  "config": {
+    "model_type": "gemma4"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1570
+    },
+    {
+      "rfilename": "README.md",
+      "size": 24012
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 17336
+    },
+    {
+      "rfilename": "config.json",
+      "size": 5210
+    },
+    {
+      "rfilename": "generation_config.json",
+      "size": 208
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 15992595884,
+      "lfs": {
+        "sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "size": 15992595884
+      }
+    },
+    {
+      "rfilename": "processor_config.json",
+      "size": 1316
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 32169626,
+      "lfs": {
+        "sha256": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "size": 32169626
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 2740
+    }
+  ]
+}

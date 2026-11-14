@@ -7,7 +7,8 @@
     python -m framefound.ops.shots inspect /media/gelco/.../DJI_0639_D.MP4
 
 `backfill` finds the videos in scope that have no shot windows (or windows
-from an older analysis) and queues the motion pass for each. The motion
+from an older analysis) and queues the motion pass for each. Without
+`--library` it does every library in turn, by name. The motion
 pass reads only proxies, so `--make-proxies` first queues a proxy for every
 clip in scope without one — even where the library has proxies switched
 off, which is the point: a course about to be edited, not the whole
@@ -67,6 +68,34 @@ def _scope(library: Library, folder: str | None) -> list[Any]:
 
 
 async def backfill(args: argparse.Namespace) -> int:
+    """One library when it is named, otherwise every library by name.
+
+    `--folder` and `--limit` then apply inside each library, and a library
+    that fails does not stop the ones after it.
+    """
+    if args.library:
+        return await _backfill_library(args)
+    engine = create_async_engine(get_settings().db_url)
+    try:
+        async with async_sessionmaker(engine)() as db:
+            names = (await db.execute(select(Library.name).order_by(Library.name))).scalars().all()
+    finally:
+        await engine.dispose()
+    if not names:
+        print("No libraries yet.")
+        return 0
+    worst = 0
+    for name in names:
+        one = argparse.Namespace(**{**vars(args), "library": name})
+        try:
+            worst = max(worst, await _backfill_library(one))
+        except Exception as err:  # noqa: BLE001 - report and carry on to the next library
+            print(f"{name}: failed ({err})")
+            worst = 1
+    return worst
+
+
+async def _backfill_library(args: argparse.Namespace) -> int:
     from framefound.processing import shots
 
     engine = create_async_engine(get_settings().db_url)
@@ -134,26 +163,38 @@ async def backfill(args: argparse.Namespace) -> int:
                     analyze_motion.delay(str(asset.id))
                 print(f"Queued the motion pass for {len(ready)} videos (frames queue).")
                 return 0
-            libraries = {library.id: library}
             footage = spent = 0.0
             print("clip, seconds of footage, seconds taken, x real time, windows")
-            for asset in ready:
-                lib = libraries[asset.library_id]
+            # Ids, names and lengths first: a rollback (a clip that failed,
+            # or the looks step after one) expires every loaded row, the
+            # library's too, and an expired row cannot be read here without
+            # a query. `get` loads one again when it was expired.
+            clips = [(a.id, a.filename, a.duration_s or 0.0) for a in ready]
+            library_id = library.id
+            for asset_id, name, length in clips:
+                lib = await db.get(Library, library_id)
+                clip = await db.get(Asset, asset_id)
+                if lib is None or clip is None:
+                    print(f"{name}: gone")
+                    continue
                 started = time.monotonic()
                 try:
-                    count = await shots.analyse_motion(db, asset, lib, local_root(lib.root_path))
+                    # The same pass as the Celery task, looks step included,
+                    # so looks of shots that moved stop counting here too.
+                    count = await shots.motion_pass(db, clip, lib, local_root(lib.root_path))
                 except Exception as err:  # noqa: BLE001 - report and carry on
                     await db.rollback()
-                    print(f"{asset.filename}: failed ({err})")
+                    print(f"{name}: failed ({err})")
                     continue
                 taken = time.monotonic() - started
-                footage += asset.duration_s or 0.0
+                footage += length
                 spent += taken
-                speed = (asset.duration_s or 0.0) / taken if taken else 0.0
-                length = asset.duration_s or 0.0
-                print(f"{asset.filename}, {length:.1f}, {taken:.1f}, {speed:.2f}, {count}")
-                if await shots.has_embeddings(db, asset.id):
-                    await shots.describe_shots(db, asset)
+                speed = length / taken if taken else 0.0
+                print(f"{name}, {length:.1f}, {taken:.1f}, {speed:.2f}, {count}")
+                if await shots.has_embeddings(db, asset_id):
+                    clip = await db.get(Asset, asset_id)
+                    if clip is not None:
+                        await shots.describe_shots(db, clip)
             if spent:
                 print(
                     f"\n{len(ready)} clips, {footage:.0f} s of footage in {spent:.0f} s: "
@@ -252,7 +293,9 @@ def parse_timeline(text: str) -> tuple[str, list[TimelinePiece]]:
 
 
 async def import_cut(args: argparse.Namespace) -> int:
-    from framefound.mcp.shots import record_cut
+    # The neutral copy, so an install without the connector's optional mcp
+    # package can still import a past cut.
+    from framefound.nle.shotlist import record_cut
 
     source = Path(args.xml)
     name, pieces = parse_timeline(source.read_text(encoding="utf-8"))
@@ -348,12 +391,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     fill = sub.add_parser("backfill", help="analyse videos that have no shot windows yet")
-    fill.add_argument("--library", required=True)
+    fill.add_argument("--library", help="one library by name; every library when left out")
     fill.add_argument("--folder", help="only paths containing this (a course, a year)")
     fill.add_argument("--make-proxies", action="store_true", help="queue missing proxies first")
     fill.add_argument("--inline", action="store_true", help="analyse here, and time it")
     fill.add_argument("--redo", action="store_true", help="re-analyse clips already done")
-    fill.add_argument("--limit", type=int, default=0)
+    fill.add_argument("--limit", type=int, default=0, help="at most this many per library")
 
     desc = sub.add_parser(
         "describe", help="re-run framing and subjects (after a vocabulary change)"

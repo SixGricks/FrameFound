@@ -281,6 +281,34 @@ async def test_remote_worker_hands_back_when_its_share_is_down(
     assert "not mounted" in (job.error or "")
 
 
+async def test_remote_worker_hands_back_what_it_only_finds_out_inside_the_stage(
+    env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server keeps proxies somewhere this machine has no setting for,
+    and the stage finds that out only when it asks for the store
+    (`deriv.ensure_store` raises NotHere). Recorded as a failure, every
+    proxy job the laptop took would count against its asset while the queue
+    quietly handed it back."""
+    await _as_remote_worker(env, monkeypatch)
+    (env["tmp"] / "lib" / "target.jpg").write_bytes(b"data")
+
+    async def handler(db: AsyncSession, asset, library, path) -> None:
+        asset.processing_status = "half-done"  # work the hand-back must not keep
+        raise worker_roots.NotHere("The server keeps proxies in /Volumes/Photos/proxies")
+
+    with pytest.raises(Reject) as raised:
+        await task_module._with_asset("generate_proxy", env["asset_id"], handler)
+
+    assert raised.value.requeue is True
+    async with env["factory"]() as db:
+        job = (await db.execute(select(Job))).scalar_one()
+        asset = await db.get(Asset, env["asset_id"])
+    assert job.status == "skipped" and job.finished_at is not None
+    assert (job.error or "").startswith("Handed back by mac-mini")
+    assert "/Volumes/Photos/proxies" in (job.error or "")
+    assert asset.processing_status != "half-done"
+
+
 async def test_processing_report_counts_jobs_per_machine(env: dict) -> None:
     from framefound.main import create_app
 
