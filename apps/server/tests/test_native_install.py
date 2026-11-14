@@ -804,6 +804,7 @@ def _pretend_mac(
     monkeypatch.setenv(installer.SHELL_PATH_ENV, str(prefix / "bin"))
     monkeypatch.setattr(installer, "check_platform", lambda _layout: None)
     monkeypatch.setattr(installer, "ensure_tools", step("tools", Path("/pg/bin")))
+    monkeypatch.setattr(installer, "install_packages", step("packages"))
     monkeypatch.setattr(database, "initialise", step("cluster", False))
     monkeypatch.setattr(installer, "build_web", step("web"))
     monkeypatch.setattr(database, "exists", lambda _env: True)
@@ -827,6 +828,7 @@ def test_the_command_is_in_place_before_anything_is_started(
 
     assert steps == [
         "tools, before the command",  # what it needs first: the venv and the tools
+        "packages, with the command",
         "cluster, with the command",
         "web, with the command",
     ]
@@ -2001,8 +2003,45 @@ def test_an_update_git_allows_installs_the_release_and_hands_over_to_it(
     assert cli.cmd_update(layout) == 0
 
     assert [words[0] for words in ran] == ["git", "uv"]  # nothing asked of git but the pull
-    assert f"{layout.server_source}[{cli.EXTRAS}]" in ran[1]
+    assert f"{layout.server_source}[{installer.EXTRAS}]" in ran[1]
     assert handed == [[str(layout.python), "-m", "framefound.native", "install"]]
+
+
+def test_the_install_an_update_hands_over_to_installs_its_own_extras(
+    monkeypatch: pytest.MonkeyPatch, layout: Layout
+) -> None:
+    """The first update from before #44 skipped the chat panel's `anthropic`:
+    the update that ran was the old release's, and it installed the package
+    with the old list of extras before handing over. The new release's
+    install now installs with the new list, whatever the update used."""
+    ran: list[list[str]] = []
+    monkeypatch.setattr(installer.proc, "run", lambda argv, **_kw: ran.append(list(argv)))
+    monkeypatch.setattr(installer, "homebrew_program", lambda _program: None)
+
+    installer.install_packages(layout)
+
+    assert ran == [
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(layout.python),
+            "-e",
+            f"{layout.server_source}[{installer.EXTRAS}]",
+        ]
+    ]
+    assert "chat" in installer.EXTRAS.split(",")
+
+
+def test_the_install_uses_homebrews_uv_when_the_terminal_cannot_find_it(
+    monkeypatch: pytest.MonkeyPatch, layout: Layout, tmp_path: Path
+) -> None:
+    uv = tmp_path / "bin" / "uv"
+    monkeypatch.setattr(
+        installer, "homebrew_program", lambda program: str(uv) if program == "uv" else None
+    )
+    assert installer.package_command(layout)[0] == str(uv)
 
 
 # The real step, kept before `_git_answers` stands in for it.
@@ -2196,7 +2235,7 @@ def test_the_bootstrap_script_tells_the_installer_this_terminals_own_path() -> N
 
 def test_the_bootstrap_script_hands_over_to_the_installer() -> None:
     script = (REPO / "infrastructure" / "mac" / "install.sh").read_text(encoding="utf-8")
-    assert f'EXTRAS="{cli.EXTRAS}"' in script  # the same extras `framefound update` installs
+    assert f'EXTRAS="{installer.EXTRAS}"' in script  # the same extras `framefound update` installs
     assert 'exec "$HOME_DIR/venv/bin/python" -m framefound.native install "$@"' in script
     assert "sudo" not in script.replace("nothing needs sudo", "")
     assert "--store" in script and "--proxies" in script  # both ways in are documented

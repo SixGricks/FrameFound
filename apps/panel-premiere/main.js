@@ -1,5 +1,5 @@
 /*
- * FrameFound panel for Premiere Pro (UXP). panel build 0.4.0
+ * FrameFound panel for Premiere Pro (UXP). panel build 0.4.1
  *
  * The panel's whole job: search the catalogue, and put the clips the editor
  * picked into the open project at paths their machine can actually open. That
@@ -19,7 +19,7 @@
  *                      the rest of the API.
  */
 
-const BUILD = "0.4.0";
+const BUILD = "0.4.1";
 // A hung server used to leave "Searching…" on screen for good.
 const API_TIMEOUT_MS = 20000;
 const THUMBNAIL_TIMEOUT_MS = 10000;

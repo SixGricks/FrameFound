@@ -49,6 +49,7 @@ import {
   copiedWords,
   count,
   diskSize,
+  folderShown,
   gbToBytes,
   kindsSummary,
   layoutBehind,
@@ -937,6 +938,7 @@ function KindRow({
   // The first pass left files that have no copy. What is offered next is the
   // second, explicit step for those, not the first one over again.
   const leftovers = leftBehind(result, kind.old_path);
+  const oldShown = folderShown(kind.old_path);
   const waiting = !!unanswered && unanswered.folder === kind.old_path;
 
   return (
@@ -1031,11 +1033,10 @@ function KindRow({
         </p>
       )}
 
-      {kind.old_path && !asking && !removing && !waiting && leftovers === 0 && (
+      {oldShown && !asking && !removing && !waiting && leftovers === 0 && (
         <div className="storekind-wide storekind-old">
           <span>
-            Old copies from the last move are still in{" "}
-            <span className="mono">{kind.old_path}</span>.
+            Old copies from the last move are still in <span className="mono">{oldShown}</span>.
           </span>
           {isAdmin && (
             <button
@@ -1435,7 +1436,7 @@ export default function BulkStorage() {
           {showMove && move && (
             <MoveCard
               move={move}
-              oldPath={data.kinds.find((kind) => kind.kind === move.kind)?.old_path ?? null}
+              oldPath={folderShown(data.kinds.find((kind) => kind.kind === move.kind)?.old_path)}
               isAdmin={isAdmin}
               pollError={pollError}
               focusOnArrival={justStarted === move.id}

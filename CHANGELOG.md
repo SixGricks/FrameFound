@@ -6,6 +6,50 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (2026-11-14) — after the mini's first update
+- **`framefound panel`**: the Premiere panel as a `.ccx`, in
+  `~/FrameFound/premiere-panel/FrameFound-<version>.ccx`. Double-clicked,
+  Creative Cloud installs it (Window → UXP Plugins → FrameFound); no UXP
+  Developer Tool. `framefound install` and `update` make one for each new
+  panel version and say to double-click it (docs/panels.md).
+
+### Changed (2026-11-14) — after the mini's first update
+- **Proxies on Apple's media engine**: `h264_videotoolbox` at constant
+  quality 65 (`VIDEOTOOLBOX_QUALITY`) on Apple silicon, libx264 for a file
+  the media engine refuses. They were all on libx264, about 175 an hour.
+
+### Fixed (2026-11-14) — after the mini's first update
+- **Premiere panel 0.4.1: the manifest's `host` is an object.** As a list,
+  Creative Cloud refused the `.ccx` ("Couldn't install plugin… Error code
+  -4"). Packaging now refuses the list form.
+- **`framefound update` skipped new extras on the first update to a release
+  that adds one.** The update that runs is the old release's code, and it
+  installed the package with its own (old) list of extras before handing
+  over, so the first update from before #44 left out `chat` (`anthropic`)
+  and the chat panel had nothing to call Claude with. `framefound install`,
+  which every update hands over to, now installs the package with the new
+  release's own list (`installer.install_packages`).
+- **Tailscale on a Mac read "not answering" while the app was connected.**
+  The app's binary acts as the app, not its command line, without a
+  terminal, and the API runs as a launchd agent; it is asked with
+  `TAILSCALE_BE_CLI=1`. Failures are logged with the exit code, stderr or
+  timeout (`tailscale.app_failed`).
+- **Free space on large NAS shares** (Storage page, `doctor`, move checks,
+  model downloads): a 20 TiB share read as 3,915 GB. macOS's `statvfs` has
+  32-bit block counts; free space is read with `statfs` there
+  (`storage/space.py`).
+- **Storage page:** the old-copies sentence is never shown without its
+  folder ("…still in ." right after a move, not reproduced).
+
+### Measured (2026-11-14) — a model's memory on the mini
+- **Test's memory figure matches Activity Monitor.** On the mini, Test
+  reported 9.2 GB for Gemma 4 12B (`gemma-4-12B-it-OptiQ-4bit`) and 5.7 GB
+  for Gemma 4 E4B (`gemma-4-e4b-it-4bit`); Activity Monitor showed the
+  `python` process at 9.08 GB and 5.58 GB. MLX-VLM's `peak_memory` is in GB,
+  as believed, and reads about 0.1 GB high, the safe side for a budget.
+  E4B peaked at 6.6 GB in a comparison. The model server listens on
+  127.0.0.1 only (`lsof`, port 54806).
+
 ### Added (2026-11-14) — local AI models, the Claude chat panel, bulk storage on the NAS
 Nothing below has run with a real model, on a Mac, or against the real
 Claude API; model answers in the tests come from a stand-in

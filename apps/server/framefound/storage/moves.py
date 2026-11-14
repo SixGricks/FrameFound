@@ -33,7 +33,6 @@ file by file through a callback.
 import contextlib
 import json
 import os
-import shutil
 import stat
 import tempfile
 import threading
@@ -49,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.config import Settings, get_settings
 from framefound.db.models import Asset, Library
-from framefound.storage import stores
+from framefound.storage import space, stores
 from framefound.storage.worker_roots import DATA_STORE_MARKER, UnmappedRoot, local_root
 
 log = structlog.get_logger()
@@ -235,7 +234,7 @@ def _free_bytes(folder: Path) -> int | None:
     cannot be asked; the copy then finds out for itself."""
     try:
         nearest = next(p for p in (folder, *folder.parents) if p.exists())
-        return shutil.disk_usage(nearest).free
+        return space.disk_usage(nearest).free
     except (OSError, StopIteration):
         return None
 

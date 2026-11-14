@@ -180,6 +180,61 @@ def test_the_app_is_asked_with_an_argument_list_and_a_failure_is_a_sentence(
         tailscale_local._app_says(cli)
 
 
+def test_the_app_is_told_to_be_the_command_line_and_reads_no_terminal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """From the launchd agent the app's binary saw no terminal variables and
+    started as the app: the Security page said "not answering" while the
+    menu bar said connected."""
+    asked: list[dict[str, object]] = []
+
+    def run(argv: list[Path | str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        asked.append(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="{}")
+
+    monkeypatch.setattr(tailscale_local.proc, "run", run)
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setenv("HOME", "/Users/someone")
+    tailscale_local._app_says(tmp_path / "Tailscale")
+
+    [kwargs] = asked
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["TAILSCALE_BE_CLI"] == "1"
+    assert env["HOME"] == "/Users/someone"  # the rest of the agent's own environment
+    assert kwargs["stdin_text"] == ""
+
+
+@pytest.mark.parametrize(
+    ("result", "logged"),
+    [
+        (subprocess.CompletedProcess([], 1, stdout="", stderr="failed to connect"), "exit_code"),
+        (tailscale_local.proc.CommandFailed("Tailscale did not finish within 5 s"), "within 5 s"),
+    ],
+)
+def test_why_the_app_did_not_answer_is_logged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, result: object, logged: str
+) -> None:
+    def run(argv: list[Path | str], **_kwargs: object) -> object:
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(tailscale_local.proc, "run", run)
+    monkeypatch.setattr(
+        tailscale_local.log, "warning", lambda event, **kw: events.append({"event": event, **kw})
+    )
+    with pytest.raises(tailscale_local.TailscaleUnavailable, match="not answering"):
+        tailscale_local._app_says(tmp_path / "Tailscale")
+
+    [event] = events
+    assert event["event"] == "tailscale.app_failed"
+    assert logged in str(event)
+    if isinstance(result, subprocess.CompletedProcess):
+        assert event["exit_code"] == 1 and event["stderr"] == "failed to connect"
+
+
 def test_a_mac_server_answers_with_the_mac_download_page_and_linux_keeps_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

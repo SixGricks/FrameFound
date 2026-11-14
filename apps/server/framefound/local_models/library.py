@@ -48,7 +48,7 @@ from framefound.local_models.files import (
     write_manifest,
 )
 from framefound.local_models.hub import Hub, RepoFile, Stopped
-from framefound.storage import stores
+from framefound.storage import space, stores
 
 LIBRARY = "library"
 LOCAL = "local-ai"
@@ -534,7 +534,7 @@ def _disk(folder: Path) -> tuple[int, int] | None:
     """(free bytes, device) of the disk `folder` is, or will be, on."""
     try:
         nearest = next(p for p in (folder, *folder.parents) if p.exists())
-        return shutil.disk_usage(nearest).free, nearest.stat().st_dev
+        return space.disk_usage(nearest).free, nearest.stat().st_dev
     except (OSError, StopIteration):
         return None
 

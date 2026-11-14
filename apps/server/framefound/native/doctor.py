@@ -25,7 +25,7 @@ from framefound.native.launchd import Launchd
 from framefound.native.layout import Layout
 from framefound.ops import worker_check
 from framefound.ops.worker_check import Check, check_onnx, check_services
-from framefound.storage import stores
+from framefound.storage import space, stores
 from framefound.storage.worker_roots import DATA_STORE_MARKER
 
 if TYPE_CHECKING:
@@ -141,7 +141,7 @@ def check_stores(settings: Settings) -> list[Check]:
     checks = []
     data = settings.data_dir
     problem = _writable(data)
-    free = shutil.disk_usage(data).free / 1024**3 if problem is None else 0.0
+    free = space.disk_usage(data).free / 1024**3 if problem is None else 0.0
     if problem is not None:
         checks.append(Check("data store", False, f"{data} is not writable ({problem})"))
     elif free < settings.min_free_gb:
@@ -191,7 +191,7 @@ def _check_store(kind: str, settings: Settings) -> Check:
     problem = _writable(root)
     if problem is not None:
         return Check(name, False, f"{root} is not writable ({problem})")
-    free = shutil.disk_usage(root).free / 1024**3
+    free = space.disk_usage(root).free / 1024**3
     return Check(name, True, f"{root}, {free:.0f} GB free")
 
 

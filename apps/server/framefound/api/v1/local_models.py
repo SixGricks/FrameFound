@@ -27,7 +27,6 @@ printed are left out of what anybody else is sent.
 import asyncio
 import functools
 import os
-import shutil
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -89,7 +88,7 @@ from framefound.local_models.settings_store import (
 # live in other packages, and `jobs.create`, `title_of` and Cancel's tidy-up
 # must know them from the API's first request.
 from framefound.processing import local_ai_tasks
-from framefound.storage import stores
+from framefound.storage import space, stores
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/local-models", tags=["local-models"])
@@ -1684,7 +1683,7 @@ class _Room:
 def _free_on(folder: Path) -> int | None:
     try:
         nearest = next(path for path in (folder, *folder.parents) if path.exists())
-        return shutil.disk_usage(nearest).free
+        return space.disk_usage(nearest).free
     except (OSError, StopIteration):
         return None
 

@@ -1,7 +1,6 @@
 """System status endpoints (authenticated)."""
 
 import asyncio
-import shutil
 import time
 import uuid
 from collections.abc import Callable
@@ -20,7 +19,7 @@ from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
 from framefound.db.models import Asset, Derivative, Job
 from framefound.local_models import availability as local_ai_availability
 from framefound.local_models import jobs as local_ai_jobs
-from framefound.storage import stores
+from framefound.storage import space, stores
 from framefound.storage.reachability import unreachable_reason
 
 log = structlog.get_logger()
@@ -113,7 +112,7 @@ async def system_health(_user: CurrentUser, db: DbDep, settings: SettingsDep) ->
         queue = ComponentStatus(status="error", detail="Job queue is not reachable")
 
     try:
-        usage = shutil.disk_usage(settings.data_dir)
+        usage = space.disk_usage(settings.data_dir)
         free_gb: float | None = round(usage.free / 1024**3, 1)
     except OSError:
         free_gb = None
@@ -366,7 +365,7 @@ def _probe_volume(path: Path, known: int | None) -> tuple[str | None, Any]:
     if reason is not None:
         return reason, None
     try:
-        return None, shutil.disk_usage(path)
+        return None, space.disk_usage(path)
     except OSError:
         return "This location cannot be read.", None
 

@@ -34,6 +34,11 @@ class FfmpegError(RuntimeError):
     pass
 
 
+# What `_run` says when ffmpeg failed and no better verdict (damaged file,
+# out of memory, too slow) applies: the one failure worth a second encoder.
+COULD_NOT_PROCESS = "The file could not be processed"
+
+
 def _with_thread_cap(argv: list[str]) -> list[str]:
     """Cap threads for both the decoder and the encoder.
 
@@ -87,7 +92,7 @@ def _run(argv: list[str], timeout_s: int) -> None:
         damage = damage_verdict(tail)
         if damage:
             raise FfmpegError(damage)
-        raise FfmpegError("The file could not be processed")
+        raise FfmpegError(COULD_NOT_PROCESS)
 
 
 # Signatures that are a verdict about the *file*, not about our processing of
@@ -171,27 +176,46 @@ def videotoolbox_available() -> bool:
     return sys.platform == "darwin" and _encoder_works("h264_videotoolbox")
 
 
+# Constant quality on the media engine (Apple silicon), 1..100, higher is
+# better. 65 is the starting point for "about what CRF 23 looked like":
+# proxies are for the browser player, contact sheets and the shot motion
+# pass, never for a delivery. Raise it if busy footage (foliage from a
+# drone) comes out blocky; lower it if proxies are bigger than they need be.
+VIDEOTOOLBOX_QUALITY = 65
+
+
 def videotoolbox_proxy_args(height: int) -> list[str] | None:
     """FFmpeg video-codec arguments for a proxy made on Apple's media engine.
 
-    Return the argv slice that replaces libx264's
+    The argv slice that replaces libx264's
     `["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]`, or None to
     keep using libx264 on this machine.
 
-    The trade-off: h264_videotoolbox has no CRF. It takes either a
-    constant quality (`-q:v 1..100`, higher is better; Apple silicon only)
-    or a target bitrate (`-b:v`). Constant quality tracks the footage —
-    a static interior gets a small file, a drone pass over trees a big one —
-    which is what CRF 23 did. A bitrate is predictable on disk but either
-    starves busy shots (blocky foliage, which the motion analysis reads as
-    texture) or wastes space on still ones. `height` is the proxy's
-    target height (1080 by default) if you want the answer to scale.
+    h264_videotoolbox has no CRF. It takes either a constant quality
+    (`-q:v 1..100`, Apple silicon only) or a target bitrate (`-b:v`).
+    Constant quality tracks the footage like CRF did — a static interior
+    gets a small file, a drone pass over trees a big one — where a bitrate
+    either starves busy shots (blocky foliage, which the motion analysis
+    reads as texture) or wastes space on still ones. So constant quality,
+    with no bitrate, at `VIDEOTOOLBOX_QUALITY` for every `height`.
+    `-allow_sw 0`: the media engine or nothing, never Apple's own software
+    encoder, which is slower than libx264; a file the engine refuses is
+    made with libx264 instead (`transcode_proxy`).
 
     Proxies feed the browser player, contact sheets and the shot motion
     pass; Premiere's own proxies are separate files and unaffected.
     """
-    # TODO(operator): choose the media-engine settings for proxies.
-    return None
+    del height  # one quality for every size
+    return [
+        "-c:v",
+        "h264_videotoolbox",
+        "-q:v",
+        str(VIDEOTOOLBOX_QUALITY),
+        "-profile:v",
+        "high",
+        "-allow_sw",
+        "0",
+    ]
 
 
 def extract_poster(src: Path, dst: Path, at_seconds: float, max_width: int = 1920) -> None:
@@ -312,6 +336,9 @@ def downscale_still(src: Path, dst: Path, max_edge: int) -> None:
         raise FfmpegError("The image could not be decoded")
 
 
+X264_PROXY_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+
+
 def transcode_proxy(src: Path, dst: Path, height: int = 1080) -> str:
     """1080p (default) H.264+AAC faststart MP4 proxy. Returns the codec used."""
     scale = f"scale=-2:'min({height},ih)'"
@@ -323,34 +350,45 @@ def transcode_proxy(src: Path, dst: Path, height: int = 1080) -> str:
         codec_args = apple
         codec = "h264_videotoolbox"
     else:
-        codec_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+        codec_args = X264_PROXY_ARGS
         codec = "libx264"
-    _run(
-        [
-            "ffmpeg",
-            "-y",
-            "-v",
-            "error",
-            "-i",
-            str(src),
-            "-vf",
-            scale,
-            *codec_args,
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-ac",
-            "2",
-            "-movflags",
-            "+faststart",
-            str(dst),
-        ],
-        PROXY_TIMEOUT_S,
-    )
+    try:
+        _run(_proxy_argv(src, dst, scale, codec_args), PROXY_TIMEOUT_S)
+    except FfmpegError as err:
+        # The media engine refuses a few sources (odd sizes, some 4:2:2 and
+        # 10-bit footage); the CPU makes those, slower. A damaged file, one
+        # out of memory or one too slow would fail the same way again.
+        if codec != "h264_videotoolbox" or str(err) != COULD_NOT_PROCESS:
+            raise
+        log.warning("proxy.videotoolbox_refused", src=str(src), error=str(err)[:300])
+        codec = "libx264"
+        _run(_proxy_argv(src, dst, scale, X264_PROXY_ARGS), PROXY_TIMEOUT_S)
     return codec
+
+
+def _proxy_argv(src: Path, dst: Path, scale: str, codec_args: list[str]) -> list[str]:
+    return [
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        str(src),
+        "-vf",
+        scale,
+        *codec_args,
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ac",
+        "2",
+        "-movflags",
+        "+faststart",
+        str(dst),
+    ]
 
 
 def render_waveform(src: Path, dst: Path, width: int = 1200, height: int = 160) -> None:

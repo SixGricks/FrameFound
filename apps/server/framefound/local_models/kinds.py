@@ -455,8 +455,10 @@ class MlxVlm:
         return _picture(jpeg)
 
     def memory_gb(self, answer: Mapping[str, Any]) -> float | None:
-        # Believed to be GB (its other handler sets `peak_memory_gb` from the
-        # same figure); not yet seen on a Mac.
+        # GB (its other handler sets `peak_memory_gb` from the same figure).
+        # Checked on the mini 2026-11-14 against Activity Monitor's figure
+        # for the `python` process: 9.2 here against 9.08 there for Gemma 4
+        # 12B, 5.7 against 5.58 for E4B. About 0.1 GB high, the safe side.
         timings = answer.get("timings")
         peak = timings.get("peak_memory") if isinstance(timings, Mapping) else None
         if isinstance(peak, bool) or not isinstance(peak, int | float):

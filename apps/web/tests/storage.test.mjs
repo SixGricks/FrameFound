@@ -15,6 +15,7 @@ import {
   copiedWords,
   count,
   diskSize,
+  folderShown,
   gbToBytes,
   kindsSummary,
   layoutBehind,
@@ -360,4 +361,11 @@ test("only a finished move says where a line should be", () => {
   assert.equal(layoutBehind({ ...base, move: null }), false);
   // The move was of a kind this answer has no line for.
   assert.equal(layoutBehind({ ...base, move: move({ phase: "done", kind: "exports" }) }), false);
+});
+
+test("a sentence about old copies is never shown without the folder", () => {
+  // Right after a move on the mini: "Old copies from the last move are still in ."
+  assert.equal(folderShown("/Users/someone/FrameFound/data"), "/Users/someone/FrameFound/data");
+  assert.equal(folderShown(" /Volumes/Intel/FrameFound/proxies\n"), "/Volumes/Intel/FrameFound/proxies");
+  for (const nothing of ["", "   ", null, undefined]) assert.equal(folderShown(nothing), null);
 });

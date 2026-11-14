@@ -168,18 +168,64 @@ hand steps below.
    blocked list refuses them and anything built from them.
 6. `/storage/proxies/rebuild` (Make the missing proxies again) may be slow
    on a large catalogue.
-7. `videotoolbox_proxy_args()` in
-   `apps/server/framefound/processing/ffmpeg.py` is left for the owner;
-   proxies stay libx264 until it is filled.
+7. ~~`videotoolbox_proxy_args()` is left for the owner~~ — filled
+   2026-11-14 (below): proxies are made on the media engine.
 8. Backup-before-update has only been tested on Windows, never on a Mac.
 9. Other API handlers still call the queue directly and can hold a request
    for about 5 s when the queue (Valkey) is down; production keeps it up.
    Tag answers and Re-learn no longer do.
-10. Smaller unknowns, first seen on the mini: the memory figure of the
-    first Test against Activity Monitor; the model server answering only on
-    the Mac itself (not from other computers); whether macOS runs the unpacked llama.cpp program; a
+10. Smaller unknowns, first seen on the mini: whether macOS runs the unpacked llama.cpp program; a
     `.cube` loaded in Premiere. A clip's Shots list shows the sampled frame
     nearest each shot until the server serves a shot's own still.
+
+**Since, on the mini (2026-11-14):**
+
+FrameFound #44 runs on the mini; `framefound doctor` is all ok on schema
+0036 apart from the proxy encoder line, now fixed. Measured there:
+
+- **The memory a Test reports is right.** Test said 9.2 GB for Gemma 4 12B
+  and 5.7 GB for E4B; Activity Monitor showed the `python` process at
+  9.08 GB and 5.58 GB. The figure is in GB and about 0.1 GB high, the safe
+  side for a budget. E4B peaked at 6.6 GB in a comparison, so a longer
+  question with pictures costs it about a gigabyte more than a Test; still
+  inside the 8 GB daytime budget. The 12B still does not fit by day: the
+  page goes by the larger of the estimate (10.1 GB) and the measured
+  figure, so about 11 GB by day would give it a daytime slot.
+- **The model answers only on this Mac.** `lsof` shows every FrameFound
+  port on 127.0.0.1, the model server's 54806 included.
+
+Fixed from the first real update and setup (one PR):
+
+1. **The Premiere panel installs from a `.ccx`.** Creative Cloud refused a
+   `.ccx` of the panel with error -4 because the manifest's `host` was a
+   list; it is an object now (panel 0.4.1). `framefound panel` packages it
+   into `~/FrameFound/premiere-panel/FrameFound-<version>.ccx`, and install
+   and update make one for each new panel version and say to double-click
+   it ([panels.md](panels.md#installing-the-premiere-panel)). Not yet
+   re-checked: a UDT developer load of the changed manifest.
+2. **The first update from before #44 skipped the chat panel's package.**
+   The update that ran was the old release's, and it installed with the old
+   list of extras before handing over, so `anthropic` was never installed
+   (a second `framefound update` put it right). The new release's install
+   now installs with its own list.
+3. **Tailscale "not answering" with the app connected.** The app's binary
+   chooses between being the app and the command line by looking for a
+   terminal's variables, and the API, a launchd agent, has none: it is now
+   asked with `TAILSCALE_BE_CLI=1`. Every failure is logged
+   (`tailscale.app_failed`: exit code, stderr, timeout). Not yet seen on
+   the mini; the Terminal output of `Tailscale status --json` was not in
+   the report.
+4. **NAS free space** read 2,035 GB free of 3,915 GB where `df` says 10 Ti
+   of 20 Ti: `statvfs` on macOS has 32-bit block counts. Read with `statfs`
+   now (`storage/space.py`), everywhere free space is read.
+5. **"Old copies from the last move are still in ."** right after a move.
+   Not reproduced (three moves in Chromium on the seeded catalogue showed
+   the folder at every step); the sentence is no longer shown without a
+   folder. If it happens again, the answer of `GET
+   /api/v1/storage/kinds` at that moment says which side it is.
+6. **Proxies on the media engine.** 3,074 waited at about 175 an hour on
+   libx264. `h264_videotoolbox` at constant quality 65, libx264 for a file
+   the media engine refuses.
 
 ### 2026-11-12 — Planned: local AI models, a Claude chat panel, and bulk storage on the NAS
 
