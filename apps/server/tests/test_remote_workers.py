@@ -147,7 +147,7 @@ def _capture_proxy_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
-def test_proxies_stay_on_x264_until_media_engine_settings_are_chosen(
+def test_proxies_stay_on_x264_when_the_media_engine_is_turned_off(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls = _capture_proxy_argv(monkeypatch)
@@ -172,6 +172,63 @@ def test_proxies_use_the_media_engine_when_it_is_set_up(
     assert ffmpeg.transcode_proxy(tmp_path / "a.mov", tmp_path / "a.mp4") == "h264_videotoolbox"
     assert "h264_videotoolbox" in calls[0]
     assert "libx264" not in calls[0]
+
+
+def test_the_media_engine_makes_proxies_at_constant_quality(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """3,074 proxies waited at about 175 an hour on the CPU encoder."""
+    calls = _capture_proxy_argv(monkeypatch)
+    monkeypatch.setattr(ffmpeg, "nvenc_available", lambda: False)
+    monkeypatch.setattr(ffmpeg, "videotoolbox_available", lambda: True)
+
+    assert ffmpeg.transcode_proxy(tmp_path / "a.mov", tmp_path / "a.mp4") == "h264_videotoolbox"
+    argv = calls[0]
+    assert argv[argv.index("-c:v") + 1] == "h264_videotoolbox"
+    assert argv[argv.index("-q:v") + 1] == str(ffmpeg.VIDEOTOOLBOX_QUALITY)
+    assert "-b:v" not in argv  # constant quality, never a bitrate
+    assert argv[argv.index("-allow_sw") + 1] == "0"  # never Apple's software encoder
+    assert argv[-1] == str(tmp_path / "a.mp4")
+
+
+def test_a_file_the_media_engine_refuses_is_made_on_the_cpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], timeout: int) -> None:
+        calls.append(argv)
+        if "h264_videotoolbox" in argv:
+            raise ffmpeg.FfmpegError(ffmpeg.COULD_NOT_PROCESS)
+
+    monkeypatch.setattr(ffmpeg, "_run", run)
+    monkeypatch.setattr(ffmpeg, "nvenc_available", lambda: False)
+    monkeypatch.setattr(ffmpeg, "videotoolbox_available", lambda: True)
+
+    assert ffmpeg.transcode_proxy(tmp_path / "a.mov", tmp_path / "a.mp4") == "libx264"
+    assert ["h264_videotoolbox" in argv for argv in calls] == [True, False]
+    assert "libx264" in calls[1]
+
+
+@pytest.mark.parametrize(
+    "verdict", ["Processing took too long and was stopped", "Ran out of memory. Too large."]
+)
+def test_a_failure_the_cpu_would_repeat_is_not_tried_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, verdict: str
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], timeout: int) -> None:
+        calls.append(argv)
+        raise ffmpeg.FfmpegError(verdict)
+
+    monkeypatch.setattr(ffmpeg, "_run", run)
+    monkeypatch.setattr(ffmpeg, "nvenc_available", lambda: False)
+    monkeypatch.setattr(ffmpeg, "videotoolbox_available", lambda: True)
+
+    with pytest.raises(ffmpeg.FfmpegError, match=verdict.split(".")[0]):
+        ffmpeg.transcode_proxy(tmp_path / "a.mov", tmp_path / "a.mp4")
+    assert len(calls) == 1
 
 
 def test_videotoolbox_is_never_probed_off_macos(monkeypatch: pytest.MonkeyPatch) -> None:

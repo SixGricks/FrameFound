@@ -154,6 +154,9 @@ Afterwards:
 - **Add each NAS share to Login Items** (System Settings → General → Login
   Items). Without that, a restart of the Mac leaves the shares unconnected
   and every library reads as offline until each is opened in Finder again.
+- **Premiere on this Mac**: double-click
+  `~/FrameFound/premiere-panel/FrameFound-<version>.ccx`; the panel is then
+  under Window → UXP Plugins ([panels.md](panels.md#installing-the-premiere-panel)).
 - **Point the other machines at the Mac**: browsers, the Premiere panel and
   the Lightroom plugin use `http://<the Mac's local hostname>.local:8080`
   (the name is under System Settings → General → Sharing). The tokens still
@@ -182,6 +185,7 @@ Afterwards:
 | `framefound restart` | after editing the settings file |
 | `framefound update` | back up, pull the latest release, rebuild, restart ([Updating](#updating)) |
 | `framefound storage` | where the bulky files live, and whether that drive is connected |
+| `framefound panel` | the Premiere panel as a `.ccx` to double-click, in `~/FrameFound/premiere-panel` ([panels.md](panels.md#installing-the-premiere-panel)) |
 | `framefound backup` | a catalogue backup now (one is taken nightly) |
 | `framefound restore <archive>` | replace the catalogue with a backup's |
 | `framefound ops <tool> …` | the maintenance tools the docs give as `docker compose exec` commands |
@@ -452,10 +456,12 @@ FRAMEFOUND_VISION_WORKERS=1
 
 Two accelerations are available and off until you choose them:
 
-- **Hardware encoding for proxies.** Detected, but proxies stay on the CPU
-  encoder until the quality setting is chosen in `videotoolbox_proxy_args()`
-  (`apps/server/framefound/processing/ffmpeg.py`) — how proxies should look
-  is a choice, not a default to guess. `framefound doctor` says which
+- **Hardware encoding for proxies.** On Apple silicon proxies are made on
+  the media engine (`h264_videotoolbox`) at constant quality 65
+  (`VIDEOTOOLBOX_QUALITY` in `apps/server/framefound/processing/ffmpeg.py`;
+  higher is better, raise it if drone foliage comes out blocky). A file the
+  media engine refuses is made on the CPU (libx264) instead. On the CPU
+  encoder the mini made about 175 an hour. `framefound doctor` says which
   encoder is in use.
 - **CoreML for the vision models.** Run `framefound doctor --parity`; if it
   passes, set `FRAMEFOUND_ONNX_PROVIDER=coreml` and restart. The check is
@@ -604,7 +610,8 @@ by hand. After the first Test, compare the memory it reports with Activity
 Monitor's figure for the `python` process (done 2026-11-14: Test said
 9.2 GB for Gemma 4 12B and 5.7 GB for E4B, Activity Monitor 9.08 and
 5.58 GB, so the figure is right and a little high). And while a model is loaded,
-`lsof -nP -iTCP:54806 -sTCP:LISTEN` should show `127.0.0.1`, never `*`: the
+`lsof -nP -iTCP:54806 -sTCP:LISTEN` should show `127.0.0.1`, never `*` (it
+did on the mini, 2026-11-14): the
 model must not be reachable from the network.
 
 ## Known limits
@@ -623,7 +630,13 @@ model must not be reachable from the network.
   turned off, turn it on from the same icon (Connect); the card's "Turn
   Tailscale on" says so rather than switching it. (A Homebrew `tailscaled` is read
   through its socket instead, and its sign-in link comes from the page as
-  on Linux.)
+  on Linux.) The app's binary is the app and its command line both, and
+  picks by looking for a terminal; the API is a background service with
+  none, so it is asked with `TAILSCALE_BE_CLI=1`. Without that the card
+  said "not answering" while the app was connected (2026-11-14). When the
+  card says "not answering", `~/FrameFound/logs/api.log` has a
+  `tailscale.app_failed` line with the exit code, what the app printed, or
+  the timeout.
 - **The Storage page's network-drive mounting** talks to Linux-only pieces
   and is unavailable. Use Finder. (Where the bulky files live, and moving
   them, is the part of the Storage page that does work here.)
@@ -641,6 +654,11 @@ framefound doctor
 
 Each line names one thing and what to do about it. A service that will not
 stay up shows its log path; `framefound logs <service>` follows it.
+
+Free space on a NAS share is read the way `df` reads it. Until
+2026-11-14 the Storage page and `doctor` read it with `statvfs`, whose
+block counts on macOS are 32-bit: a 20 TiB share with 10 TiB free read as
+3,915 GB with 2,035 GB free.
 
 Two of its lines came out of the first real install:
 

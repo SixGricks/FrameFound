@@ -27,6 +27,7 @@ socket like on Linux.
 
 import asyncio
 import json
+import os
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -158,14 +159,46 @@ def mac_app() -> Path | None:
     return MAC_APP_CLI
 
 
+# The app's binary is the app and the command line both, and chooses by
+# looking for a terminal's variables (SHLVL, TERM, TERM_PROGRAM, PS1). A
+# launchd agent has none, so from FrameFound's API the binary started as
+# the app, not the command line, and `status --json` never answered
+# ("not answering" with the app connected). This variable makes it the
+# command line wherever it runs (Tailscale's CLI documentation, macOS).
+BE_CLI = {"TAILSCALE_BE_CLI": "1"}
+
+
+def _tail(text: str | None, lines: int = 8) -> str:
+    return "\n".join((text or "").strip().splitlines()[-lines:])[-600:]
+
+
 def _app_says(app: Path) -> str:
     """`status --json` from the Mac app's command line: the same answer the
-    socket gives. Replaced in tests."""
+    socket gives. Replaced in tests.
+
+    Every way it fails is logged with what the program said (exit code,
+    stderr, a timeout): the page can only say "not answering", and that
+    sentence alone hid why for a whole first install."""
     try:
-        done = proc.run([app, "status", "--json"], capture=True, check=False, timeout=TIMEOUT_S)
+        done = proc.run(
+            [app, "status", "--json"],
+            env={**os.environ, **BE_CLI},
+            capture=True,
+            check=False,
+            timeout=TIMEOUT_S,
+            stdin_text="",
+        )
     except proc.CommandFailed as err:
+        log.warning("tailscale.app_failed", app=str(app), error=str(err))
         raise TailscaleUnavailable(APP_NOT_ANSWERING) from err
     if done.returncode != 0:
+        log.warning(
+            "tailscale.app_failed",
+            app=str(app),
+            exit_code=done.returncode,
+            stderr=_tail(done.stderr),
+            stdout=_tail(done.stdout, 3),
+        )
         raise TailscaleUnavailable(APP_NOT_ANSWERING)
     return done.stdout
 
@@ -195,8 +228,10 @@ async def status() -> TailscaleStatus:
         try:
             body = json.loads(said)
         except ValueError as err:
+            log.warning("tailscale.app_not_json", app=str(app), stdout=_tail(said, 3))
             raise TailscaleUnavailable(APP_NOT_ANSWERING) from err
         if not isinstance(body, dict):
+            log.warning("tailscale.app_not_json", app=str(app), stdout=_tail(said, 3))
             raise TailscaleUnavailable(APP_NOT_ANSWERING)
         return replace(parse_status(body), via_app=True)
     try:

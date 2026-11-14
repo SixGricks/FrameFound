@@ -100,9 +100,11 @@ launchd kit for it was removed in favour of the native install.
 
 ### Acceleration is opt-in and checked
 
-VideoToolbox is probed functionally, like NVENC; its quality setting is the
-operator's choice (`videotoolbox_proxy_args`), and until it is made proxies
-stay on libx264. CoreML for the ONNX models is a setting that
+VideoToolbox is probed functionally, like NVENC. Its quality setting was
+left to the operator (`videotoolbox_proxy_args`) and proxies stayed on
+libx264 until 2026-11-14, when 3,074 waited at about 175 an hour: they are
+now made at constant quality 65 (`VIDEOTOOLBOX_QUALITY`), with libx264 for
+a file the media engine refuses. CoreML for the ONNX models is a setting that
 `framefound doctor --parity` refuses unless its vectors match the CPU's
 (cosine ≥ 0.995), because search compares new vectors with every CPU-made
 one already stored.

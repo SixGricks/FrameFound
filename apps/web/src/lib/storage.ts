@@ -293,6 +293,17 @@ export interface OldCopiesSaid {
  * are in a different one, and an answer kept past that put its second step
  * ("remove those 3 too") in front of a folder it had never looked at.
  */
+/**
+ * A folder as a sentence may name it, or null when there is nothing to name.
+ * Right after a move the Storage page on the mini once read "Old copies from
+ * the last move are still in ." until it was reloaded: a sentence about a
+ * folder is not shown without one.
+ */
+export function folderShown(path: string | null | undefined): string | null {
+  const folder = (path ?? "").trim();
+  return folder === "" ? null : folder;
+}
+
 export function stillAbout(said: OldCopiesSaid | null, oldPath: string | null): boolean {
   if (!said) return false;
   if (said.folder === oldPath) return true;

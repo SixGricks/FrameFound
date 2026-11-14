@@ -15,7 +15,6 @@ anything either — a folder has to be on a drive the server can already see.
 
 import asyncio
 import os
-import shutil
 import time
 import uuid
 from collections.abc import Callable
@@ -34,7 +33,7 @@ from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, client_ip, req
 from framefound.config import Settings
 from framefound.db.models import Asset, Derivative, Library, Scan, Slideshow
 from framefound.ops import proxy_store
-from framefound.storage import move_job, moves, stores
+from framefound.storage import move_job, moves, space, stores
 from framefound.storage.spec import MountSpec, MountSpecError, parse_mount_spec
 
 log = structlog.get_logger()
@@ -128,7 +127,7 @@ async def storage_report(_user: CurrentUser, db: DbDep, settings: SettingsDep) -
     mounts: list[Mount] = []
     for mountpoint, fstype in _read_mounts():
         try:
-            usage = shutil.disk_usage(mountpoint)
+            usage = space.disk_usage(mountpoint)
             total_gb: float | None = round(usage.total / 1024**3, 1)
             free_gb: float | None = round(usage.free / 1024**3, 1)
         except OSError:
@@ -686,7 +685,7 @@ def _measure(kind: str, root: Path, settings: Settings) -> _Measured:
         # A kind that has made nothing yet has no folder; the disk it will
         # fill is the one its nearest existing parent is on.
         there = next((p for p in (root, *root.parents) if p.exists()), None)
-        usage = shutil.disk_usage(there) if there is not None else None
+        usage = space.disk_usage(there) if there is not None else None
         # Text says "a folder of its own" for a kind whose folder is spelt
         # differently from its place in the bulk folder; the disk may say
         # they are one. Offering to move it "into" the bulk folder would be

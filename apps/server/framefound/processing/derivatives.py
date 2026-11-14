@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from framefound.db.models import Asset, Derivative, Library
 from framefound.processing import ffmpeg
 from framefound.processing.thumbnails import ThumbnailError, make_image_derivative
-from framefound.storage import stores
+from framefound.storage import space, stores
 from framefound.storage.worker_roots import NotHere
 
 log = structlog.get_logger()
@@ -55,10 +55,9 @@ class ProxyStoreUnavailable(StoreUnavailable):
 
 
 def free_gb(data_dir: Path) -> float | None:
-    import shutil
 
     try:
-        return shutil.disk_usage(data_dir).free / 1024**3
+        return space.disk_usage(data_dir).free / 1024**3
     except OSError:
         return None
 

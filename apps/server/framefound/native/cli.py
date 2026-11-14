@@ -35,6 +35,7 @@ from framefound.native import (
     envfile,
     installer,
     migrate,
+    panel,
     proc,
     proxies,
     services,
@@ -122,6 +123,9 @@ def cmd_install(layout: Layout, launchd: Launchd, args: argparse.Namespace) -> i
     # instruction for proxies and the one that stands.
     if args.proxies:
         cmd_proxies_move(layout, launchd, Path(args.proxies).expanduser(), empty=False)
+    # Every `framefound update` ends here: a panel version with no .ccx yet
+    # gets one, and the line saying to double-click it.
+    panel.ensure(layout, say)
     http = services.port(env, "FRAMEFOUND_HTTP_PORT")
     # The command as it can be typed in this Terminal, which is not always
     # the bare name (installer.typed_command).
@@ -492,6 +496,17 @@ def cmd_ops(layout: Layout, tool: str, rest: list[str]) -> int:
     return 0  # pragma: no cover
 
 
+def cmd_panel(layout: Layout) -> int:
+    """Package the Premiere panel in the checkout as a .ccx, made afresh."""
+    built = panel.build(layout)
+    say(f"Premiere panel: {built}")
+    say(
+        "Double-click it to install or update the panel; Creative Cloud adds it to "
+        "Premiere under Window > UXP Plugins > FrameFound."
+    )
+    return 0
+
+
 def cmd_uninstall(layout: Layout, launchd: Launchd) -> int:
     for service in reversed(services.SERVICES):
         launchd.remove(service.name)
@@ -532,6 +547,10 @@ def parser() -> argparse.ArgumentParser:
         one = sub.add_parser(verb, help=f"{text} everything, or one service")
         one.add_argument("service", nargs="?", choices=names)
     sub.add_parser("open", help="open the web app")
+    sub.add_parser(
+        "panel",
+        help="package the Premiere panel as a .ccx to double-click, in ~/FrameFound/premiere-panel",
+    )
     check = sub.add_parser("doctor", help="is everything healthy")
     check.add_argument("--parity", action="store_true", help="also compare CoreML with the CPU")
     logs = sub.add_parser("logs", help="follow a service's log")
@@ -638,6 +657,8 @@ def dispatch(args: argparse.Namespace, layout: Layout, launchd: Launchd) -> int:
         return cmd_migrate(layout, launchd, args)
     if command == "ops":
         return cmd_ops(layout, args.tool, args.rest)
+    if command == "panel":
+        return cmd_panel(layout)
     if command == "uninstall":
         return cmd_uninstall(layout, launchd)
     raise AssertionError(command)  # argparse has already rejected anything else
@@ -653,6 +674,7 @@ EXPECTED = (
     migrate.MigrationError,
     moves.MoveError,
     stores.StoresFileError,
+    panel.PanelError,
 )
 
 

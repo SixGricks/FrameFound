@@ -111,7 +111,7 @@ def check_tools() -> list[Check]:
         detail = (
             f"media engine: {' '.join(chosen)}"
             if chosen
-            else "media engine available, but videotoolbox_proxy_args() is not set: libx264"
+            else "media engine available, but videotoolbox_proxy_args() turns it off: libx264"
         )
     else:
         detail = "libx264 on the CPU (no VideoToolbox here)"

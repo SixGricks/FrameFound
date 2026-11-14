@@ -64,10 +64,50 @@ make.
 Requires Premiere Pro 25.0 or newer (UXP panels for Premiere arrived late; on
 older versions use the FCP7 XML export from the web UI instead).
 
+### On a Mac with FrameFound installed: the `.ccx` (no developer tools)
+
+`framefound install` and every `framefound update` package the panel as a
+`.ccx` (the file Creative Cloud installs) when its version has none yet:
+
+```
+~/FrameFound/premiere-panel/FrameFound-<version>.ccx
+```
+
+1. **Double-click** the `.ccx`. Creative Cloud installs it; no UXP Developer
+   Tool, no developer mode.
+2. In Premiere: **Window → UXP Plugins → FrameFound** (seen in Premiere 26).
+3. Open **Settings** in the panel, enter the server address and the token.
+
+When an update brings a new panel version it says
+`Premiere panel <version> is ready: …. Double-click it to update the panel.`
+Double-click it the same way; Creative Cloud replaces the installed one.
+`framefound panel` makes the `.ccx` afresh at any time (it is the three
+files `manifest.json`, `index.html` and `main.js`, plus any icon the
+manifest names, at the root of a zip). It is not signed: Creative Cloud
+installs it from a double-click, which is how it was first installed on the
+mini (2026-11-14).
+
+**Why the manifest's `host` is an object.** Creative Cloud refused the first
+`.ccx` with *"Couldn't install plugin… Error code -4"*: it could not read
+the manifest, because `"host"` was a list (`[{"app": "premierepro", …}]`),
+the form for a plugin with several hosts. With one host written as an
+object, `{"app": "premierepro", "minVersion": "25.0.0"}`, the same files
+installed and the panel appeared. `framefound panel` refuses to package a
+manifest with the list form, so this cannot come back unnoticed. The object
+form is also the one Adobe's own single-host samples use and the UXP
+Developer Tool reads; a developer load from the repository was not re-run
+after the change, so if UDT ever refuses it, say so here.
+
+### Developer loading (UXP Developer Tool), on any machine
+
 1. Install the **UXP Developer Tool** from Adobe's Creative Cloud app.
 2. In UDT: **Add Plugin** → select `apps/panel-premiere/manifest.json`.
-3. **Load** it. The panel appears under **Window → Extensions → FrameFound**.
+3. **Load** it. The panel appears under **Window → UXP Plugins → FrameFound**
+   (**Window → Extensions** in older Premiere versions).
 4. Open **Settings** in the panel, enter the server address and the token.
+
+Do not dev-load the panel in UDT and install the `.ccx` on the same machine:
+two registrations of one id is the duplicate suspected below.
 
 The shipped `manifest.json` allows every network host
 (`"domains": "all"`) — a diagnostic left in place after the permission
@@ -81,8 +121,10 @@ like a network error rather than a permissions one. After any manifest change,
 "domains": ["http://framefound.local:8080"]
 ```
 
-For a permanent install rather than a developer load, the panel needs to be
-packaged as a `.ccx` and signed — Adobe's process, not covered here.
+For a permanent install rather than a developer load, use the `.ccx`
+above. On a machine without the FrameFound Mac install, the same zip can be
+made by hand from the three files (`cd apps/panel-premiere && zip
+FrameFound.ccx manifest.json index.html main.js`).
 
 ### The import fallback is not a consolation prize
 
