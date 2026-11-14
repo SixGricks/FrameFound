@@ -5,6 +5,10 @@ tests can read, and so nothing here can be turned into shell injection by a
 path with a space or a password with a quote.
 """
 
+# Annotations are not evaluated at import: on Python 3.12 `subprocess.Popen[bytes]`
+# would be, and fails wherever a test has put a plain function in place of Popen.
+from __future__ import annotations
+
 import socket
 import subprocess
 import time

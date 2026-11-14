@@ -32,14 +32,13 @@ from framefound.media import compare, develop
 # make the same change here or retire that one test. test_develop.py is what
 # pins how the engine should behave; this pins that a refactor moved nothing.
 #
-# It still takes brightness as a matrix product (`arr @ luma`), as the engine
-# did. The engine now writes that out (develop._brightness says why), and the
-# two are the same floats on OpenBLAS, which is why this copy could stay
-# verbatim. A machine whose BLAS rounds the product differently (Apple's
-# Accelerate was never tried) would fail the test by one level on a handful
-# of values. That would be this old copy's doing and not the engine's: the
-# engine's floats do not depend on the machine any more. Retire the test
-# there.
+# One change from verbatim: the engine then took brightness as a matrix
+# product (`arr @ luma`), and this copy now calls develop._brightness, the
+# written-out sum the engine uses today (its docstring says why). The product
+# is the machine's BLAS's to round, and CI's Linux runner rounded it one level
+# differently on one value in 73,728 from the Windows machine this was
+# written on: the yardstick's doing, not the engine's. Every other line is
+# as it was, so the test still pins that the split moved nothing else.
 
 
 def _engine_before(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
@@ -70,7 +69,7 @@ def _engine_before(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     shadows, highlights = recipe.get("shadows"), recipe.get("highlights")
     pull = recipe.get("window_pull")
     if shadows or highlights or pull:
-        luma = np.clip(arr @ np.asarray(develop._LUMA, dtype=np.float32), 1e-4, 1.0)
+        luma = np.clip(develop._brightness(arr, np), 1e-4, 1.0)
         illum = np.clip(develop._illumination(luma, np), 1e-4, 1.0)
         if shadows and shadows > 0:
             deficit = np.clip(0.55 - illum, 0.0, 0.55) / 0.55
@@ -89,7 +88,7 @@ def _engine_before(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
     if punch := recipe.get("local_contrast"):
         from PIL import ImageFilter
 
-        luma = np.clip(arr @ np.asarray(develop._LUMA, dtype=np.float32), 1e-4, 1.0)
+        luma = np.clip(develop._brightness(arr, np), 1e-4, 1.0)
         blur_img = Image.fromarray((luma * 255.0).astype("uint8"), "L")
         radius = max(4.0, arr.shape[0] / 16.0)
         blurred = (
@@ -100,7 +99,7 @@ def _engine_before(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
 
     vibrance, saturation = recipe.get("vibrance"), recipe.get("saturation")
     if vibrance or saturation:
-        luma = (arr @ np.asarray(develop._LUMA, dtype=np.float32))[..., None]
+        luma = develop._brightness(arr, np)[..., None]
         if saturation:
             arr = luma + (arr - luma) * (1.0 + saturation)
         if vibrance:
@@ -113,7 +112,7 @@ def _engine_before(image: Image.Image, recipe: dict[str, Any]) -> Image.Image:
 
 
 def _neutralise_before(arr: Any, strength: float) -> Any:
-    luma = arr @ np.asarray(develop._LUMA, dtype=np.float32)
+    luma = develop._brightness(arr, np)
     low, high = np.percentile(luma, (40.0, 95.0))
     brightest = arr.max(axis=-1)
     saturation = (brightest - arr.min(axis=-1)) / np.maximum(brightest, 1e-4)
