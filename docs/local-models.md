@@ -119,7 +119,8 @@ to make a model fit.
   decision 3 rules it out however it is packaged. It is no longer a
   candidate, and the manager says why if it is searched for.
 - **Gemma 4 12B does not fit the daytime budget.** The build chosen for the
-  Editor role is 8.35 GB of weights, about 10.1 GB in memory, against 8 GB
+  Editor role is 8.35 GB of weights, about 10.1 GB in memory by the
+  estimate (its first Test on the mini measured 9.2 GB), against 8 GB
   by day. Under decision 13 it therefore runs **overnight only**: a rough
   cut asked for at 14:00 starts at 21:30, and the page says so before the
   button is pressed. The two ways out are both on the AI models page:

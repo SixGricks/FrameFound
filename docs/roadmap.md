@@ -175,11 +175,25 @@ hand steps below.
 9. Other API handlers still call the queue directly and can hold a request
    for about 5 s when the queue (Valkey) is down; production keeps it up.
    Tag answers and Re-learn no longer do.
-10. Smaller unknowns, first seen on the mini: the memory figure of the
-    first Test against Activity Monitor; the model server answering only on
+10. Smaller unknowns, first seen on the mini: the model server answering only on
     the Mac itself (not from other computers); whether macOS runs the unpacked llama.cpp program; a
     `.cube` loaded in Premiere. A clip's Shots list shows the sampled frame
     nearest each shot until the server serves a shot's own still.
+
+**Since, on the mini (2026-11-14):**
+
+- **The memory a Test reports is right.** Test said 9.2 GB for Gemma 4 12B
+  and 5.7 GB for E4B; Activity Monitor showed the `python` process at
+  9.08 GB and 5.58 GB. The figure is in GB and about 0.1 GB high, the safe
+  side for a budget. The 12B still does not fit the 8 GB daytime budget:
+  the page goes by the larger of the estimate (10.1 GB) and the measured
+  figure, so about 11 GB by day still gives it a daytime slot.
+- **The first update from before #44 skipped the chat panel's package.**
+  The update that ran was the old release's, and it installed with the old
+  list of extras before handing over, so `anthropic` was never installed.
+  Fixed: the new release's install now installs with its own list. On the
+  mini, run `framefound update` once more (or `framefound install`) to
+  pick it up.
 
 ### 2026-11-12 — Planned: local AI models, a Claude chat panel, and bulk storage on the NAS
 

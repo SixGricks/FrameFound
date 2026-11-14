@@ -44,7 +44,6 @@ from framefound.native.launchd import Launchd
 from framefound.native.layout import Layout
 from framefound.storage import moves, stores
 
-EXTRAS = "db,queue,scanner,media,ai,mcp,chat"
 # sysexits.h EX_CONFIG: what a service exits with when there is nothing to
 # run it from, so the reason is recognisable in `launchctl print`.
 EX_CONFIG = 78
@@ -337,17 +336,10 @@ def cmd_update(layout: Layout, *, skip_backup: bool = False) -> int:
     pulled = proc.run(["git", "-C", str(layout.source), "pull", "--ff-only"], check=False)
     if pulled.returncode != 0:
         raise installer.InstallError(why_the_pull_stopped(layout))
-    proc.run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(layout.python),
-            "-e",
-            f"{layout.server_source}[{EXTRAS}]",
-        ]
-    )
+    # Enough for the new release's code to start. Its install installs again
+    # with its own extras (installer.install_packages): the list here is
+    # this release's, and the release pulled may have added one.
+    proc.run(installer.package_command(layout))
     # The code that was just replaced is this process's own: start a fresh
     # interpreter to run the new release's install (rebuild, migrate, restart).
     python = str(layout.python)

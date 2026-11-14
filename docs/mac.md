@@ -601,7 +601,9 @@ installs it afresh; nothing else needs doing.
 
 **When it is first run on the mini,** two things are worth looking at once
 by hand. After the first Test, compare the memory it reports with Activity
-Monitor's figure for the `python` process. And while a model is loaded,
+Monitor's figure for the `python` process (done 2026-11-14: Test said
+9.2 GB for Gemma 4 12B and 5.7 GB for E4B, Activity Monitor 9.08 and
+5.58 GB, so the figure is right and a little high). And while a model is loaded,
 `lsof -nP -iTCP:54806 -sTCP:LISTEN` should show `127.0.0.1`, never `*`: the
 model must not be reachable from the network.
 

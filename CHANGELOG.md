@@ -6,6 +6,22 @@ versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (2026-11-14) — after the mini's first update
+- **`framefound update` skipped new extras on the first update to a release
+  that adds one.** The update that runs is the old release's code, and it
+  installed the package with its own (old) list of extras before handing
+  over, so the first update from before #44 left out `chat` (`anthropic`)
+  and the chat panel had nothing to call Claude with. `framefound install`,
+  which every update hands over to, now installs the package with the new
+  release's own list (`installer.install_packages`).
+
+### Measured (2026-11-14) — a model's memory on the mini
+- **Test's memory figure matches Activity Monitor.** On the mini, Test
+  reported 9.2 GB for Gemma 4 12B (`gemma-4-12B-it-OptiQ-4bit`) and 5.7 GB
+  for Gemma 4 E4B (`gemma-4-e4b-it-4bit`); Activity Monitor showed the
+  `python` process at 9.08 GB and 5.58 GB. MLX-VLM's `peak_memory` is in GB,
+  as believed, and reads about 0.1 GB high, the safe side for a budget.
+
 ### Added (2026-11-14) — local AI models, the Claude chat panel, bulk storage on the NAS
 Nothing below has run with a real model, on a Mac, or against the real
 Claude API; model answers in the tests come from a stand-in

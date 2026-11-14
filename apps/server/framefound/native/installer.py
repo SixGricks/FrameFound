@@ -27,6 +27,10 @@ from framefound.native.layout import Layout
 
 Say = Callable[[str], None]
 
+# The package's optional parts a Mac install runs with. The bootstrap script
+# (infrastructure/mac/install.sh) names the same list.
+EXTRAS = "db,queue,scanner,media,ai,mcp,chat"
+
 # program -> the Homebrew formula that provides it
 TOOLS = {
     "valkey-server": "valkey",
@@ -404,6 +408,30 @@ def stop_all(launchd: Launchd, names: tuple[str, ...] | None = None) -> None:
             launchd.stop(service.name)
 
 
+def package_command(layout: Layout) -> list[str]:
+    """The command that installs FrameFound into the venv with this release's extras."""
+    return [
+        homebrew_program("uv") or "uv",
+        "pip",
+        "install",
+        "--python",
+        str(layout.python),
+        "-e",
+        f"{layout.server_source}[{EXTRAS}]",
+    ]
+
+
+def install_packages(layout: Layout) -> None:
+    """Bring the venv up to this release's own list of extras.
+
+    `framefound update` installs the package before handing over to this
+    release's install, but with the list of the code that was running: the
+    release before. An extra added since (`chat` in #44) was never installed
+    by the first update to the release that added it. Here, the list is
+    always this release's. A second run with nothing new is quick."""
+    proc.run(package_command(layout))
+
+
 def install(layout: Layout, launchd: Launchd, say: Say) -> dict[str, str]:
     check_platform(layout)
     for folder in layout.folders():
@@ -416,6 +444,7 @@ def install(layout: Layout, launchd: Launchd, say: Say) -> dict[str, str]:
     # failed before it, and the message said to run a command that did not
     # exist yet.
     place_command(layout, say)
+    install_packages(layout)
     if database.initialise(layout, env):
         say("Created the database cluster")
     write_configs(layout, env)
