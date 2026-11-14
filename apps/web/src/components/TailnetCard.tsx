@@ -8,10 +8,16 @@
 // the tailnet is one button: it asks the host for a sign-in link and opens
 // it. Signing in needs the owner's Tailscale account, so the button grants
 // nothing on its own.
+//
+// How Tailscale is installed depends on the server: on Linux one command,
+// on a Mac the Tailscale app. The card used to show the Linux command (and
+// its uid-1000 operator) on the Mac mini too, so it follows the kind of
+// machine the server says it is (onMac in app/security/tailnetHost.ts).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, type TailscaleState } from "@/lib/api";
+import { ANY_DEVICE_DOWNLOAD, onMac } from "@/app/security/tailnetHost";
 import { copyText } from "@/lib/clipboard";
 
 function CopyRow({ label, value }: { label: string; value: string }) {
@@ -32,6 +38,14 @@ function CopyRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+/** The Linux install: the installer script, a name on the tailnet, and the
+ *  container's user (uid 1000) allowed to ask for a sign-in link. */
+const LINUX_INSTALL =
+  "curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --hostname framefound && sudo tailscale set --operator=$(id -un 1000)";
+/** On a Mac, the command line inside the app: it works whichever store the
+ *  app came from, and whether or not `tailscale` was put on the PATH. */
+const MAC_NAME = "/Applications/Tailscale.app/Contents/MacOS/Tailscale up --hostname framefound";
 
 const PILL: Record<string, { tone?: string; text: string }> = {
   connected: { tone: "ok", text: "connected" },
@@ -109,6 +123,7 @@ export default function TailnetCard({ isAdmin }: { isAdmin: boolean }) {
 
   if (!ts) return null;
   const pill = PILL[ts.state] ?? { text: ts.state };
+  const mac = onMac(ts);
 
   return (
     <div className="card">
@@ -131,7 +146,7 @@ export default function TailnetCard({ isAdmin }: { isAdmin: boolean }) {
           {ts.url && ts.url !== ts.short_url && <CopyRow label="Full address" value={ts.url} />}
           {ts.mcp_url && <CopyRow label="For Claude (MCP connector)" value={ts.mcp_url} />}
           <div className="toolbar" style={{ marginBottom: 0 }}>
-            <a className="btn" href={ts.download} target="_blank" rel="noreferrer noopener">
+            <a className="btn" href={ANY_DEVICE_DOWNLOAD} target="_blank" rel="noreferrer noopener">
               Get Tailscale for your phone or laptop
             </a>
             <a className="btn" href={ts.admin_console} target="_blank" rel="noreferrer noopener">
@@ -163,6 +178,24 @@ export default function TailnetCard({ isAdmin }: { isAdmin: boolean }) {
               An administrator account is needed to sign the server in.
             </p>
           )}
+          {/* Read through the app, the server can only pass on a link the
+              app already holds, so the app is the way to sign in or turn
+              it on; the button stays for that link. A signed-in app that
+              is turned off needs Connect, not Log in. */}
+          {ts.via_app ? (
+            <p className="faint" style={{ fontSize: "0.8rem" }}>
+              {ts.state === "stopped"
+                ? "This Mac's Tailscale is the Tailscale app, so turn it on from the app: click its icon in the menu bar and choose Connect, then reload this page."
+                : "This Mac's Tailscale is the Tailscale app, so sign in from the app: click its icon in the menu bar and choose Log in, then reload this page."}
+            </p>
+          ) : (
+            mac && (
+              <p className="faint" style={{ fontSize: "0.8rem" }}>
+                On a Mac you can also sign in from the Tailscale app: click its icon in the menu
+                bar and choose Log in.
+              </p>
+            )
+          )}
           {waiting && (
             <p className="faint" style={{ fontSize: "0.82rem" }}>
               Finish signing in on the page that opened. This card updates by itself
@@ -188,14 +221,26 @@ export default function TailnetCard({ isAdmin }: { isAdmin: boolean }) {
       ) : (
         <>
           <p className="faint" style={{ marginTop: 4, fontSize: "0.86rem" }}>
-            {ts.state === "unavailable"
-              ? ts.message
-              : "Tailscale isn't installed on this server yet. Run this once on the server, then come back here to sign it in:"}
+            {ts.state === "unavailable" ? (
+              ts.message
+            ) : mac ? (
+              <>
+                Tailscale isn&apos;t on this Mac yet. Install the Tailscale app from the Mac App
+                Store or from{" "}
+                <a href={ts.download} target="_blank" rel="noreferrer noopener">
+                  tailscale.com/download
+                </a>
+                , open it and sign in. Then run this once in Terminal on this Mac, so it is called
+                “framefound” on your Tailscale network, and come back here:
+              </>
+            ) : (
+              "Tailscale isn't installed on this server yet. Run this once on the server, then come back here to sign it in:"
+            )}
           </p>
           {ts.state === "not_installed" && (
             <CopyRow
-              label="On the server"
-              value="curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --hostname framefound && sudo tailscale set --operator=$(id -un 1000)"
+              label={mac ? "In Terminal on this Mac" : "On the server"}
+              value={mac ? MAC_NAME : LINUX_INSTALL}
             />
           )}
         </>

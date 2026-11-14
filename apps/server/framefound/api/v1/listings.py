@@ -35,10 +35,12 @@ from framefound.db.models import (
     Derivative,
     Frame,
     Listing,
+    ListingEditSuggestion,
     ListingItem,
 )
 from framefound.media import photo_index
 from framefound.media.export_state import listing_fingerprint
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
@@ -756,13 +758,40 @@ class ProcessRequest(BaseModel):
     sky_name: str | None = Field(default=None, max_length=120)
     # "edit": edit (and, with a key, name) every photograph.
     # "describe": name them only — for a shoot still edited elsewhere.
-    mode: Literal["edit", "describe"] = "edit"
+    # "local": apply what the local model proposed (`/local-edit`), on the
+    # photographs the operator ticked. No model is asked and no key is read.
+    mode: Literal["edit", "describe", "local"] = "edit"
+    # Read only in "local" mode. The ticked photographs (listing item ids);
+    # None = every proposal still waiting.
+    item_ids: list[uuid.UUID] | None = Field(default=None, max_length=MAX_ITEMS)
+    # Read only in "local" mode: listing item id → the `made_at` of the
+    # proposal the operator saw (GET /local-edit). A photograph whose proposal
+    # was made again since is left waiting, not applied. None (older clients)
+    # compares nothing.
+    made_at: dict[uuid.UUID, datetime] | None = Field(default=None, max_length=MAX_ITEMS)
+    # Keep the model's straightening; off = tone (and name) only.
+    straighten: bool = True
+    # Use the model's caption and file name (a name the operator confirmed
+    # is never replaced either way).
+    names: bool = True
+    # With a sky picked: "suggested" puts it only where the model said the
+    # sky is worth replacing; "all" wherever segmentation finds sky, as the
+    # other modes do.
+    sky: Literal["suggested", "all"] = "suggested"
+
+
+NOTHING_PROPOSED = (
+    "The local model has not suggested anything for these photographs yet. Ask it first."
+)
+# Demo only: Apply runs in this process (the review copy has no queue). The
+# references keep each run from being collected before it finishes.
+_DEMO_RUNS: set[asyncio.Task[None]] = set()
 
 
 @router.post("/{listing_id}/ai-edit", status_code=202)
 async def ai_edit(
     listing_id: uuid.UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: DbDep,
     settings: SettingsDep,
     body: ProcessRequest | None = None,
@@ -779,6 +808,17 @@ async def ai_edit(
     With mode "describe", nothing is edited: each photograph not already
     named by the operator gets a caption and file-name slug from the same
     API. That needs the key — there is no local fallback for describing.
+
+    With mode "local", what the local model proposed for the ticked
+    photographs (`item_ids`; none named = every proposal still waiting) is
+    applied: tone from the learned look or the preset, the model's
+    straightening unless `straighten` is off, its names unless `names` is
+    off, and a picked sky only where the model said the sky is worth
+    replacing unless `sky` is "all". It needs no model and no key, so it is
+    not refused where models cannot run (there are simply no proposals there).
+    With `made_at` (what the page showed), a proposal made again since is
+    left waiting: the answer adds `left` and `note`, and 409 says so when
+    every ticked photograph was left.
     """
     from framefound.media.maps_store import load_ai_edit_config
 
@@ -805,6 +845,8 @@ async def ai_edit(
                 detail="Naming photos uses the Claude API — add an Anthropic key on Security",
             )
         mode = "describe"
+    elif body.mode == "local":
+        mode = "local"
     else:
         mode = "ai" if config.ready else "preset"
     if body.sky_name and ("/" in body.sky_name or "\\" in body.sky_name or ".." in body.sky_name):
@@ -819,7 +861,36 @@ async def ai_edit(
         # The worker skips these too; counting them would promise progress
         # that never comes.
         stmt = stmt.where(ListingItem.naming_source != "confirmed")
+    if mode == "local":
+        # The photographs the worker will edit: those with a proposal still
+        # waiting, of those ticked. The state is the lane's own constant, so
+        # this count and the worker's select cannot drift from what Ask writes.
+        from framefound.processing import colour_jobs
+
+        stmt = stmt.join(
+            ListingEditSuggestion, ListingEditSuggestion.item_id == ListingItem.id
+        ).where(ListingEditSuggestion.state == colour_jobs.PROPOSED)
+        if body.item_ids is not None:
+            stmt = stmt.where(ListingItem.id.in_(body.item_ids))
     images = (await db.execute(stmt)).scalar_one()
+    # Ticked photographs whose proposal was made again after the operator
+    # looked: not counted, and the worker leaves them too.
+    left = 0
+    if mode == "local" and body.made_at:
+        from framefound.processing.tasks import proposal_as_seen
+
+        shown = body.made_at
+        waiting = (
+            await db.execute(
+                stmt.with_only_columns(ListingItem.id, ListingEditSuggestion.created_at)
+            )
+        ).all()
+        left = sum(
+            1
+            for item_id, made in waiting
+            if item_id in shown and not proposal_as_seen(made, shown[item_id])
+        )
+        images -= left
     from framefound.media import looks
 
     # How many shipped photographs the learned look was made from; 0 = none
@@ -828,6 +899,12 @@ async def ai_edit(
     if not images:
         if mode == "describe":
             return {"queued": 0, "mode": mode, "look": 0}
+        if mode == "local" and left:
+            from framefound.processing.tasks import left_for_newer_proposals
+
+            raise HTTPException(status_code=409, detail=left_for_newer_proposals(left))
+        if mode == "local":
+            raise HTTPException(status_code=400, detail=NOTHING_PROPOSED)
         raise HTTPException(status_code=400, detail="No photographs to edit")
 
     listing.ai_edit_state = "queued"
@@ -838,7 +915,33 @@ async def ai_edit(
     try:
         from framefound.processing.tasks import ai_edit_listing
 
-        ai_edit_listing.delay(str(listing_id), body.sky_name, mode)
+        if mode != "local":
+            ai_edit_listing.delay(str(listing_id), body.sky_name, mode)
+        else:
+            from framefound.local_models import availability
+
+            options: dict[str, Any] = {
+                "item_ids": None if body.item_ids is None else [str(i) for i in body.item_ids],
+                "straighten": body.straighten,
+                "names": body.names,
+                "sky": body.sky,
+                "user_id": str(user.id),
+            }
+            if body.made_at is not None:
+                # Only when sent, so an older client's message is unchanged.
+                options["made_at"] = {
+                    str(item): moment.isoformat() for item, moment in body.made_at.items()
+                }
+            if availability(settings).mode == "demo":
+                run = asyncio.create_task(
+                    asyncio.to_thread(
+                        ai_edit_listing, str(listing_id), body.sky_name, "local", options
+                    )
+                )
+                _DEMO_RUNS.add(run)
+                run.add_done_callback(_DEMO_RUNS.discard)
+            else:
+                ai_edit_listing.delay(str(listing_id), body.sky_name, "local", options)
     except Exception:
         listing.ai_edit_state = "failed"
         listing.ai_edit_message = "The processing queue is unavailable"
@@ -851,15 +954,31 @@ async def ai_edit(
         mode=mode,
         look=look,
         sky=body.sky_name or "",
+        left=left,
     )
-    return {"queued": images, "mode": mode, "look": look}
+    answer: dict[str, Any] = {"queued": images, "mode": mode, "look": look}
+    if mode == "local" and body.made_at is not None:
+        # Added only for a client that sent what it saw: `left` photographs
+        # were not queued, and `note` says why in one sentence ("" when none).
+        from framefound.processing.tasks import left_for_newer_proposals
+
+        answer["left"] = left
+        answer["note"] = left_for_newer_proposals(left) if left else ""
+    return answer
 
 
 class RemovalSuggestion(BaseModel):
     asset_id: uuid.UUID
     filename: str
+    # So the page opens the suggestion in its viewer as the right kind without
+    # looking it up among the listing's items first.
+    media_type: str
     reason: str
     keep_instead: uuid.UUID | None
+    # A local model's 0-100 opinion of the photograph (`assets.look_score`),
+    # or None when no model has looked at it. Shown beside the reason; it is
+    # an opinion, not a measurement.
+    score: int | None = None
 
 
 @router.post("/{listing_id}/curate", response_model=list[RemovalSuggestion])
@@ -871,7 +990,9 @@ async def curate(
     Near-duplicate groups keep their sharpest frame; markedly soft frames
     are offered up — but a room never loses its last photograph, because
     coverage beats polish. Suggestions only: nothing is removed until the
-    operator says so.
+    operator says so. Where a local model has scored the photographs, its
+    score may also decide a duplicate group or offer a frame it rated far
+    below the rest (media/curate.py), inside the same two guards.
     """
     from pathlib import Path as PathLib
 
@@ -936,8 +1057,12 @@ async def curate(
 
     items = []
     names = {}
+    kinds = {}
+    scores: dict[str, int | None] = {}
     for item, asset, library in rows:
         names[str(asset.id)] = asset.filename
+        kinds[str(asset.id)] = asset.media_type
+        scores[str(asset.id)] = asset.look_score
         try:
             path = safe_join(PathLib(library.root_path), asset.relative_path)
             sharp = await asyncio.to_thread(measure, asset.id, path)
@@ -949,6 +1074,8 @@ async def curate(
                 "room": item.room or "",
                 "sharpness": sharp,
                 "embedding": embeddings.get(asset.id),
+                "score": asset.look_score,
+                "score_reason": asset.look_reason,
             }
         )
 
@@ -958,8 +1085,12 @@ async def curate(
         RemovalSuggestion(
             asset_id=uuid.UUID(s["id"]),
             filename=names.get(s["id"], ""),
+            # The asset's own kind, never a guess: every id offered was
+            # measured above, so it is in `kinds`.
+            media_type=kinds[s["id"]],
             reason=s["reason"],
             keep_instead=uuid.UUID(s["keep_instead"]) if s["keep_instead"] else None,
+            score=scores.get(s["id"]),
         )
         for s in suggestions
     ]
@@ -978,8 +1109,14 @@ async def download_export(  # type: ignore[no-untyped-def]
             detail="This listing changed after the zip was made — export again so the "
             "download matches what you see",
         )
-    path = settings.data_dir / listing.export_relpath
-    if not path.is_file():
+    # In a thread: the export store may be a share, and a share that has
+    # hung must hold up this request, not the whole API.
+    found = await asyncio.to_thread(stores.locate, listing.export_relpath, settings)
+    path = found.path
+    if not found.there:
+        if found.away is not None:
+            # The zip is very likely fine and its drive or share is away.
+            raise HTTPException(status_code=503, detail=found.away)
         raise HTTPException(status_code=404, detail="Export file is missing")
     safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in listing.name)
     return FileResponse(
@@ -999,7 +1136,21 @@ async def delete_listing(
     if listing is None:
         return
     if listing.export_relpath:
-        (settings.data_dir / listing.export_relpath).unlink(missing_ok=True)
+        export_relpath = listing.export_relpath
+
+        def remove() -> str | None:
+            busy = stores.unwritable("exports", settings)
+            if busy is None:
+                # Its old copy too, if exports were moved and the old copies
+                # kept: a move back would otherwise leave a zip no listing owns.
+                stores.discard(export_relpath, settings)
+            return busy
+
+        # With its store away (or mid-move) the zip cannot be removed, and
+        # deleting the row anyway would leave a file nothing knows about.
+        busy = await asyncio.to_thread(remove)
+        if busy is not None:
+            raise HTTPException(status_code=503, detail=busy)
     # Unlike delete_slideshow (a recorded gap): destructive + admin-only means
     # the audit log gets a row saying who removed it.
     db.add(

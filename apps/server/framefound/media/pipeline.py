@@ -37,6 +37,7 @@ from framefound.media.render import (
     transition_argv,
 )
 from framefound.processing.ffmpeg import FfmpegError, _run, nvenc_available
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
@@ -140,8 +141,12 @@ def run_piece(piece: Piece) -> None:
         raise RenderError(f"Rendering {piece.label} produced an empty clip")
 
 
-def stitch(spec: RenderSpec, pieces: list[Piece], workdir: Path, output: Path) -> RenderResult:
-    """Join the pieces and move the result into place."""
+def assemble(spec: RenderSpec, pieces: list[Piece], workdir: Path) -> RenderResult:
+    """Join the pieces into one finished file, still in `workdir`.
+
+    The caller puts it where it belongs (`stores.put_in_place`). Kept apart
+    from that step so the Celery task can ask, with the whole video in hand,
+    whether the store it is bound for is still there."""
     list_path = workdir / "pieces.txt"
     list_path.write_text(concat_list([str(p.path) for p in pieces]), encoding="utf-8")
 
@@ -157,9 +162,16 @@ def stitch(spec: RenderSpec, pieces: list[Piece], workdir: Path, output: Path) -
         raise RenderError("The render produced no output")
 
     seconds = probe_seconds(staged) or spec.total_seconds
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(staged), str(output))
-    return RenderResult(path=output, seconds=round(seconds, 3), size_bytes=output.stat().st_size)
+    return RenderResult(path=staged, seconds=round(seconds, 3), size_bytes=staged.stat().st_size)
+
+
+def stitch(spec: RenderSpec, pieces: list[Piece], workdir: Path, output: Path) -> RenderResult:
+    """Join the pieces and move the result into place."""
+    staged = assemble(spec, pieces, workdir)
+    # Renamed on the same disk; onto a share, copied under a `.partial` name
+    # first, so a share that drops mid-copy leaves no half a video behind.
+    stores.put_in_place(staged.path, output)
+    return RenderResult(path=output, seconds=staged.seconds, size_bytes=staged.size_bytes)
 
 
 def probe_seconds(path: Path) -> float | None:

@@ -10,8 +10,10 @@ import Link from "next/link";
 import Shell from "@/components/Shell";
 import { api, type DuplicateReport } from "@/lib/api";
 import { bytes, shortDate } from "@/lib/format";
+import { usePageTitle } from "@/lib/hooks";
 
 export default function DuplicatesPage() {
+  usePageTitle("Duplicates");
   const [kind, setKind] = useState<"identical" | "similar">("identical");
   const [minSizeMb, setMinSizeMb] = useState(10);
   const [report, setReport] = useState<DuplicateReport | null>(null);

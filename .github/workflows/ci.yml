@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e ".[dev,db,queue,scanner,media,mcp]"
+      - run: pip install -e ".[dev,db,queue,scanner,media,mcp,chat]"
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy framefound
@@ -47,6 +47,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      # Node's own runner over tests/*.test.mjs; they import .ts directly, so
+      # this needs the Node that strips types unflagged (22.18 or newer).
+      - run: npm test
       - name: License report (informational)
         # Informational, not gating. A copyleft dependency creeping into the
         # web bundle is a licensing decision for a human, not a build failure.

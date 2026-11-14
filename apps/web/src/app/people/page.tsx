@@ -14,8 +14,11 @@ import Link from "next/link";
 import FaceCrop from "@/components/FaceCrop";
 import Shell from "@/components/Shell";
 import { api, type FaceSettings, type PersonSummary } from "@/lib/api";
+import { usePageTitle } from "@/lib/hooks";
+import { count } from "@/lib/storage";
 
 export default function PeoplePage() {
+  usePageTitle("People");
   const [people, setPeople] = useState<PersonSummary[] | null>(null);
   const [settings, setSettings] = useState<FaceSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -115,7 +118,19 @@ export default function PeoplePage() {
           <div className="grid">
             {unnamed.map((person) => (
               <div className="tile" key={person.id}>
-                <div className="tile-frame">
+                {/* The picture goes where Review goes. It was inert here
+                    while a named person's whole tile is a link, so the
+                    largest thing on the tile did nothing when clicked. The
+                    tile itself cannot be the link: it holds the name field
+                    and its buttons. */}
+                <Link
+                  className="tile-frame"
+                  href={`/people/${person.id}`}
+                  aria-label={`Review this unnamed person, ${person.pending_count} ${
+                    person.pending_count === 1 ? "face" : "faces"
+                  }`}
+                  title="Review these faces"
+                >
                   {person.cover ? (
                     <FaceCrop face={person.cover} size={220} />
                   ) : (
@@ -123,8 +138,8 @@ export default function PeoplePage() {
                       <span>no preview</span>
                     </div>
                   )}
-                  <span className="tile-badge">{person.pending_count} faces</span>
-                </div>
+                  <span className="tile-badge">{count(person.pending_count, "face")}</span>
+                </Link>
                 <div className="tile-meta">
                   {naming === person.id ? (
                     <div style={{ display: "grid", gap: 6 }}>
@@ -192,7 +207,7 @@ export default function PeoplePage() {
         <>
           <div className="sectionhead">
             <h2>Named</h2>
-            <span className="faint mono">{named.length} people</span>
+            <span className="faint mono">{count(named.length, "person", "people")}</span>
           </div>
           <div className="grid">
             {named.map((person) => (

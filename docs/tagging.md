@@ -21,23 +21,68 @@ example. No records a rejection, and the same wrong guess is never offered
 again. The **Tags** page has a review queue if you would rather work through
 them in bulk than one asset at a time.
 
-**Answer them in bulk.** On the Tags page, press **Review** beside a tag. The
-queue is strongest first, so there is usually one line between right and
-wrong — draw it, then answer everything above it at once:
+**Answer them in bulk.** On the Tags page, press **Review** beside a tag; the
+page scrolls to its queue. The queue is strongest first, so there is usually
+one line between right and wrong — draw it, then answer everything above it
+at once:
 
-- **↑ down to here** on a tile selects it and every stronger one above it;
-  **shift-click** selects a range; a plain click adds or removes one;
-  **Select all** takes the whole queue.
+- **Click a picture to look at it.** It opens over the queue: a clip plays, a
+  photograph is shown large. Nothing is lost by looking — the queue and the
+  selection are exactly as you left them when you close it. A clip is
+  suggested for its three best frames, which the small picture may not
+  show, so play it before you answer.
+- **Tick the box** in a picture's corner to add or remove one; **↑ down to
+  here** on a tile selects it and every stronger one above it;
+  **shift-click** on a picture or a box selects a range; **Select all** takes
+  the whole queue.
 - The bar at the foot of the screen answers the selection: **Yes**, **No**,
   or **Yes to these, no to the other N** — the whole queue in one go, the
   selected tiles yes and every other tile *shown* no. **Y** and **N** on the
-  keyboard do the same; **Esc** clears the selection.
+  keyboard do the same; **Esc** clears the selection. The keys work straight
+  after a tick — there is no need to click anywhere else first — and a key
+  held down counts once.
 
 One request answers them all and the tag re-learns once. Only suggestions
 still waiting change: anything already answered elsewhere — on the asset
 page, in another tab, by Claude in chat — is left exactly as it was. Claude
 can do the same through the MCP connector (`decide_tags`), when you tell it
 your answers.
+
+**Or one at a time, in the viewer.** With a picture open, **←** and **→**
+step through the queue. **Y** and **N** answer the one on screen and move to
+the next; **Space** adds it to the selection instead, to be answered with the
+rest; **Esc** closes the viewer and leaves the selection alone. Every key has
+a button beside it, and **Open full page** opens the asset — transcript,
+scenes, details — in a new tab, so the queue stays where it is. While the
+player itself has focus the arrows scrub and Space pauses, as in any player.
+A clip with no playable copy (a library with proxies turned off, or the drive
+that holds them away) shows its poster frame and says which.
+
+**The same viewer is on the other grids**, with the same keys, and none of
+them loses a selection or an open panel by looking:
+
+- **People.** The magnifier on a face opens the photograph or clip it was
+  found in, with the face in question shown beside the buttons. **Y** and
+  **N** answer that one face; **Space** adds it to the selection. The answer
+  bar is pinned to the foot of the screen there too, one row for "To review"
+  and one for "Found elsewhere". With the viewer closed, **Y**, **N** and
+  **Esc** act on one grid only — the one you selected in last, which the bar
+  marks — so a selection waiting in the other grid is never answered by a
+  second press; its row keeps its own buttons. The keys are off while the
+  name field is open, because a name is made of letters.
+- **Listings.** Any picture in the gallery opens — a video plays. In
+  "Suggested removals" **Y** removes and **N** keeps, and one button shows
+  the photograph that would be kept instead. In "Add photos" the picture
+  looks and the tick chooses; **Space** chooses from the viewer.
+- **Slideshows.** A proposed photograph opens large and can be removed from
+  there.
+
+In the table, a tag's name and its **Tagged** count open Browse filtered to
+that tag — the way to see what a round of answers just tagged. While a queue
+is open they open in a new tab, so the queue and whatever is ticked in it
+stay as they are. **Re-learn**
+reports in its row: that it has started, what it found when it finishes, or
+why it could not start.
 
 **Correcting it is the feature**, not a workaround. The match gets sharper each
 time you answer.
@@ -250,6 +295,91 @@ rules and vocabulary are cached across a run, so the repeats bill cheaper.
 
 ---
 
+## Suggestions from a model on this Mac
+
+A model running on the Mac mini itself (the **Looker**, chosen on the **AI
+models** page — [local-models.md](local-models.md)) can look at photographs
+and at each shot of a clip and propose tags, the way Claude does, at no
+cost and with nothing leaving the building.
+
+*Where this stands (2026-11-13):* built and tested, and not yet run on a
+Mac or with a real model. Two things set the Looker going: a review of a
+folder, which only an administrator can start and only by asking
+(**Review with AI**, on a folder in Browse or on a library), and a
+library's own box on the Libraries page for looking at what arrives
+([local-models.md](local-models.md#reviewing-a-folder-on-request)). On the
+Tags page a card, **Suggestions from the local model**, says how many are
+waiting, and each one reads "suggested by local model".
+
+**They are suggestions like any other.** Each lands in the review queue on
+the Tags page with the origin `local`, beside the learner's and Claude's,
+and becomes an example only when you say yes. A no is kept as a rejection
+and never offered again, and a tag you have already answered on a picture
+is left alone. `review_queue(origin="local")` lists them for Claude
+([mcp.md](mcp.md)).
+
+**A stricter bar than Claude's.** A review is thousands of pictures nobody
+is watching, so a local model's answer passes its own admission policy: a
+word from your vocabulary needs 60% confidence, a brand-new word 85%, three
+words at most, four tags per picture. It is `LOCAL_POLICY` in
+`framefound/looking/prompt.py`, written to be changed like Claude's. A
+setting, `new_tags`, stops it proposing new words at all: an administrator
+changes it under **What the Looker does** on the AI models page ("Let it
+propose new tags").
+
+**One suggestion per tag per clip.** A clip is looked at shot by shot, so
+the same tag may be said of several shots. That is one suggestion, and it
+follows the strongest guess: its confidence, the look that made it, and the
+moment it was seen at.
+
+**The moment a suggestion was seen at.** A suggestion about a clip keeps
+the middle of the shot the model was looking at (`at_ms`, in milliseconds
+from the start of the clip). A photograph's has none. It is kept so the
+clip can be opened where the model saw the thing, not at its first frame:
+a power broom that is on screen for one shot of a long clip is found at
+once. The queue's API hands it over with each suggestion, beside the name
+of the model that made it and whether the demonstration made it up
+(`at_ms`, `model`, `demo` on `GET /api/v1/tags/{id}/pending`). On the Tags
+page such a suggestion reads "suggested by local model · at 00:08", with
+"(made up)" when the demonstration invented it, and the viewer starts the
+clip at that moment.
+
+**What the model said is kept.** Every suggestion points at the look that
+made it: which shot, which model build and question, the caption and score,
+and what became of each tag the model proposed. Removing a model never
+removes its suggestions or what it said.
+
+**Two limits hold suggestions back rather than bury the queue.**
+
+- **A full queue.** Once a tag has 200 local suggestions waiting — as many
+  as the Tags page loads for one tag — further ones for that tag are held
+  back. Answer some and later looks fill the room.
+- **The new-tag allowance.** One review may add 30 words the catalogue did
+  not have, and so may one run of looking at a library's new footage.
+  After that its new words are held back; words already in the vocabulary
+  are not affected. A word a review has added is the catalogue's from then
+  on, so a second shot proposing it needs only the lower bar.
+
+A held suggestion is not written and is not offered later by itself. The
+look keeps what the model proposed and that it was held, the review counts
+it, and its closing sentence says so: "41 suggestions were held back: its
+tag already had a full queue on the Tags page, or this review had proposed
+its 30 new tags." Only a suggestion that would add a row is ever held: one
+that meets, or strengthens, a suggestion already on the same clip adds
+nothing to any queue. Holding is not rejecting: nothing is stored against
+the picture. A local model's suggestions count toward the 60 a tag may have
+waiting, so while its queue is full the learner adds nothing to it either;
+answer the queue down and the learner tops it up again from the strongest
+matches, held pictures included if they match.
+
+**It does not take a picture out of Claude's pool.** A picture only a local
+model has guessed at still counts as untagged for **Review with Claude**:
+Claude is the better second opinion, and an archive the Mac has been
+through should still be one Claude can review. Once you answer a local
+guess it is your opinion like any other, and the picture leaves the pool.
+
+---
+
 ## Reference
 
 | | |
@@ -258,9 +388,10 @@ rules and vocabulary are cached across a run, so the repeats bill cheaper.
 | Tasks | `framefound/processing/tag_tasks.py` (`suggest_tags_for_asset` runs from the embedding stage; `suggest_all_tags` is the nightly sweep) |
 | Claude reviewer | `framefound/ai/tag_review.py`, `framefound/processing/tag_review_tasks.py` |
 | Spend ledger and cap | `framefound/ai/spend.py` |
-| API | `/api/v1/tags`, `/api/v1/tags/assets/{id}`, `/api/v1/tags/review/claude` |
-| Tables | `tags`, `asset_tags` (`origin`: clip / claude / mcp), `ai_usage` |
-| UI | `components/TagEditor.tsx`, `app/tags/page.tsx`, `components/AiEditCard.tsx` |
+| A local model's suggestions | `framefound/looking/prompt.py` (`LOCAL_POLICY`, `clean`), `framefound/looking/store.py` (`suggest`, the two limits), `framefound/looking/__init__.py` (the numbers: 200, 30) |
+| API | `/api/v1/tags`, `/api/v1/tags/assets/{id}`, `/api/v1/tags/review/claude`; for a local model's reviews, `/api/v1/looks` ([local-models.md](local-models.md#for-developers-the-looking-api)) |
+| Tables | `tags`, `asset_tags` (`origin`: clip / claude / mcp / local; `look_id`, `at_ms` for local), `looks`, `ai_usage` |
+| UI | `components/TagEditor.tsx`, `app/tags/page.tsx`, `components/MediaPreview.tsx` (the viewer), `components/AiEditCard.tsx` |
 
 Related: [location.md](location.md) uses the same embeddings to infer where
 media was shot.

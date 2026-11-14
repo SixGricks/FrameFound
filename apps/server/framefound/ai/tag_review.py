@@ -16,13 +16,18 @@ Two routes lead here and both end in the same place:
   operator, looks at a preview and proposes tags through a tool. The
   operator is already in the loop; the proposals go straight to the queue.
 
-Either way a proposal lands in the review queue as a `suggested` row —
+A model on this Mac (framefound/looking) reaches the same queue through
+`proposals_from_answer` and `write_proposals`, under origin `local` and a
+stricter admission policy of its own (looking/prompt.LOCAL_POLICY).
+
+Whichever route, a proposal lands in the review queue as a `suggested` row —
 never as a fact. The operator's yes or no is what trains the learner, and
 a second opinion that could confirm itself would not be a second opinion.
 """
 
 import base64
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,6 +55,9 @@ MAX_TAG_CHARS = 60
 ORIGIN_CLIP = "clip"
 ORIGIN_CLAUDE = "claude"
 ORIGIN_MCP = "mcp"
+# A model on this Mac (framefound/looking). Its rows also say which look
+# proposed them (`look_id`) and, on a clip, the moment (`at_ms`).
+ORIGIN_LOCAL = "local"
 
 REVIEW_TOOL: dict[str, Any] = {
     "name": "review_tags",
@@ -210,9 +218,9 @@ def parse_answer(
 ) -> tuple[list[TagProposal], str]:
     """The model's tool call as proposals, cleaned and de-duplicated.
 
-    A "match" the vocabulary does not actually contain is treated as new —
-    the model occasionally rewords a tag — so a misspelling can never
-    silently attach to the wrong existing tag.
+    This half knows Anthropic's envelope: the refusal, the tool call among
+    the content blocks. What the answer inside it becomes is
+    `proposals_from_answer`, which a model on this Mac goes through too.
     """
     if payload.get("stop_reason") == "refusal":
         raise RecipePickUnavailable("The model declined to look at this picture")
@@ -225,34 +233,65 @@ def parse_answer(
         answer = dict(tool_use["input"])
     except (KeyError, StopIteration, TypeError) as err:
         raise RecipePickUnavailable("The model returned no answer") from err
+    return proposals_from_answer(answer, vocabulary_slugs)
 
+
+def proposals_from_answer(
+    answer: Mapping[str, Any], vocabulary_slugs: set[str]
+) -> tuple[list[TagProposal], str]:
+    """An answer's `matches` and `new_tags` as proposals, and its one-line
+    `description` — whoever gave the answer, with no provider's envelope.
+
+    The answer is a model's text and is read as that: anything that is not
+    the shape asked for is skipped rather than trusted, names are cut and
+    lowercased, a confidence is held to 0-1, and the same tag said twice is
+    kept once at its stronger confidence. Nothing here is written anywhere.
+
+    A "match" the vocabulary does not actually contain is treated as new —
+    the model occasionally rewords a tag — so a misspelling can never
+    silently attach to the wrong existing tag. Which list the model put a
+    tag in decides nothing: `existing` is the slug being in
+    `vocabulary_slugs`.
+    """
+    if not isinstance(answer, Mapping):
+        return [], ""
     best: dict[str, TagProposal] = {}
     for key, existing_claim in (("matches", True), ("new_tags", False)):
         rows = answer.get(key) or []
         if not isinstance(rows, list):
             continue
         for row in rows:
-            if not isinstance(row, dict):
+            # A tag that is not text is skipped, not turned into text:
+            # clean_tag's str() would make a null "none" and a nested object
+            # "{'x': 'silo'}", each a new word in the review queue.
+            if not isinstance(row, dict) or not isinstance(row.get("tag"), str):
                 continue
-            name = clean_tag(row.get("tag", ""))
+            name = clean_tag(row["tag"])
             slug = slugify(name)
             if not slug:
                 continue
             try:
                 confidence = min(1.0, max(0.0, float(row.get("confidence", 0.0))))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError: JSON may carry a whole number of any length,
+                # and one too long to be a float used to end the run here.
                 confidence = 0.0
             proposal = TagProposal(
                 name=name,
                 confidence=round(confidence, 3),
                 existing=slug in vocabulary_slugs,
-                why=" ".join(str(row.get("why", "")).split())[:200] if not existing_claim else "",
+                why=_one_line(row.get("why")) if not existing_claim else "",
             )
             if slug not in best or (best[slug].confidence or 0.0) < confidence:
                 best[slug] = proposal
     proposals = sorted(best.values(), key=lambda p: -(p.confidence or 0.0))
-    description = " ".join(str(answer.get("description", "")).split())[:200]
-    return proposals, description
+    return proposals, _one_line(answer.get("description"))
+
+
+def _one_line(text: object) -> str:
+    """A reason or a description: one line, cut to 200 characters, and empty
+    when the model sent something other than text (a null is not "None")."""
+    return " ".join(text.split())[:200] if isinstance(text, str) else ""
 
 
 def ask_for_tags(
@@ -354,6 +393,12 @@ def _untagged_filter() -> Any:
     picture it has guessed at is still one Claude has not looked at.
     Legacy suggestions from before `origin` existed are the learner's too.
 
+    A local model's pending guess does not count either. Claude is the
+    better second opinion and costs money only when the operator runs it;
+    an archive a model on the Mac has been through should still be one
+    Claude can review. Once the operator answers a local guess it is their
+    opinion like any other, and the picture leaves the pool.
+
     A picture the API reviewer has already answered for is out, whatever it
     wrote: when Claude only agreed with the learner, or the admission policy
     kept nothing, no row is written, and without this the nightly sweep
@@ -366,7 +411,7 @@ def _untagged_filter() -> Any:
 
     learner_guess = and_(
         AssetTag.source == "suggested",
-        or_(AssetTag.origin.is_(None), AssetTag.origin == ORIGIN_CLIP),
+        or_(AssetTag.origin.is_(None), AssetTag.origin.in_((ORIGIN_CLIP, ORIGIN_LOCAL))),
     )
     has_opinion = exists().where(AssetTag.asset_id == Asset.id, ~learner_guess)
     reviewed = exists().where(
@@ -413,6 +458,8 @@ OUTCOME_NEW_TAG = "suggested (new tag)"
 OUTCOME_ALREADY = "already tagged"
 OUTCOME_REJECTED = "previously rejected — kept"
 OUTCOME_PENDING = "already suggested"
+# Only with `strengthen`: the pending suggestion now carries this, stronger, guess.
+OUTCOME_STRENGTHENED = "already suggested — now with a stronger guess"
 OUTCOME_UNUSABLE = "unusable name"
 
 
@@ -423,6 +470,9 @@ async def write_proposals(
     *,
     origin: str,
     created_by: uuid.UUID | None = None,
+    look_id: uuid.UUID | None = None,
+    at_ms: int | None = None,
+    strengthen: bool = False,
 ) -> dict[str, str]:
     """Proposals become `suggested` rows for the operator to judge.
 
@@ -430,6 +480,16 @@ async def write_proposals(
     alone: a rejection stays rejected, which is the whole reason removals
     are stored rather than deleted. Returns what happened to each name, so
     the caller (a task log or Claude in a conversation) can say so.
+
+    `look_id` and `at_ms` are stored on a row this call adds: the local
+    model's look that proposed it, and the moment in a clip it is about.
+
+    `strengthen` is for a model that looks at a clip shot by shot and may
+    suggest one tag for several shots. A suggestion still pending from the
+    same origin, at a lower confidence, takes the stronger guess — its
+    confidence, look and moment — so the Tags page opens on the shot the
+    model was surest of. It stays a pending suggestion; a row of another
+    origin, or one the operator has answered, is never changed.
 
     Added to the session, not committed; the caller commits.
     """
@@ -451,6 +511,12 @@ async def write_proposals(
             )
         ).scalar_one_or_none()
         if link is not None:
+            if strengthen and _weaker_pending(link, origin, proposal.confidence):
+                link.confidence = proposal.confidence
+                link.look_id = look_id
+                link.at_ms = at_ms
+                outcomes[tag.name] = OUTCOME_STRENGTHENED
+                continue
             outcomes[tag.name] = {
                 "manual": OUTCOME_ALREADY,
                 "confirmed": OUTCOME_ALREADY,
@@ -465,8 +531,19 @@ async def write_proposals(
                 confidence=proposal.confidence,
                 origin=origin,
                 created_by=created_by,
+                look_id=look_id,
+                at_ms=at_ms,
             )
         )
         outcomes[tag.name] = OUTCOME_NEW_TAG if created else OUTCOME_SUGGESTED
     await db.flush()
     return outcomes
+
+
+def _weaker_pending(link: AssetTag, origin: str, confidence: float | None) -> bool:
+    """A row `strengthen` may move: still a suggestion, from this same origin
+    (a local look never rewrites the learner's or Claude's number), with a
+    confidence below the new one. A guess with no number strengthens nothing."""
+    if link.source != "suggested" or link.origin != origin or confidence is None:
+        return False
+    return link.confidence is None or link.confidence < confidence

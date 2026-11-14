@@ -1,0 +1,44 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Asks for an account (gated auto), holds one build and no settings file, so access can only be tried through its README. Every value is a stand-in.",
+  "private": false,
+  "disabled": false,
+  "gated": "auto",
+  "id": "nvidia/demo-gated-gguf",
+  "author": "nvidia",
+  "sha": "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d",
+  "lastModified": "2026-10-12T00:00:00.000Z",
+  "tags": [
+    "gguf",
+    "license:other"
+  ],
+  "cardData": {
+    "license": "other",
+    "license_name": "nvidia-open-model-agreement"
+  },
+  "config": {},
+  "gguf": {
+    "architecture": "demo",
+    "context_length": 32768
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1519
+    },
+    {
+      "rfilename": "README.md",
+      "size": 3100
+    },
+    {
+      "rfilename": "demo-gated-Q4_K_M.gguf",
+      "size": 2684354560,
+      "lfs": {
+        "sha256": "cc384f518b32707bd64884b23cbaf022f4f15126451631800d92e4f3167549b3",
+        "size": 2684354560
+      }
+    }
+  ],
+  "framefound_contents": {
+    "README.md": "# demo-gated-gguf\n\nAn invented model.\n"
+  }
+}

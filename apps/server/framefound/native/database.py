@@ -68,7 +68,14 @@ def psql(env: dict[str, str], sql: str, database: str | None = None) -> str:
 
 
 def initialise(layout: Layout, env: dict[str, str]) -> bool:
-    """Create the cluster if there is none. True when it was created."""
+    """Create the cluster if there is none. True when it was created.
+
+    The encoding and the locale are stated, never taken from the Terminal
+    the installer happens to run in: a cluster's locale is fixed when it is
+    made (it decides how text sorts, and so what every text index means),
+    and the services start it under `services.LOCALE` whoever is logged in.
+    An existing cluster is never touched, so one made by an earlier release
+    (which stated the same two values) is read exactly as before."""
     if (layout.pgdata / "PG_VERSION").exists():
         return False
     layout.run.mkdir(parents=True, exist_ok=True)
@@ -86,7 +93,7 @@ def initialise(layout: Layout, env: dict[str, str]) -> bool:
                 # Every connection proves the password, local socket included.
                 "--auth=scram-sha-256",
                 "--encoding=UTF8",
-                "--locale=en_US.UTF-8",
+                f"--locale={services.LOCALE}",
             ],
             capture=True,
         )

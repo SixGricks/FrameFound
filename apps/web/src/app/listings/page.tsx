@@ -15,6 +15,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
 import { api, type ListingFolder, type ListingSummary } from "@/lib/api";
+import { usePageTitle } from "@/lib/hooks";
 
 const STATUS_LABEL: Record<string, string> = {
   none: "",
@@ -32,6 +33,7 @@ function addressFromFolder(path: string): string {
 }
 
 function ListingsInner() {
+  usePageTitle("Listings");
   const router = useRouter();
   const params = useSearchParams();
   const [listings, setListings] = useState<ListingSummary[] | null>(null);

@@ -1,7 +1,8 @@
 "use client";
 
-// AI settings — the Anthropic key that powers the recipe-picker and the tag
-// reviewer, and the monthly ceiling on what either may spend.
+// AI settings — the Anthropic key that powers the recipe-picker, the tag
+// reviewer and the chat panel, and the monthly ceiling on what all of them
+// together may spend.
 //
 // Same contract as the maps keys: sealed at rest, presence-only in the API,
 // and nothing leaves the machine until the operator presses a button that
@@ -13,6 +14,7 @@
 import { useEffect, useState } from "react";
 
 import { api, type AiEditSettings } from "@/lib/api";
+import { modelName } from "@/lib/chatWords";
 
 // Measured in the Sep 2026 bake-off against what shipped (docs/ai-editing-models.md):
 // colour distance from the final across 7 shoots, and the API's own token counts.
@@ -39,6 +41,17 @@ const REVIEW_MODELS = [
   { id: "claude-sonnet-5-5", label: "Sonnet 5.5 — ≈ $0.008/picture" },
   { id: "claude-opus-5-5", label: "Opus 5.5 — ≈ $0.015/picture" },
 ];
+
+// A word on the chat models people will weigh; the list itself is the
+// server's. Chat sends the whole conversation with every request, so the
+// difference in price between models shows more here than per photo.
+// Relative prices from the price sheet (ai/spend.py), Nov 2026.
+const CHAT_NOTES: Record<string, string> = {
+  "claude-opus-5-5": "the best at multi-step work (recommended)",
+  "claude-sonnet-5-5": "about half the price of Opus 5.5",
+  "claude-haiku-5-5": "quickest and cheapest, for simple look-ups",
+  "claude-fable-5-1": "about twice the price of Opus 5.5",
+};
 
 function money(value: number): string {
   return `$${value.toFixed(2)}`;
@@ -81,6 +94,9 @@ export default function AiEditCard() {
 
   if (!settings) return null;
 
+  // The server offers only models it has a price for (a model it cannot
+  // price would spend outside the budget); an older server offers none.
+  const chatModels = settings.chat_models ?? [];
   const spent = settings.spent_this_month_usd;
   const budget = settings.monthly_budget_usd;
   const used = budget > 0 ? Math.min(1, spent / budget) : 1;
@@ -89,7 +105,7 @@ export default function AiEditCard() {
   return (
     <>
       <div className="sectionhead">
-        <h2>AI photo editing and tag review</h2>
+        <h2>Claude: photo editing, tag review and chat</h2>
         <span className="faint mono">
           {settings.configured ? `key configured · ${settings.model}` : "not configured"}
         </span>
@@ -100,7 +116,8 @@ export default function AiEditCard() {
           small preview of each photograph goes to the Claude API, slider values
           or tag suggestions come back, and everything else happens on this
           machine. Photos leave only when you press those buttons (or turn the
-          nightly review on). The key is sealed at rest and never shown again
+          nightly review on). The same key powers “Ask Claude”, the chat panel
+          beside every page. The key is sealed at rest and never shown again
           after saving.
         </p>
         <div className="toolbar" style={{ marginTop: 8 }}>
@@ -180,9 +197,11 @@ export default function AiEditCard() {
         </div>
         <p className="faint" style={{ fontSize: "0.82rem", marginTop: 4 }}>
           The ceiling on everything FrameFound asks the Claude API this calendar
-          month — auto-edit, naming and the tag reviewer together. A run stops
-          <em> before</em> the call that would cross it and says so. Set it to 0
-          to pause all calls without removing the key.
+          month — auto-edit, naming, the tag reviewer and the chat panel
+          together. A run stops <em>before</em> the call that would cross it and
+          says so; in the chat panel, Claude stops answering until next month or
+          until you raise it. Set it to 0 to pause all calls without removing
+          the key.
         </p>
         <div className="toolbar">
           <span className="faint" style={{ fontSize: "0.8rem" }}>
@@ -276,6 +295,47 @@ export default function AiEditCard() {
                   }
                 }}
               />
+            </div>
+          </>
+        )}
+
+        {/* ---- the chat panel ---- */}
+        {settings.configured && chatModels.length > 0 && (
+          <>
+            <div className="sectionhead" style={{ marginTop: 14 }}>
+              <h3 style={{ margin: 0 }}>Chat panel</h3>
+              <span className="faint mono">{settings.chat_model}</span>
+            </div>
+            <p className="faint" style={{ fontSize: "0.82rem", marginTop: 4 }}>
+              “Ask Claude”, beside every page: Claude can search the catalogue,
+              look at pictures and propose changes, and asks before changing
+              anything. What you type and which page you are on go to the Claude
+              API; pictures go only while a conversation’s pictures switch is
+              on. This model is used for new conversations — each conversation
+              keeps the one it began with.
+            </p>
+            <div className="toolbar">
+              <label className="faint" htmlFor="chat-model" style={{ fontSize: "0.8rem" }}>
+                Chat model
+              </label>
+              <select
+                id="chat-model"
+                className="select"
+                style={{ flex: 1, minWidth: 240 }}
+                value={settings.chat_model}
+                disabled={busy}
+                onChange={(e) => save({ chat_model: e.target.value })}
+              >
+                {!chatModels.includes(settings.chat_model) && (
+                  <option value={settings.chat_model}>{modelName(settings.chat_model)}</option>
+                )}
+                {chatModels.map((id) => (
+                  <option key={id} value={id}>
+                    {modelName(id)}
+                    {CHAT_NOTES[id] ? ` — ${CHAT_NOTES[id]}` : ""}
+                  </option>
+                ))}
+              </select>
             </div>
           </>
         )}

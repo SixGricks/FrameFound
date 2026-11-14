@@ -4,8 +4,10 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { api } from "@/lib/api";
+import { usePageTitle } from "@/lib/hooks";
 
 function LoginForm() {
+  usePageTitle("Sign in");
   const router = useRouter();
   const params = useSearchParams();
   const [email, setEmail] = useState("");

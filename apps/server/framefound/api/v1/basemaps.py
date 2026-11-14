@@ -7,8 +7,9 @@ a background image.
 
 PMTiles avoids all of it. A whole region is **one file**, addressed by HTTP
 range requests — the same mechanism this application already implements for
-video scrubbing. So the basemap is a download into the data directory and an
-endpoint that serves byte ranges out of it. No tile server, no database, no
+video scrubbing. So the basemap is a download into the basemap folder (the
+data directory, or wherever Storage has moved them) and an endpoint that
+serves byte ranges out of it. No tile server, no database, no
 extra container, nothing to monitor.
 
 Once a file is present, nothing about the map leaves the network: the tiles are
@@ -17,8 +18,9 @@ local and MapLibre renders them in the browser.
 
 import asyncio
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import httpx
 import structlog
@@ -27,14 +29,14 @@ from pydantic import BaseModel, Field
 
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
 from framefound.media.streaming import range_file_response
+from framefound.storage import stores
 
 log = structlog.get_logger()
 
 router = APIRouter(prefix="/basemaps", tags=["basemaps"])
 
-# Where downloaded extracts live. Under data_dir so `manage.sh backup` already
-# knows about it and a NAS cache drive can hold it.
-SUBDIR = "basemaps"
+# Downloaded extracts live in `<data_dir>/basemaps`, or in the basemap store
+# when they have been moved to one (the `basemaps` kind of storage/stores.py).
 # Filenames are operator-supplied; keep them boring so nothing can traverse.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MAX_BYTES = 32 * 1024**3  # a planet extract is ~100 GB; refuse to fill the disk
@@ -95,10 +97,69 @@ class DownloadRequest(BaseModel):
     bbox: str = Field(default="", max_length=80)
 
 
+# The helpers below look at the basemap folder, which may be on a share. A
+# share that has hung answers nothing for a minute, so the handlers run them
+# in a worker thread (`asyncio.to_thread`) and never on the event loop — the
+# mistake api/v1/system.py's `_volumes` records having made.
+
+
 def _basemap_dir(settings: SettingsDep) -> Path:
-    path = Path(settings.data_dir) / SUBDIR
+    """The folder basemaps live in: under the data directory, or the basemap
+    store when they have one (storage/stores.py).
+
+    Answers 503 while that store is away. Carrying on would `mkdir` on the
+    empty folder an unmounted share leaves behind, and every basemap sitting
+    safely on the share would be reported as not installed."""
+    away = stores.away("basemaps", settings)
+    if away is not None:
+        raise HTTPException(status_code=503, detail=away)
+    path = stores.kind_folder("basemaps", settings)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _writable_dir(settings: SettingsDep) -> Path:
+    """`_basemap_dir` for adding or removing a basemap: also refused while
+    the basemaps are in the last steps of being moved to another folder."""
+    busy = stores.unwritable("basemaps", settings)
+    if busy is not None:
+        raise HTTPException(status_code=503, detail=busy)
+    return _basemap_dir(settings)
+
+
+def waiting_path(data_dir: Path, name: str) -> Path:
+    """Where a basemap that was extracted whole waits when its store could
+    not take it (processing/tasks.py `fetch_basemap`).
+
+    Always on this machine's own disk. Hours of range requests are not
+    thrown away because a share was off for the minute they ended in: the
+    next request for that basemap puts this file in place instead of
+    extracting again, and the list below says what is waiting."""
+    return data_dir / "tmp" / f"basemap-{name}.pmtiles"
+
+
+def _waiting(data_dir: Path) -> list[str]:
+    """The basemaps waiting to be put in place, by name."""
+    return sorted(
+        path.stem.removeprefix("basemap-")
+        for path in waiting_path(data_dir, "*").parent.glob(waiting_path(data_dir, "*").name)
+        if path.is_file()
+    )
+
+
+def kept_where(settings: SettingsDep) -> str:
+    """Where the basemaps are kept, in the Storage page's own words for it.
+
+    The page said "served straight out of your data directory" after Storage
+    had moved them to the bulk folder. Reads only the settings and the
+    stores record; no store is touched."""
+    root = stores.kind_folder("basemaps", settings)
+    bulk = stores.bulk_root(settings)
+    if root == stores.default_root("basemaps", settings):
+        return "kept on this machine, in FrameFound's data folder"
+    if bulk is not None and root == bulk / "basemaps":
+        return "kept in the bulk folder"
+    return "kept in a folder of their own"
 
 
 def _safe_name(name: str) -> str:
@@ -113,44 +174,76 @@ def _safe_name(name: str) -> str:
 
 @router.get("", response_model=BasemapList)
 async def list_basemaps(_user: CurrentUser, settings: SettingsDep) -> BasemapList:
-    directory = _basemap_dir(settings)
-    on_disk = {p.stem: p for p in directory.glob("*.pmtiles")}
+    def installed() -> tuple[str | None, dict[str, int], list[str], str]:
+        # Extracted whole, and kept on this machine because the store could
+        # not take them at that moment.
+        held = _waiting(settings.data_dir)
+        kept = kept_where(settings)
+        # With the basemap store away the page still lists what can be had,
+        # and says why nothing shows as installed, rather than failing to load.
+        gone = stores.away("basemaps", settings)
+        if gone is not None:
+            return gone, {}, held, kept
+        on_disk = {p.stem: p.stat().st_size for p in _basemap_dir(settings).glob("*.pmtiles")}
+        return None, on_disk, [name for name in held if name not in on_disk], kept
+
+    away, on_disk, waiting, kept = await asyncio.to_thread(installed)
 
     entries: list[Basemap] = []
     for item in CATALOGUE:
         name = str(item["name"])
-        path = on_disk.pop(name, None)
+        size = on_disk.pop(name, None)
         entries.append(
             Basemap(
                 name=name,
                 label=str(item["label"]),
-                installed=path is not None,
-                size_gb=round(path.stat().st_size / 1024**3, 2) if path else None,
+                installed=size is not None,
+                size_gb=round(size / 1024**3, 2) if size is not None else None,
                 approx_gb=float(item["approx_gb"]),  # type: ignore[arg-type]
                 tiles_url=f"/api/v1/basemaps/{name}/tiles.pmtiles",
             )
         )
     # Anything the operator put there by hand still shows up and still works.
-    for name, path in sorted(on_disk.items()):
+    for name, size in sorted(on_disk.items()):
         entries.append(
             Basemap(
                 name=name,
                 label=f"{name} (added manually)",
                 installed=True,
-                size_gb=round(path.stat().st_size / 1024**3, 2),
+                size_gb=round(size / 1024**3, 2),
                 approx_gb=None,
                 tiles_url=f"/api/v1/basemaps/{name}/tiles.pmtiles",
             )
         )
 
+    note = (
+        f"{away} The basemaps already downloaded are still on it, and show here again "
+        "when it is back."
+        if away
+        else f"A basemap is one file, {kept}, and FrameFound serves it itself: "
+        "no tile server, no extra container, and once it is downloaded "
+        "nothing about the map leaves your network."
+    )
+    if waiting:
+        # A basemap has no row to carry a status, so the reason one is not
+        # showing as installed is said here, where the page already looks.
+        note = (
+            f"{', '.join(waiting)} finished downloading while the basemap store could not "
+            "be written to, and "
+            + ("is" if len(waiting) == 1 else "are")
+            + " waiting on this machine. "
+            + (
+                "Once the store is connected, choose Download again"
+                if away
+                else "Choose Download again"
+            )
+            + " and it is put in place at once; nothing is downloaded twice. "
+            + note
+        )
     return BasemapList(
         basemaps=entries,
         installed_count=sum(1 for e in entries if e.installed),
-        note=(
-            "A basemap is one file served straight out of your data directory. "
-            "No tile server, no extra container, and once it is downloaded "
-            "nothing about the map leaves your network."
-        ),
+        note=note,
     )
 
 
@@ -163,9 +256,7 @@ async def serve_tiles(name: str, request: Request, _user: CurrentUser, settings:
     scrubbing path already does. Reusing it means no new streaming code and no
     new class of bug.
     """
-    path = _basemap_dir(settings) / f"{_safe_name(name)}.pmtiles"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="That basemap is not installed")
+    path = await asyncio.to_thread(_archive, settings, name)
     return range_file_response(request, path, "application/octet-stream")
 
 
@@ -185,8 +276,10 @@ async def download_basemap(
     if not _valid_bbox(bbox):
         raise HTTPException(status_code=400, detail="Need a bounding box as west,south,east,north")
 
-    target = _basemap_dir(settings) / f"{name}.pmtiles"
-    if target.exists():
+    def installed() -> bool:
+        return (_writable_dir(settings) / f"{name}.pmtiles").exists()
+
+    if await asyncio.to_thread(installed):
         return {"status": "already installed", "name": name}
 
     try:
@@ -213,10 +306,21 @@ def _valid_bbox(bbox: str) -> bool:
 
 @router.delete("/{name}", status_code=204, dependencies=[require_admin])
 async def delete_basemap(name: str, _user: CurrentUser, settings: SettingsDep) -> None:
-    path = _basemap_dir(settings) / f"{_safe_name(name)}.pmtiles"
+    safe = _safe_name(name)
+
+    def remove() -> None:
+        _writable_dir(settings)  # 503 while the store is away or being moved
+        # From the store, and from the folder basemaps were last moved out
+        # of: left among the old copies, it would be installed again by a
+        # move back.
+        stores.discard(f"basemaps/{safe}.pmtiles", settings)
+        # And an extract that finished while the store was away and is
+        # still waiting on this machine to be put in place.
+        waiting_path(settings.data_dir, safe).unlink(missing_ok=True)
+
     # Regenerable by re-downloading, so this is a genuine delete rather than a
     # flag — but it is admin-only and explicit.
-    path.unlink(missing_ok=True)
+    await asyncio.to_thread(remove)
     log.info("basemap.deleted", name=name)
 
 
@@ -251,6 +355,17 @@ TILE_CACHE_SECONDS = 86400
 BASEMAP_MAXZOOM = 14
 
 
+def _seek_source(handle: BinaryIO) -> Callable[[int, int], bytes]:
+    """What `pmtiles.reader.MmapSource` gives a Reader, by seek and read: an
+    error on a share that has dropped is then an exception for this one tile."""
+
+    def get_bytes(offset: int, length: int) -> bytes:
+        handle.seek(offset)
+        return handle.read(length)
+
+    return get_bytes
+
+
 def _archive(settings: SettingsDep, name: str) -> Path:
     path = _basemap_dir(settings) / f"{_safe_name(name)}.pmtiles"
     if not path.is_file():
@@ -271,14 +386,20 @@ async def serve_tile(  # type: ignore[no-untyped-def]
     """
     from pmtiles.reader import MmapSource, Reader
 
-    path = _archive(settings, name)
+    path = await asyncio.to_thread(_archive, settings, name)
+    # A memory map is the quick way to read a local file, and the wrong way
+    # to read one on a share or an external drive: if that goes away with
+    # the map open, the next page touched kills the whole API (SIGBUS) rather
+    # than failing one tile. A store of its own is read with plain seeks.
+    mapped = not stores.is_separate("basemaps", settings)
 
     def read() -> bytes | None:
         # pmtiles ships no type information, so these three calls are an
         # untyped boundary. Narrowed to the calls themselves rather than
         # relaxed for the whole module.
         with open(path, "rb") as handle:
-            reader = Reader(MmapSource(handle))  # type: ignore[no-untyped-call]
+            source = MmapSource(handle) if mapped else _seek_source(handle)  # type: ignore[no-untyped-call]
+            reader = Reader(source)  # type: ignore[no-untyped-call]
             # `get(z, x, y)`, not a packed tile id — the id form belongs to
             # the writer side of this library.
             tile: bytes | None = reader.get(z, x, y)  # type: ignore[no-untyped-call]
@@ -346,7 +467,7 @@ async def serve_style(
     Layer names follow the Protomaps v4 schema, which is what the extract came
     from.
     """
-    _archive(settings, name)
+    await asyncio.to_thread(_archive, settings, name)
     base = str(request.base_url).rstrip("/")
     tiles = f"{base}/api/v1/basemaps/{_safe_name(name)}/tiles/{{z}}/{{x}}/{{y}}.mvt"
 
@@ -420,7 +541,7 @@ async def use_basemap(
     """
     from framefound.media.maps_store import load_maps_config, save_maps_config
 
-    _archive(settings, name)
+    await asyncio.to_thread(_archive, settings, name)
     config = await load_maps_config(db)
     config.provider = "maplibre"
     config.basemap_enabled = True

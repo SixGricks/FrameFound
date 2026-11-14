@@ -1,0 +1,69 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. It says, three ways, that it only loads with program code from its own repository: the custom_code tag, auto_map in config, and Python files.",
+  "id": "allenai/demo-needs-code",
+  "author": "allenai",
+  "sha": "4444444444444444444444444444444444444444",
+  "lastModified": "2026-09-01T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "transformers",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "custom_code",
+    "image-text-to-text",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "license": "apache-2.0"
+  },
+  "config": {
+    "model_type": "demo",
+    "auto_map": {
+      "AutoModelForImageTextToText": "modeling_demo.DemoModel"
+    }
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 4410
+    },
+    {
+      "rfilename": "config.json",
+      "size": 1904
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 7516192768,
+      "lfs": {
+        "sha256": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "size": 7516192768
+      }
+    },
+    {
+      "rfilename": "modeling_demo.py",
+      "size": 48213
+    },
+    {
+      "rfilename": "processing_demo.py",
+      "size": 9120
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ],
+  "framefound_contents": {
+    "config.json": "{\n  \"model_type\": \"demo\",\n  \"auto_map\": {\n    \"AutoModelForImageTextToText\": \"modeling_demo.DemoModel\"\n  }\n}"
+  }
+}

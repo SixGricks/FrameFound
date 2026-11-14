@@ -1,0 +1,56 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. Packaged by an approved converter whose page does not say what it was made from.",
+  "id": "mlx-community/orphan-4bit",
+  "author": "mlx-community",
+  "sha": "8888888888888888888888888888888888888888",
+  "lastModified": "2026-09-05T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "mlx-vlm",
+    "image-text-to-text",
+    "4-bit",
+    "license:mit"
+  ],
+  "cardData": {
+    "license": "mit"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 420
+    },
+    {
+      "rfilename": "config.json",
+      "size": 1500
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 3221225472,
+      "lfs": {
+        "sha256": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "size": 3221225472
+      }
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ]
+}

@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Archivo, IBM_Plex_Mono, Instrument_Serif } from "next/font/google";
 
+import ChatPanel from "@/components/ChatPanel";
+
 import "./globals.css";
 
 // next/font downloads and self-hosts at BUILD time — no runtime request to
@@ -33,7 +35,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${instrument.variable} ${archivo.variable} ${plexMono.variable}`}>
-      <body>{children}</body>
+      {/* The chat panel is here, round every page, and not in the Shell:
+          each page renders its own Shell, so anything in it is thrown away
+          on navigation, and a conversation must outlive a click on the menu. */}
+      <body>
+        <ChatPanel>{children}</ChatPanel>
+      </body>
     </html>
   );
 }

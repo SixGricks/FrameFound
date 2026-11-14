@@ -10,11 +10,18 @@ from pydantic import BaseModel
 from framefound import __version__
 from framefound.api.v1.assets import router as assets_router
 from framefound.api.v1.basemaps import router as basemaps_router
+from framefound.api.v1.chat import router as chat_router
+from framefound.api.v1.clip_looks import router as clip_looks_router
+from framefound.api.v1.cuts import router as cuts_router
 from framefound.api.v1.develop import router as develop_router
 from framefound.api.v1.duplicates import router as duplicates_router
 from framefound.api.v1.gdrive import router as gdrive_router
 from framefound.api.v1.libraries import router as libraries_router
+from framefound.api.v1.listing_suggestions import router as listing_suggestions_router
 from framefound.api.v1.listings import router as listings_router
+from framefound.api.v1.local_models import router as local_models_router
+from framefound.api.v1.local_models_compare import router as local_models_compare_router
+from framefound.api.v1.looks import router as looks_router
 from framefound.api.v1.media import router as media_router
 from framefound.api.v1.panel import router as panel_router
 from framefound.api.v1.people import router as people_router
@@ -50,6 +57,13 @@ api_v1.include_router(develop_router)
 api_v1.include_router(gdrive_router)
 api_v1.include_router(panel_router)
 api_v1.include_router(showcase_router)
+api_v1.include_router(chat_router)
+api_v1.include_router(local_models_router)
+api_v1.include_router(local_models_compare_router)
+api_v1.include_router(clip_looks_router)
+api_v1.include_router(listing_suggestions_router)
+api_v1.include_router(cuts_router)
+api_v1.include_router(looks_router)
 
 
 class SystemInfo(BaseModel):

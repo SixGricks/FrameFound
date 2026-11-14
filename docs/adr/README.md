@@ -29,3 +29,5 @@ deleted — superseded ADRs are marked as such.
 | [0020](0020-mcp-connector.md) | Claude as a client: MCP connector in the API, tag suggestions, one spend ledger and cap | Accepted |
 | [0021](0021-proxy-pairing-and-selects.md) | Editing proxies paired, not catalogued; selects to Premiere as markers and a string-out | Accepted |
 | [0022](0022-native-mac-install.md) | Native install on the Mac mini (launchd agents, movable proxy store, one-command migration); workers on another machine as an option | Accepted |
+| [0023](0023-managed-model-runtimes.md) | Local AI models and the software that runs them managed from the UI (versioned runtimes, one model server, one gate, one lane) | Accepted |
+| [0024](0024-compare-measures-agreement-not-quality.md) | Compare measures agreement with decisions already made, not quality (counts with their denominators, a frozen sample and truth, the owner decides) | Accepted |

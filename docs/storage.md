@@ -9,10 +9,230 @@ they are configured separately.
 | **Catalog database** | ~1 MB per 5k assets | No (back it up) | **Local disk**, always |
 | **Derivatives** (thumbnails, posters, proxies, frames, transcript sidecars) | large — proxies dominate | Yes, from originals | local disk *or* a NAS share |
 
-> **On the native Mac install** ([mac.md](mac.md)) proxies have a store of
-> their own, separate from the rest of the derived files and movable with
-> one command: `framefound proxies move <folder>`. What follows is for the
-> containers, where the whole derivative store moves together.
+> **Two classes of derived data.** What every page reads stays on the
+> machine's own disk; the bulky kinds can each live somewhere else and be
+> moved one at a time — see
+> [Bulk storage](#bulk-storage-a-folder-per-kind). "Moving derivatives to a
+> NAS" further down is the containers' older, all-or-nothing form of the
+> same idea.
+
+## Bulk storage: a folder per kind
+
+| Stays on the machine's own disk (fast) | Bulk: a NAS share or an external drive |
+|---|---|
+| The catalogue database — never on a network share | Video proxies |
+| Thumbnails, previews, posters, frames, shot stills (read on every page) | Slideshow videos |
+| Transcripts and the queue | Listing exports |
+| Work in progress: a render's pieces, a zip being built | Basemaps |
+| Frame grabs made for editing | The second copy of each catalogue backup |
+| A copy of each AI model that has a job (Looker, Editor) | The model library: every AI model added on the AI models page |
+
+Most of what FrameFound generates is small and read on every page. That
+stays beside the database. A few kinds are large and read rarely, and each
+of those can live somewhere else:
+
+| Kind | What | Unless moved | In a bulk folder |
+|---|---|---|---|
+| `proxies` | video proxies | `<data>/derivatives/…/proxy.mp4` | `<bulk>/proxies/derivatives/…/proxy.mp4` |
+| `renders` | slideshow videos | `<data>/renders/<id>.mp4` | `<bulk>/renders/<id>.mp4` |
+| `exports` | listing zips | `<data>/exports/listings/<id>.zip` | `<bulk>/exports/listings/<id>.zip` |
+| `basemaps` | map extracts | `<data>/basemaps/<name>.pmtiles` | `<bulk>/basemaps/<name>.pmtiles` |
+| `backups` | the copy of each catalogue backup kept off the machine | none | `<bulk>/backups/` |
+| `models` | the AI model library | `<models>/library/<publisher>/<name>/<revision>/` | `<bulk>/models/library/…` |
+
+The model library is the one kind with a copy on the machine as well. While
+the library is somewhere that can be unplugged, each model that has a job is
+also kept in `<models>/local-ai/…` and runs from there, so a NAS that is
+away stops downloads, removals and changes of job, never a model already at
+work. With the library on the machine's own disk nothing is copied. The
+models folder also holds the vision and transcription models' caches; only
+`library/` is the library, and only it is counted, moved or removed.
+
+Nothing in the database changes when a kind moves: a slideshow's row still
+says `renders/<id>.mp4`, and only the folder that path hangs off is
+different. Work in progress — a render's pieces, a zip being built, a
+basemap being extracted — is always written on the machine's own disk, and
+the finished file is copied to its store under a `.partial` name and renamed.
+A share that drops mid-write leaves nothing that looks finished.
+
+### One folder for all of it
+
+Give FrameFound one folder on the NAS and every bulky kind gets a subfolder
+of its own inside it. On a Mac, at install or any time after:
+
+```bash
+framefound install --store "/Volumes/Photos/Framefound"
+```
+
+or, on any install, from the Storage page. Either way the folder is checked
+(below), marked, given a marked subfolder per kind, and recorded. **Nothing
+is moved.** A kind that has made nothing yet starts in the bulk folder
+straight away; a kind that already has files stays where it is, still
+found, until you move it. So on a new install everything lands on the NAS
+from the first file, and on an old one you bring the kinds over one at a
+time.
+
+A folder that looks like a share that is not connected is asked about
+before anything is made in it, on the page and at the command line alike
+(`--yes` answers in advance): one on the same disk as FrameFound's own
+data, or one that is the bulk folder already but has lost its marker.
+Marked on the quiet, every kind in it would read as connected and fill the
+machine's own disk while the files on the real share were reported missing.
+The second case has one honest use — the drive was replaced and the folder
+is a new, empty one — and saying yes starts it empty.
+
+The folder can sit on the same share as a library — the Photos drive, say.
+Its marker keeps the scanner out, so it is never catalogued as footage. It
+cannot be a folder the catalogue already lists footage in.
+
+### Moving one kind
+
+On the **Storage** page each kind has a line: where it lives, how much there
+is, whether that place is connected. An administrator gives a kind a new
+folder and starts the move; the page shows how far it has got, can be closed
+and come back to, and offers Cancel. From a terminal on a Mac the same move
+is:
+
+```bash
+framefound storage                                  # where everything is
+framefound storage move renders "/Volumes/Fast SSD/FrameFound renders"
+```
+
+One move runs at a time, whichever way it was started: the turn is a file
+in the data folder (`.framefound-move.lock`), so the page refuses a move
+while one started from a terminal is running, and the other way about. A
+move whose process was killed stops holding the turn after two minutes.
+
+A move is copy, check, switch (`storage/moves.py`):
+
+1. the folder is checked — on a drive that is really there, empty or
+   already FrameFound's, not another kind's folder, not one the catalogue
+   lists footage in, and with room for what is coming. Only the last folder
+   of the path is ever created: FrameFound will not make `/Volumes/Photos`
+   itself, because if that drive is not connected the "store" would be on
+   the machine's own disk. A folder on the same disk as FrameFound's own
+   data is asked about before it is used, for the same reason, and nothing
+   is made in it until the answer is yes;
+2. the files are copied while everything keeps running. This is the long
+   part; it can be interrupted or cancelled, and asking again carries on
+   from what was copied;
+3. the kind's writers are paused for the last look, what changed during the
+   copy is brought over, and the move waits until nothing is still being
+   written (a writer that reaches its last step during the pause waits for
+   the move rather than losing its work);
+4. every file is checked to have arrived, and the copy of anything deleted
+   while the move ran — a basemap, a slideshow — is taken back out of the
+   new folder, so the switch does not bring it back;
+5. the folder is marked and recorded in `<data>/.framefound-stores.json`.
+   Every running process follows at its next lookup — no restart.
+
+**Room.** A move never fills a disk. Before each pass it compares what is
+still to copy with the free space where it is going, less
+`FRAMEFOUND_MIN_FREE_GB` — the same floor every other writer keeps, because
+the machine's own disk also holds the catalogue — and refuses with both
+figures if it will not fit. That includes moving a kind *back* onto the
+machine's own disk. The page says so at the click (for proxies, from what
+the catalogue says they take), and a copy stops short of the floor if
+something else fills the disk meanwhile.
+
+**The same folder under another name.** On a Mac's volumes and on SMB
+shares `Framefound` and `FrameFound` are one folder; a symlink is another
+name for its target; and macOS mounts a share a second time as
+`/Volumes/Photos-1`. A kind is never "moved" to the folder it is already in
+under another name, and Remove old copies refuses when the old folder and
+the one in use turn out to be one: every file there would "have a copy".
+
+Nothing of a kind's is deleted where it lives. The old copies stay where
+they were until you choose **Remove old copies** for that kind on the
+Storage page, which removes only that kind's files and only those that have
+a copy in the folder now in use; any that do not are counted and left, to
+be removed in a second, explicit step. Deleting a basemap, a slideshow or a
+listing after a move also deletes its old copy, so that moving back onto
+the old folder later does not bring it back.
+
+A store that is gone for good — a drive that died — cannot be copied from.
+Start its replacement empty instead (the "start empty" choice on the page;
+`--empty` on the command line) and have the files made again:
+`framefound proxies rebuild` for proxies, Render or Export again for the
+rest. That works at the same path too: a replacement drive given the old
+one's name, or a share rebuilt under its old name.
+
+A move that stops — the drive is unplugged, the worker is restarted —
+changes nothing: the kind still lives where it did, its writers are no
+longer paused, and what was copied is kept. The Storage page says why;
+start it again when the cause is fixed.
+
+### Where a kind lives
+
+First match wins:
+
+1. its own folder, recorded by a move;
+2. its own setting — `FRAMEFOUND_PROXY_DIR` for proxies (written by
+   `framefound proxies move`), `FRAMEFOUND_BACKUP_COPY_DIR` for backup
+   copies;
+3. `<bulk>/<kind>`, where `<bulk>` is the one folder for everything bulky
+   (the folder recorded when it was set, else `FRAMEFOUND_BULK_DIR`);
+4. where it always was. With nothing set, nothing changes.
+
+The newest instruction wins: `framefound proxies move` clears a folder an
+earlier move recorded for proxies, and a later move records one that
+outranks the setting.
+
+The record is what is followed, for the bulk folder as well: once it has
+been set, editing `FRAMEFOUND_BULK_DIR` in the settings file changes
+nothing, restart or not (`framefound storage` points out when the two
+differ). Change the bulk folder with `framefound install --store <folder>`
+or on the Storage page.
+
+That record is the one thing in the data folder that cannot be rebuilt, so
+each catalogue backup on a Mac carries it (`stores.json` in the archive),
+and `framefound restore` puts it back when the data folder has none — a new
+Mac, a data folder made again. An install that already has a record keeps
+its own: that one says where the files are now.
+
+### When a store is away
+
+**A store carries a marker file**, and nothing is written to it without one:
+`.framefound-bulk-store` in the bulk folder and in each kind's folder
+(`.framefound-proxy-store` for proxies, as before). A share that fails to
+mount leaves its mountpoint behind as an empty folder; without the marker
+test FrameFound would start filling the machine's own disk under the
+share's name. While a store is away, only what lives there stops, and says
+so: the page asking for a slideshow's video or a listing's zip is told the
+store is not connected (not that the file is gone), and a render or export
+started meanwhile stops with that reason. Search, thumbnails and everything
+on the machine's own disk carry on. The Storage page shows which kinds are
+affected; the System page and the banner show the bulk folder as one
+unreachable volume. The marker also keeps the scanner out, so a bulk folder
+on the same share as a library is never catalogued as footage.
+
+Nothing that stopped starts again by itself when the store is back:
+
+- **Slideshows and exports** — press Render or Export again.
+- **Proxies** for clips that arrived meanwhile were skipped, not failed,
+  and nothing queues a proxy twice. `framefound proxies rebuild` (in the
+  containers, `python -m framefound.ops.proxy_store --requeue`) finds the
+  videos that never got the proxy their library asks for, as well as
+  proxies on record whose file is gone, and queues them.
+- **A basemap** whose download finished while the store could not be
+  written to is kept on the machine's own disk rather than thrown away. The
+  Basemaps page says it is waiting; choose Download for it again and it is
+  put in place at once, with nothing downloaded twice.
+- **An AI model's download** keeps what had arrived: **Resume** on the AI
+  models page carries on from there. A model that was being copied onto the
+  machine to take over a job did not take it — the model that had the job
+  still has it — and is given the job again on the same page.
+
+### In the containers
+
+The Storage page and its moves are the same code there, with limits. A
+kind can only be moved to a folder the containers can already see and write
+— in practice a share under the cache root, which they see as
+`/cache/<name>/…` (`FRAMEFOUND_CACHE_ROOT` on the host). Backup copies are
+made by the Mac install's backup service only; the containers' backup
+service keeps its archives in `/data/backups` and copies them nowhere. And
+none of this has been tried on the container install yet: it has automated
+tests, and has never moved a real file there.
 
 ## Moving derivatives to a NAS
 

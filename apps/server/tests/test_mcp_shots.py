@@ -15,7 +15,7 @@ import pytest
 from test_mcp import connect, env, serving  # noqa: F401 - pytest fixture
 
 from framefound.config import get_settings
-from framefound.db.models import Asset, Frame, Library, ShotWindow
+from framefound.db.models import Asset, Cut, Frame, Library, Look, ShotWindow
 from framefound.mcp import compact
 from framefound.mcp.shots import parse_shot
 from framefound.ops.shots import parse_timeline
@@ -492,3 +492,238 @@ def test_a_premiere_timeline_reads_back_into_pieces() -> None:
         "Brookside Country Club/2026/Drone/DJI_20261103051509_0639_D.MP4"
     )
     assert pieces[1].path == pieces[0].path, "a repeat use refers back to the first <file>"
+
+
+# --- a local model's opinion (L3 D16) -------------------------------------------
+
+
+async def _looked_at(
+    env: dict,  # noqa: F811
+    asset_id: uuid.UUID,
+    start_ms: int,
+    end_ms: int,
+    score: int,
+    **fields: object,
+) -> None:
+    """A current look of one shot, as looking/store.py `record` leaves it."""
+    async with env["factory"]() as db:
+        db.add(
+            Look(
+                asset_id=asset_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                score=score,
+                caption=str(fields.pop("caption", "an orbit of the green")),
+                reason=str(fields.pop("reason", "steady, well lit")),
+                key="google/gemma-4-E4B-it@abc123#look-1",
+                model="google/gemma-4-E4B-it",
+                **fields,
+            )
+        )
+        await db.commit()
+
+
+async def test_a_shot_nobody_looked_at_prints_exactly_as_before(env: dict) -> None:  # noqa: F811
+    """A look of another clip, and a look of this clip at times that are no
+    longer one of its shots, change nothing on this line or the header."""
+    ids = await _course(env)
+    orbit = ids["DJI_20261103051509_0639_D.MP4"]
+    await _looked_at(env, ids["MVI_4945.MP4"], 10000, 30000, 64)
+    await _looked_at(env, orbit, 2000, 9000, 88)  # a shot of an earlier analysis
+    await _looked_at(env, orbit, 2000, 14000, 91, current=False)  # replaced
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        result = await session.call_tool("find_shots", {"moves": ["orbit"]})
+    lines = _text(result).splitlines()
+    assert lines[0] == "2 of 2 shots | id clip in-out move smooth energy light subjects"
+    line = next(line for line in lines if "DJI_0639" in line)
+    assert line == (
+        f"{compact.short_id(orbit)} DJI_0639 "
+        "2.0-14.0s orbit right smooth .95 energy low golden green,bunker"
+    )
+    assert parse_shot(line)[1:] == (2.0, 14.0)
+
+
+async def test_a_looked_at_shot_ends_with_its_score(env: dict) -> None:  # noqa: F811
+    ids = await _course(env)
+    machine = ids["MVI_4945.MP4"]
+    await _looked_at(
+        env, machine, 10000, 30000, 64, caption="an excavator digs", reason="busy but sharp"
+    )
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        result = await session.call_tool("find_shots", {"folder": "brookside"})
+        verbose = await session.call_tool("find_shots", {"moves": ["static"], "verbose": True})
+    lines = _text(result).splitlines()
+    assert lines[0].endswith("subjects [score: a local model's 0-100 opinion]")
+    line = next(line for line in lines if "MVI_4945" in line)
+    # After every measured word; nothing else on the line moves.
+    assert line == (
+        f"{compact.short_id(machine)} MVI_4945 "
+        "10.0-30.0s static smooth .99 energy high mid-sun machine operating,trench score 64"
+    )
+    assert parse_shot(line) == (compact.short_id(machine), 10.0, 30.0)
+    others = [line for line in lines[1:] if "MVI_4945" not in line]
+    assert others and not any("score" in line for line in others)
+    [shot] = verbose.structured_content["result"]
+    assert (shot["score"], shot["caption"], shot["score_reason"], shot["made_up"]) == (
+        64,
+        "an excavator digs",
+        "busy but sharp",
+        False,
+    )
+    assert shot["looked_by"] == "google/gemma-4-E4B-it@abc123#look-1"
+
+
+async def test_shots_can_be_ordered_by_score(env: dict) -> None:  # noqa: F811
+    """Highest score first, unscored shots last in their usual order; and
+    `min_score` keeps only shots scored at least that."""
+    ids = await _course(env)
+    glide = ids["DJI_20261103035806_0495_D.MP4"]
+    await _looked_at(env, glide, 21000, 27000, 80)
+    await _looked_at(env, ids["MVI_4945.MP4"], 10000, 30000, 55)
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        ordered = await session.call_tool("find_shots", {"order": "score"})
+        kept = await session.call_tool("find_shots", {"min_score": 60})
+        refused = await session.call_tool("find_shots", {"min_score": 101})
+    lines = _text(ordered).splitlines()[1:]
+    assert [line.split()[2] for line in lines] == [
+        "21.0-27.0s",
+        "10.0-30.0s",
+        "2.0-14.0s",
+        "27.0-31.0s",
+    ]
+    assert lines[0].endswith(" score 80") and lines[1].endswith(" score 55")
+    kept_lines = _text(kept).splitlines()
+    assert kept_lines[0].startswith("1 of 1 shots")
+    assert kept_lines[1].startswith(compact.short_id(glide) + " DJI_0495 21.0-27.0s")
+    assert refused.is_error
+
+
+# --- a local model's draft (L5 D4) ----------------------------------------------
+
+
+async def _local_draft(
+    env: dict,  # noqa: F811
+    asset_id: uuid.UUID,
+    in_s: float,
+    out_s: float,
+    title: str = "Brookside, first try",
+) -> uuid.UUID:
+    """A cut a local model drafted, as the draft job records it."""
+    from framefound.nle import shotlist
+
+    async with env["factory"]() as db:
+        asset = await db.get(Asset, asset_id)
+        assert asset is not None
+        cut = await shotlist.record_cut(
+            db,
+            title,
+            [(asset, in_s, out_s, 1.0)],
+            client=None,
+            profile=None,
+            created_by=None,
+            source="local",
+            notes=["the orbit opens on the green"],
+            provenance={"model": "mlx-community/gemma-4-12B-it-OptiQ-4bit", "runtime": "demo"},
+        )
+        return cut.id
+
+
+async def _send(env: dict, cut_id: uuid.UUID) -> None:  # noqa: F811
+    """The first download of its Premiere file, as the Cuts page records it."""
+    async with env["factory"]() as db:
+        cut = await db.get(Cut, cut_id)
+        assert cut is not None
+        cut.sent_at = BASE
+        await db.commit()
+
+
+async def test_a_local_draft_does_not_mark_its_shots_used_until_it_is_sent(
+    env: dict,  # noqa: F811
+) -> None:
+    """Three drafts of one folder would otherwise mark half of it used, and
+    the Editor, told to prefer unused shots, would avoid its own last try."""
+    ids = await _course(env)
+    orbit = ids["DJI_20261103051509_0639_D.MP4"]
+    draft = await _local_draft(env, orbit, 3.0, 7.0)
+
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        before = await session.call_tool("find_shots", {"folder": "Brookside"})
+        kept = await session.call_tool("find_shots", {"folder": "Brookside", "exclude_used": True})
+        await _send(env, draft)
+        after = await session.call_tool("find_shots", {"folder": "Brookside"})
+        fresh = await session.call_tool("find_shots", {"folder": "Brookside", "exclude_used": True})
+    line = next(line for line in _text(before).splitlines() if "DJI_0639" in line)
+    assert not line.endswith(" used")
+    assert "DJI_0639" in _text(kept)
+
+    line = next(line for line in _text(after).splitlines() if "DJI_0639" in line)
+    assert line.endswith(" used")
+    assert "DJI_0639" not in _text(fresh)
+    # Only that shot: the draft used nothing else.
+    assert sum(line.endswith(" used") for line in _text(after).splitlines()) == 1
+
+
+async def test_recent_cuts_leaves_out_a_local_draft_that_went_nowhere(
+    env: dict,  # noqa: F811
+) -> None:
+    ids = await _course(env)
+    orbit = compact.short_id(ids["DJI_20261103051509_0639_D.MP4"])
+    draft = await _local_draft(env, ids["MVI_4945.MP4"], 12.0, 18.0)
+
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        alone = await session.call_tool("recent_cuts", {})
+        built = await session.call_tool(
+            "build_rough_cut",
+            {"title": "Brookside Quick 30", "cuts": [{"id": orbit, "in_s": 3.0, "out_s": 7.0}]},
+        )
+        assert not built.is_error, _text(built)
+        claude_only = await session.call_tool("recent_cuts", {"verbose": True})
+        await _send(env, draft)
+        both = await session.call_tool("recent_cuts", {"verbose": True})
+    assert "No cuts recorded" in _text(alone)
+    # Claude's cut counts at once, as it always has.
+    assert [cut["title"] for cut in claude_only.structured_content["result"]] == [
+        "Brookside Quick 30"
+    ]
+
+    sent = {cut["title"]: cut for cut in both.structured_content["result"]}
+    assert set(sent) == {"Brookside Quick 30", "Brookside, first try"}
+    assert sent["Brookside, first try"]["source"] == "local"
+
+
+async def test_claude_revises_an_unsent_local_draft_by_the_id_it_is_given(
+    env: dict,  # noqa: F811
+) -> None:
+    """The draft Claude is asked to improve is the one recent_cuts leaves
+    out, so the tool's own words must not send Claude there for its id: they
+    name the review request, and that id (short, as Claude may copy it)
+    makes the reviewed cut version 2 of the draft's family."""
+    ids = await _course(env)
+    orbit = compact.short_id(ids["DJI_20261103051509_0639_D.MP4"])
+    draft = await _local_draft(env, ids["MVI_4945.MP4"], 12.0, 18.0)
+
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        tool = next(t for t in (await session.list_tools()).tools if t.name == "build_rough_cut")
+        listed = await session.call_tool("recent_cuts", {"verbose": True})
+        reviewed = await session.call_tool(
+            "build_rough_cut",
+            {
+                "title": "Brookside, reviewed",
+                "cuts": [{"id": orbit, "in_s": 3.0, "out_s": 7.0}],
+                "parent": str(draft)[:8],
+            },
+        )
+        wrong = await session.call_tool(
+            "build_rough_cut",
+            {"title": "x", "cuts": [{"id": orbit, "in_s": 3.0, "out_s": 7.0}], "parent": "0" * 8},
+        )
+    assert "No cuts recorded" in _text(listed)
+    described = " ".join((tool.description or "").split())
+    assert "A local draft's id is in the review request about it" in described
+    assert not reviewed.is_error, _text(reviewed)
+    assert reviewed.structured_content["version"] == 2
+    async with env["factory"]() as db:
+        kept = await db.get(Cut, uuid.UUID(reviewed.structured_content["cut_id"]))
+        assert kept is not None and (kept.root_id, kept.parent_id) == (draft, draft)
+    # A wrong id is answered with both places an id comes from.
+    assert "review request" in _text(wrong) and "recent_cuts" in _text(wrong)

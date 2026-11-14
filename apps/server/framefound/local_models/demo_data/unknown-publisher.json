@@ -1,0 +1,55 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the tests and the demo. A build for the Mac from a publisher who is on none of the lists.",
+  "id": "example-lab/some-model",
+  "author": "example-lab",
+  "sha": "7777777777777777777777777777777777777777",
+  "lastModified": "2026-09-04T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "mlx-vlm",
+    "image-text-to-text",
+    "license:mit"
+  ],
+  "cardData": {
+    "license": "mit"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 512
+    },
+    {
+      "rfilename": "config.json",
+      "size": 1500
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 3221225472,
+      "lfs": {
+        "sha256": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+        "size": 3221225472
+      }
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ]
+}

@@ -6,31 +6,84 @@
 // A place has no stable id — clusters are recomputed on demand — so the URL
 // carries the coordinate and radius that define it. That also makes the view
 // linkable and survives a re-cluster, which an index would not.
+//
+// The filters, the sort and the page live in the URL beside it, as they do
+// on /browse. They were component state: opening a photograph on page 3 of
+// "video, newest first" and pressing Back landed on page 1 of everything,
+// closest first.
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
 import { api, type NearbyAsset } from "@/lib/api";
+import { setChatContext } from "@/lib/chatContext";
 import { shortDate } from "@/lib/format";
+import { usePageTitle } from "@/lib/hooks";
 
 const PAGE_SIZE = 60;
 
+// What the URL may ask for. Anything else (a hand-edited link) falls back to
+// the first, rather than a select showing one thing while the grid filters
+// by another.
+const MEDIA = ["", "image", "video", "audio"];
+const SOURCES = ["", "exif", "inferred"];
+const SORTS = ["distance", "captured", "captured_asc", "name"];
+
+function oneOf(allowed: string[], value: string | null): string {
+  return value !== null && allowed.includes(value) ? value : (allowed[0] ?? "");
+}
+
+// The place last shown, so Back draws it at once — and the browser has a
+// page tall enough to restore the scroll position to — while it is fetched
+// again.
+let lastShown: { key: string; assets: NearbyAsset[] } | null = null;
+
 function PlaceView() {
   const params = useSearchParams();
+  const router = useRouter();
   const lat = Number(params.get("lat"));
   const lon = Number(params.get("lon"));
   const radius = Number(params.get("radius")) || 0.5;
   const name = params.get("name") ?? "Place";
+  usePageTitle(name);
+  const placeKey = `${lat},${lon},${radius}`;
 
-  const [assets, setAssets] = useState<NearbyAsset[] | null>(null);
-  const [mediaType, setMediaType] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("");
-  const [sort, setSort] = useState("distance");
-  const [page, setPage] = useState(1);
+  const mediaType = oneOf(MEDIA, params.get("media"));
+  const sourceFilter = oneOf(SOURCES, params.get("source"));
+  const sort = oneOf(SORTS, params.get("sort"));
+  const askedPage = Math.max(1, Number(params.get("page") ?? "1") || 1);
+
+  const [assets, setAssets] = useState<NearbyAsset[] | null>(
+    lastShown?.key === placeKey ? lastShown.assets : null,
+  );
   const [error, setError] = useState<string | null>(null);
+
+  // The query the URL is about to have. `router.replace` lands a moment
+  // later, and a second change made before it did was built on the old
+  // query and undid the first (seen: a media filter lost to a sort chosen
+  // straight after it).
+  const query = useRef(params.toString());
+  useEffect(() => {
+    query.current = params.toString();
+  }, [params]);
+
+  /** Change the view in the URL. A new filter or sort starts at page 1. */
+  const update = useCallback(
+    (changes: Record<string, string | null>, keepPage = false) => {
+      const usp = new URLSearchParams(query.current);
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === "") usp.delete(key);
+        else usp.set(key, value);
+      }
+      if (!keepPage) usp.delete("page");
+      query.current = usp.toString();
+      router.replace(`/places/view?${query.current}`, { scroll: false });
+    },
+    [router],
+  );
 
   const load = useCallback(async () => {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -38,11 +91,13 @@ function PlaceView() {
       return;
     }
     try {
-      setAssets(await api.assetsNear(lat, lon, radius));
+      const found = await api.assetsNear(lat, lon, radius);
+      lastShown = { key: placeKey, assets: found };
+      setAssets(found);
     } catch {
       setError("Could not load this place.");
     }
-  }, [lat, lon, radius]);
+  }, [lat, lon, radius, placeKey]);
 
   useEffect(() => {
     load();
@@ -72,12 +127,33 @@ function PlaceView() {
   }, [assets, mediaType, sourceFilter, sort]);
 
   const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  // A link to page 9 of a place that now has four pages shows the last one,
+  // not an empty grid.
+  const page = Math.min(askedPage, pageCount);
+  /** One page forward or back — from the page the URL is about to show, so
+   *  two quick presses of Next move two pages. */
+  const turn = (by: number) => {
+    const asked = Number(new URLSearchParams(query.current).get("page") ?? "1") || 1;
+    const n = Math.min(pageCount, Math.max(1, Math.min(asked, pageCount) + by));
+    update({ page: n <= 1 ? null : String(n) }, true);
+  };
   const visible = shown.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const inferred = assets?.filter((a) => a.gps_source === "inferred").length ?? 0;
 
-  useEffect(() => {
-    setPage(1);
-  }, [mediaType, sourceFilter, sort]);
+  // For the chat panel: which place, where it is, and what the grid shows.
+  // A place has no id the tools know, so it goes in words.
+  const where = Number.isFinite(lat) && Number.isFinite(lon)
+    ? `at ${lat.toFixed(5)}, ${lon.toFixed(5)}, within ${(radius * 1000).toFixed(0)} m`
+    : "";
+  const showing =
+    assets === null
+      ? ""
+      : `${shown.length} item${shown.length === 1 ? "" : "s"} shown, page ${page} of ${pageCount}`;
+  const detail = [where, showing].filter(Boolean).join("; ");
+  useEffect(
+    () => setChatContext({ title: `Place “${name}”${detail ? ` — ${detail}` : ""}` }),
+    [name, detail],
+  );
 
   if (error) {
     return (
@@ -103,7 +179,12 @@ function PlaceView() {
         <Link className="btn" href="/places" style={{ padding: "6px 12px" }}>
           ← All places
         </Link>
-        <select className="select" value={mediaType} onChange={(e) => setMediaType(e.target.value)}>
+        <select
+          className="select"
+          value={mediaType}
+          onChange={(e) => update({ media: e.target.value })}
+          aria-label="Media type"
+        >
           <option value="">Everything</option>
           <option value="image">Images</option>
           <option value="video">Video</option>
@@ -112,13 +193,19 @@ function PlaceView() {
         <select
           className="select"
           value={sourceFilter}
-          onChange={(e) => setSourceFilter(e.target.value)}
+          onChange={(e) => update({ source: e.target.value })}
+          aria-label="Where the position came from"
         >
           <option value="">Any position source</option>
           <option value="exif">Camera GPS only</option>
           <option value="inferred">Inferred only{inferred ? ` (${inferred})` : ""}</option>
         </select>
-        <select className="select" value={sort} onChange={(e) => setSort(e.target.value)}>
+        <select
+          className="select"
+          value={sort}
+          onChange={(e) => update({ sort: e.target.value === "distance" ? null : e.target.value })}
+          aria-label="Sort"
+        >
           <option value="distance">Closest first</option>
           <option value="captured">Newest first</option>
           <option value="captured_asc">Oldest first</option>
@@ -169,21 +256,13 @@ function PlaceView() {
 
           {pageCount > 1 && (
             <div className="toolbar" style={{ justifyContent: "center", marginTop: 18 }}>
-              <button
-                className="btn"
-                disabled={page === 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-              >
+              <button className="btn" disabled={page === 1} onClick={() => turn(-1)}>
                 Previous
               </button>
               <span className="faint mono">
                 {page} / {pageCount}
               </span>
-              <button
-                className="btn"
-                disabled={page === pageCount}
-                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              >
+              <button className="btn" disabled={page === pageCount} onClick={() => turn(1)}>
                 Next
               </button>
             </div>

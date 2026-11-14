@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 from test_mcp import connect, env, serving  # noqa: F401 - pytest fixture
 
 from framefound.db.models import (
@@ -21,6 +22,7 @@ from framefound.db.models import (
     Transcript,
     TranscriptSegment,
 )
+from framefound.db.models import Cut as CutRow
 from framefound.mcp import compact
 from framefound.nle.fcp7 import Clip, Cut, build_sequence
 
@@ -459,6 +461,48 @@ async def test_a_rough_cut_refuses_an_out_before_its_in(env: dict) -> None:  # n
         )
     assert result.is_error
     assert "must be after" in result.content[0].text
+
+
+async def test_a_cut_built_with_a_parent_is_kept_as_the_next_version(env: dict) -> None:  # noqa: F811
+    """Claude's reviewed cut is linked to the one it revises by one optional
+    parameter: kept beside it as version 2, neither replaced; a parent that
+    is not in history is refused with where the ids are."""
+    video = await _video(env)
+    draft = [{"id": str(video), "in_s": 12.0, "out_s": 15.5, "note": "Look at that barn."}]
+    reviewed = [*draft, {"id": str(video), "in_s": 40.0, "out_s": 44.0}]
+    async with serving(env["app"]), connect(env["app"], env["reader"]) as session:
+        tool = next(t for t in (await session.list_tools()).tools if t.name == "build_rough_cut")
+        first = await session.call_tool("build_rough_cut", {"title": "Ledgerock", "cuts": draft})
+        cut_id = first.structured_content["cut_id"]
+        second = await session.call_tool(
+            "build_rough_cut",
+            {"title": "Ledgerock, reviewed", "cuts": reviewed, "parent": cut_id[:8]},
+        )
+        refused = await session.call_tool(
+            "build_rough_cut", {"title": "x", "cuts": draft, "parent": "0000000000"}
+        )
+
+    # One more parameter, and optional: every call made before still works.
+    assert "parent" in tool.input_schema["properties"]
+    assert sorted(tool.input_schema["required"]) == ["cuts", "title"]
+    assert first.structured_content["version"] == 1
+    assert not second.is_error, second.content
+    body = second.structured_content
+    assert body["version"] == 2
+    assert body["note"].endswith(
+        "Recorded in cut history. Kept as version 2 beside the cut it revises."
+    )
+    async with env["factory"]() as db:
+        rows = (await db.execute(select(CutRow).order_by(CutRow.version))).scalars().all()
+    [v1, v2] = rows
+    assert (str(v1.id), v1.title, v1.version, v1.root_id) == (cut_id, "Ledgerock", 1, None)
+    assert (str(v2.id), v2.root_id, v2.parent_id) == (body["cut_id"], v1.id, v1.id)
+    assert v2.piece_count == 2 and v2.source == "mcp"
+    assert refused.is_error
+    assert refused.content[0].text == (
+        "Error executing tool build_rough_cut: No cut '0000000000'. A local draft's id is in "
+        "the review request about it; recent_cuts with verbose lists the ids of finished cuts."
+    )
 
 
 async def test_search_media_can_answer_with_mac_paths(env: dict) -> None:  # noqa: F811

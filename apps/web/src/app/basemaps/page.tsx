@@ -3,8 +3,10 @@
 // Basemaps: downloading the map itself, so the maps work offline.
 //
 // The important thing this page communicates is that a basemap is *one file*
-// in the data directory. There is no tile server to run and nothing to keep
-// alive, and once a region is here nothing about the map leaves the network.
+// in the basemap folder: the data directory, or wherever Storage has moved
+// them (the server's note says which, in Storage's words). There is no tile
+// server to run and nothing to keep alive, and once a region is here nothing
+// about the map leaves the network.
 //
 // Extraction takes minutes and reports nothing while it runs — pmtiles has no
 // progress output to relay — so the page polls and says plainly that it is
@@ -15,12 +17,14 @@ import Link from "next/link";
 
 import Shell from "@/components/Shell";
 import { api, type Basemap, type BasemapList } from "@/lib/api";
+import { usePageTitle } from "@/lib/hooks";
 
 // While something is extracting, re-check often enough to feel live without
 // hammering an endpoint that stats a directory.
 const POLL_MS = 5000;
 
 export default function BasemapsPage() {
+  usePageTitle("Basemaps");
   const [data, setData] = useState<BasemapList | null>(null);
   const [busy, setBusy] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -110,9 +114,9 @@ export default function BasemapsPage() {
       </div>
 
       <p className="faint" style={{ maxWidth: "60ch" }}>
-        {data?.note ??
-          "A basemap is one file served straight out of your data directory."}{" "}
-        <Link href="/places">Places</Link> uses it to draw the map.
+        {data?.note ?? "A basemap is one file, and FrameFound serves it itself."}{" "}
+        <Link href="/places">Places</Link> uses it to draw the map, and{" "}
+        <Link href="/storage">Storage</Link> shows the folder and can move it.
       </p>
 
       {error && <div className="empty">{error}</div>}

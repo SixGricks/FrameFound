@@ -12,6 +12,7 @@ else is here, where it can be tested.
 
 import os
 import re
+import shlex
 import shutil
 import sys
 import time
@@ -39,7 +40,27 @@ TOOLS = {
     # progress output the proxy copy and the migration rely on.
     "rsync": "rsync",
 }
+# Finding a tool proves something only when it is found where it will be run
+# from. Two ways that went wrong, or could:
+#
+# - Every tool is looked for on the PATH the background services are given
+#   (services.BASE_PATH), never this Terminal's. A Terminal often has a node
+#   of its own (nvm, fnm, volta) or an ffmpeg from conda or MacPorts that
+#   launchd's agents cannot see: counted as installed, Homebrew's would never
+#   arrive, the web service could not start, and the install would still end
+#   on "FrameFound is running" because only the API is asked.
+# - A program macOS has a namesake of in /usr/bin that will not do is on that
+#   PATH too, so for these only Homebrew's own copy counts. The first real
+#   install never installed Homebrew's rsync, because `which rsync` always
+#   answers on a Mac. rsync is the only one: macOS ships no valkey-server,
+#   caddy, node, npm, ffmpeg, ffprobe or exiftool.
+SHADOWED_BY_MACOS = frozenset({"rsync"})
 BREW_PREFIXES = (Path("/opt/homebrew"), Path("/usr/local"))
+# The PATH of the shell the operator is typing in, as the bootstrap script
+# or the command itself (cli.main) found it, before Homebrew was put in
+# front of it. It decides whether `framefound` typed on its own will be
+# found (typed_command).
+SHELL_PATH_ENV = "FRAMEFOUND_SHELL_PATH"
 # macOS privacy controls keep background processes out of these, so neither
 # the checkout nor the install folder may live in one.
 PROTECTED_FOLDERS = ("Desktop", "Documents", "Downloads")
@@ -73,14 +94,20 @@ def brew_prefix() -> Path:
     raise InstallError("Homebrew is not installed. Install it from https://brew.sh and run again.")
 
 
+def homebrew_program(program: str) -> str | None:
+    """Homebrew's own copy of `program` by full path, or None. Never the
+    system's: nothing under a Homebrew prefix came with macOS."""
+    for prefix in BREW_PREFIXES:
+        candidate = prefix / "bin" / program
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def rsync() -> str:
     """Homebrew's rsync by full path where there is one: the system's
     (openrsync) is the one a bare `rsync` may find first."""
-    for prefix in BREW_PREFIXES:
-        candidate = prefix / "bin" / "rsync"
-        if candidate.exists():
-            return str(candidate)
-    return "rsync"
+    return homebrew_program("rsync") or "rsync"
 
 
 def with_homebrew_on_path(path: str) -> str:
@@ -94,11 +121,24 @@ def with_homebrew_on_path(path: str) -> str:
     return os.pathsep.join(parts)
 
 
-def missing_formulae(which: Callable[[str], str | None] = shutil.which) -> list[str]:
-    """Formulae to install, in a stable order, for the programs not found."""
+def service_program(program: str) -> str | None:
+    """`program` as a background service would find it, or None: looked for
+    on the PATH launchd's agents are given, not the one this was typed in."""
+    return shutil.which(program, path=services.BASE_PATH)
+
+
+def missing_formulae(
+    which: Callable[[str], str | None] = service_program,
+    homebrew: Callable[[str], str | None] = homebrew_program,
+) -> list[str]:
+    """Formulae to install, in a stable order, for the programs not found.
+
+    A program macOS has its own version of is looked for under Homebrew
+    only (`homebrew`); the rest where the services will look (`which`)."""
     needed: list[str] = []
     for program, formula in TOOLS.items():
-        if which(program) is None and formula not in needed:
+        found = homebrew(program) if program in SHADOWED_BY_MACOS else which(program)
+        if found is None and formula not in needed:
             needed.append(formula)
     return needed
 
@@ -151,7 +191,9 @@ def ensure_tools(say: Say) -> Path:
         raise InstallError("Could not find a Homebrew Postgres with pgvector after installing one.")
     still_missing = missing_formulae()
     if still_missing:
-        raise InstallError(f"Still not on PATH after installing: {' '.join(still_missing)}")
+        raise InstallError(
+            f"Still not found after Homebrew installed them: {' '.join(still_missing)}"
+        )
     return pg_bin
 
 
@@ -160,7 +202,8 @@ def ensure_env(layout: Layout, pg_bin: Path) -> dict[str, str]:
     Nothing already in the file is changed."""
     template = envfile.initial(layout, str(pg_bin))
     if layout.env_file.exists():
-        envfile.update(layout.env_file, envfile.parse(template), only_missing=True)
+        text = layout.env_file.read_text(encoding="utf-8")
+        envfile.write(layout.env_file, envfile.added(text, template))
     else:
         envfile.write(layout.env_file, template)
     os.chmod(layout.env_file, 0o600)
@@ -259,13 +302,63 @@ def build_web(layout: Layout, say: Say) -> None:
 
 
 def install_command(layout: Layout, prefix: Path) -> Path:
-    """Put `framefound` on PATH (Homebrew's bin is the user's to write)."""
+    """Put `framefound` on PATH (Homebrew's bin is the user's to write).
+    Written whole each time, so a second run leaves the same file."""
     shim = prefix / "bin" / "framefound"
     shim.write_text(
         f'#!/bin/sh\n# FrameFound (docs/mac.md)\nexec "{layout.python}" -m framefound.native "$@"\n'
     )
     shim.chmod(0o755)
     return shim
+
+
+def typed_command(layout: Layout) -> str:
+    """What to type to run FrameFound's command, as things are right now.
+
+    `framefound` once the command is in Homebrew's bin and the operator's
+    shell looks there; its full path when the shell does not (a Terminal
+    opened before Homebrew was put on PATH); and the interpreter itself
+    while there is no command at all. A message that tells someone what to
+    run next uses this, so it never names a command they do not have.
+
+    The shell's PATH is the one recorded before Homebrew was put in front
+    of it: by the bootstrap script, or by `cli.main` for every command typed
+    afterwards. This process's own PATH always has Homebrew's bin on it by
+    then, so it is only what is left to go on when neither has run."""
+    try:
+        shim = brew_prefix() / "bin" / "framefound"
+    except InstallError:
+        shim = None
+    if shim is None or not shim.is_file():
+        return f"{shlex.quote(str(layout.python))} -m framefound.native"
+    shell_path = os.environ.get(SHELL_PATH_ENV) or os.environ.get("PATH", "")
+    if str(shim.parent) in (folder.rstrip("/") for folder in shell_path.split(os.pathsep)):
+        return "framefound"
+    return shlex.quote(str(shim))
+
+
+def place_command(layout: Layout, say: Say) -> None:
+    """Put `framefound` on PATH now, before any step that can fail for a
+    reason the command helps with. Says something only when typing the bare
+    name will not work.
+
+    Not being able to write it is no reason to stop: everything else
+    installs without it, and every later message names what does work."""
+    try:
+        shim = install_command(layout, brew_prefix())
+    except OSError as err:
+        say(
+            f"The framefound command could not be put in Homebrew's bin folder ({err}). "
+            f"Until that is put right, type this in its place: {typed_command(layout)}"
+        )
+        return
+    typed = typed_command(layout)
+    if typed != "framefound":
+        say(
+            f"The framefound command is in {shim.parent}, where this Terminal does not "
+            f"look. Type {typed}, or open a new Terminal window once Homebrew is on "
+            'your PATH (https://brew.sh, "Next steps").'
+        )
 
 
 def wait_for_api(env: dict[str, str], seconds: float = 180) -> bool:
@@ -292,7 +385,10 @@ def start_all(layout: Layout, env: dict[str, str], launchd: Launchd, say: Say) -
         launchd.write(service)
     launchd.start("postgres")
     if not proc.wait_for_port(services.port(env, "POSTGRES_PORT"), 60):
-        raise InstallError(f"Postgres did not start — see {layout.logs / 'postgres.log'}")
+        raise InstallError(
+            f"Postgres did not start — see {layout.logs / 'postgres.log'}, "
+            f"then: {typed_command(layout)} doctor"
+        )
     if not database.exists(env):
         say("Creating the database")
         database.create(env)
@@ -315,6 +411,11 @@ def install(layout: Layout, launchd: Launchd, say: Say) -> dict[str, str]:
     os.chmod(layout.home, 0o700)
     pg_bin = ensure_tools(say)
     env = ensure_env(layout, pg_bin)
+    # As soon as it can work: the venv, the tools and the settings file are
+    # all there. On the first real install this was the last step, Postgres
+    # failed before it, and the message said to run a command that did not
+    # exist yet.
+    place_command(layout, say)
     if database.initialise(layout, env):
         say("Created the database cluster")
     write_configs(layout, env)
@@ -327,7 +428,7 @@ def install(layout: Layout, launchd: Launchd, say: Say) -> dict[str, str]:
     start_all(layout, env, launchd, say)
     if not wait_for_api(env):
         raise InstallError(
-            f"The API did not come up — see {layout.logs / 'api.log'}, then: framefound doctor"
+            f"The API did not come up — see {layout.logs / 'api.log'}, "
+            f"then: {typed_command(layout)} doctor"
         )
-    install_command(layout, brew_prefix())
     return env

@@ -4,7 +4,9 @@ import asyncio
 import shutil
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,8 @@ from sqlalchemy import func, select, text
 from framefound import __version__
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep
 from framefound.db.models import Asset, Derivative, Job
+from framefound.local_models import availability as local_ai_availability
+from framefound.local_models import jobs as local_ai_jobs
 from framefound.storage import stores
 from framefound.storage.reachability import unreachable_reason
 
@@ -201,12 +205,12 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     libraries = (await db.execute(select(Library).order_by(Library.name))).scalars().all()
     for library in libraries:
         targets.append((library.name, Path(library.root_path), int(counts.get(library.id, 0))))
-    # A separate proxy store (storage/stores.py) is a drive or share that can
-    # be away. Listed last: on the same share as a library it is the same
-    # volume, and the library's name is the more useful label for it.
-    proxy_store = stores.separate_proxy_store(settings)
-    if proxy_store is not None:
-        targets.append(("Proxies", proxy_store, None))
+    # A kind of bulk storage that lives somewhere of its own
+    # (storage/stores.py) is on a drive or share that can be away. Listed
+    # last: on the same share as a library it is the same volume, and the
+    # library's name is the more useful label for it.
+    store_probes = _store_probes(settings)
+    targets.extend((label, path, None) for path, (label, _probe) in store_probes.items())
 
     cache_key = tuple(targets)
     cached = _VOLUMES_CACHE.get(cache_key)
@@ -221,8 +225,8 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     # reported as unreachable rather than waited for.
     async def probe(path: Path, known: int | None) -> tuple[str | None, Any]:
         try:
-            if path == proxy_store:
-                check = asyncio.to_thread(_probe_proxy_store, path)
+            if path in store_probes:
+                check = asyncio.to_thread(store_probes[path][1])
             else:
                 check = asyncio.to_thread(_probe_volume, path, known)
             return await asyncio.wait_for(check, PROBE_TIMEOUT_S)
@@ -291,11 +295,67 @@ async def _volumes(db: DbDep, settings: SettingsDep) -> list[VolumeStatus]:
     return out
 
 
-def _probe_proxy_store(path: Path) -> tuple[str | None, Any]:
-    """The proxy store is there only if its marker is: without that test
+# How each kind's own folder is named in the volume list and the banner.
+# The model library is not here: nothing reads it yet, and a banner about a
+# folder nothing depends on teaches the banner to be ignored.
+_STORE_LABELS = {
+    "proxies": "Proxies",
+    "renders": "Slideshow videos",
+    "exports": "Listing exports",
+    "basemaps": "Basemaps",
+    "backups": "Backup copies",
+}
+_Probe = Callable[[], tuple[str | None, Any]]
+
+
+def _store_probes(settings: SettingsDep) -> dict[Path, tuple[str, _Probe]]:
+    """A volume for every place bulk storage lives other than this machine's
+    own disk: folder -> (label, how to ask whether it is there).
+
+    The kinds that live in the bulk folder are one entry, not five. They
+    are one drive, and when it is unplugged the banner should say "Bulk
+    storage is unreachable" once, not name every kind in turn. A kind with a
+    folder of its own somewhere else gets its own entry."""
+    bulk = stores.bulk_root(settings)
+    shared: dict[Path, tuple[str, _Probe]] = {}
+    own: dict[Path, tuple[str, _Probe]] = {}
+    for kind, label in _STORE_LABELS.items():
+        if not stores.is_separate(kind, settings):
+            continue
+        root = stores.kind_folder(kind, settings)
+        if bulk is not None and root == bulk / kind:
+            shared[bulk] = ("Bulk storage", partial(_probe_marked, bulk))
+        elif kind == "proxies":
+            own[root] = (label, partial(_probe_proxy_store, root))
+        else:
+            own.setdefault(root, (label, partial(_probe_store, kind, root, settings)))
+    return shared | {path: probe for path, probe in own.items() if path not in shared}
+
+
+def _probe_marked(path: Path, marker: str = stores.BULK_STORE_MARKER) -> tuple[str | None, Any]:
+    """A store is there only if its marker is: without that test
     `disk_usage` would happily measure whatever disk an empty mountpoint
     sits on, the mistake `_volumes` describes."""
-    if not (path / stores.PROXY_STORE_MARKER).is_file():
+    try:
+        marked = (path / marker).is_file()
+    except OSError:
+        marked = False
+    if not marked:
+        return "This drive or share is not connected.", None
+    return _probe_volume(path, None)
+
+
+def _probe_proxy_store(path: Path) -> tuple[str | None, Any]:
+    """`_probe_marked` for the proxy store, which has a marker of its own."""
+    return _probe_marked(path, stores.PROXY_STORE_MARKER)
+
+
+def _probe_store(kind: str, path: Path, settings: SettingsDep) -> tuple[str | None, Any]:
+    """The same for any other kind's own folder. Asked of storage/stores.py
+    rather than by marker name, because one kind has an exception: a backup
+    copy folder named by FRAMEFOUND_BACKUP_COPY_DIR is any folder that is
+    there, as it was before there were markers."""
+    if stores.kind_problem(kind, settings) is not None:
         return "This drive or share is not connected.", None
     return _probe_volume(path, None)
 
@@ -425,6 +485,11 @@ async def processing_report(
             await client.aclose()
     except Exception:
         depths = dict.fromkeys(QUEUES, -1)
+    # The local-AI lane's work is rows, not messages (its queue holds only
+    # wake-ups), so its depth is counted in the table — and only where models
+    # can run: the containers' page gains no tile for work that never happens.
+    if local_ai_availability(settings).ok:
+        depths["local_ai"] = await local_ai_jobs.depth(db)
 
     assets_by_status = {
         status: count

@@ -26,7 +26,7 @@ drive them.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -427,6 +427,7 @@ def fit_recipe(
     render: Callable[[Any, dict[str, Any]], Any],
     bounds: dict[str, tuple[float, float]],
     max_rounds: int = 12,
+    steps: Sequence[tuple[str, float]] = FIT_STEPS,
 ) -> tuple[dict[str, Any], float]:
     """The recipe that brings `base` closest to the reference, by coordinate
     descent from `start`: try each slider a step up and down, keep what
@@ -435,6 +436,13 @@ def fit_recipe(
 
     `reference_lab` is the reference already on the grid, in `base`'s
     orientation. Returns the recipe and its ΔE.
+
+    `steps` names the sliders the fit may move and each one's opening step;
+    the default is every colour slider. A shorter list fits with those alone
+    (the nearest a LUT can get to a look that leans on sliders a LUT cannot
+    carry), and then `bounds` is needed only for its own keys. Whatever
+    `steps` names, a key of `start` with no entry in `bounds` is dropped,
+    and one with an entry that `steps` leaves out stays at its value.
     """
     portrait = base.height > base.width
 
@@ -446,7 +454,7 @@ def fit_recipe(
     scale = 1.0
     for _round in range(max_rounds):
         improved = False
-        for key, step in FIT_STEPS:
+        for key, step in steps:
             low, high = bounds[key]
             for sign in (1.0, -1.0):
                 value = min(high, max(low, current.get(key, 0.0) + sign * step * scale))

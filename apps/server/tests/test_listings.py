@@ -25,7 +25,15 @@ from framefound.ai import rooms as rooms_lib
 from framefound.config import get_settings
 from framefound.db.base import Base
 from framefound.db.engine import get_session
-from framefound.db.models import Asset, AuditLog, Frame, Library, Listing, PathMapping
+from framefound.db.models import (
+    Asset,
+    AuditLog,
+    Derivative,
+    Frame,
+    Library,
+    Listing,
+    PathMapping,
+)
 
 ADMIN = {"email": "admin@example.com", "password": "a-strong-password"}
 BASE = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
@@ -650,3 +658,74 @@ async def test_a_property_listing_keeps_gallery_order_names_in_lightroom(env: di
     listing = await _create(env, ["front", "kitchen"])
     panel = (await env["client"].get(f"/api/v1/panel/listings/{listing['id']}")).json()
     assert [i["copy_name"][:3] for i in panel["items"]] == ["01-", "02-"]
+
+
+async def test_a_removal_suggestion_says_what_kind_of_item_it_is(env: dict) -> None:
+    """The listing page opens a suggested removal in its viewer, which has to
+    know a photograph from a clip; it used to look each one up among the
+    listing's items. Two frames of the same kitchen: the second is offered.
+
+    The clip is set up so that it WOULD be offered if the route weighed it:
+    it has a ready thumbnail to be measured from, its frame is a near twin
+    of the kitchen, and the front and bedroom photographs make the listing
+    big enough to spare two. Curating weighs photographs only, so it is not
+    — and the field is the asset's own kind, which for every offer today is
+    a photograph. If clips are ever weighed, the count below fails here,
+    where the clip's `media_type` must then read "video"."""
+    async with env["factory"]() as db:
+        library = (await db.execute(select(Library))).scalar_one()
+        Image.new("RGB", (120, 90), (200, 70, 40)).save(env["tmp"] / "media" / "kit2.jpg", "JPEG")
+        twin = Asset(
+            library_id=library.id,
+            relative_path="kit2.jpg",
+            filename="kit2.jpg",
+            extension="jpg",
+            media_type="image",
+            size_bytes=1000,
+            mtime=BASE,
+            availability="online",
+        )
+        db.add(twin)
+        await db.flush()
+        db.add(
+            Frame(
+                asset_id=twin.id,
+                ts_ms=0,
+                relative_path="f/kit2.jpg.jpeg",
+                embedding=_unit(ROOM_INDEX["kitchen"]),
+            )
+        )
+        clip_id = uuidlib.UUID(env["ids"]["video"])
+        clip_frame = (await db.execute(select(Frame).where(Frame.asset_id == clip_id))).scalar_one()
+        clip_frame.embedding = _unit(ROOM_INDEX["kitchen"])
+        (env["tmp"] / "data" / "thumbs").mkdir()
+        Image.new("RGB", (120, 90), (200, 75, 40)).save(
+            env["tmp"] / "data" / "thumbs" / "walk.jpg", "JPEG"
+        )
+        db.add(
+            Derivative(
+                asset_id=clip_id,
+                kind="thumbnail",
+                relative_path="thumbs/walk.jpg",
+                media_format="jpeg",
+                status="ready",
+            )
+        )
+        await db.commit()
+        twin_id = str(twin.id)
+    kinds = {env["ids"]["kitchen"]: "image", twin_id: "image", env["ids"]["video"]: "video"}
+    kinds |= {env["ids"]["front"]: "image", env["ids"]["bedroom"]: "image"}
+    created = await env["client"].post(
+        "/api/v1/listings", json={"name": "4 Elm St", "asset_ids": list(kinds)}
+    )
+    assert created.status_code == 201, created.text
+    listing = created.json()
+
+    resp = await env["client"].post(f"/api/v1/listings/{listing['id']}/curate")
+    assert resp.status_code == 200, resp.text
+    suggestions = resp.json()
+    assert [s["media_type"] for s in suggestions] == [kinds[s["asset_id"]] for s in suggestions]
+    (suggestion,) = suggestions
+    assert suggestion["media_type"] == "image"
+    assert suggestion["reason"].startswith("near-duplicate")
+    assert {suggestion["asset_id"], suggestion["keep_instead"]} == {env["ids"]["kitchen"], twin_id}

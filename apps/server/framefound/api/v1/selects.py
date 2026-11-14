@@ -149,6 +149,18 @@ async def moments_from_search(
                     reason=f"visual: {query}",
                 )
             )
+        elif "caption" in result.reasons:
+            # The fused moment is the middle of the shot whose caption
+            # matched. Without this branch a clip found by its caption alone
+            # landed at 0 s labelled as a file-name match.
+            moments.append(
+                MomentIn(
+                    id=aid,
+                    at_s=(result.ts_ms or 0) / 1000,
+                    kind="visual",
+                    reason=f"AI caption: {query}",
+                )
+            )
         elif result.tag:
             at = (result.frame_ms or 0) / 1000
             moments.append(MomentIn(id=aid, at_s=at, kind="tag", reason=f"tag: {result.tag}"))

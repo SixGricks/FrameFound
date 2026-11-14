@@ -1,0 +1,71 @@
+{
+  "framefound_note": "An invented model: no such repository exists. The maker's original that the two invented GGUF repositories name as their base; it names no base itself, so a chain ends here. Every value is a stand-in.",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "id": "nvidia/demo-omni-30b",
+  "author": "nvidia",
+  "sha": "6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a",
+  "lastModified": "2026-10-20T00:00:00.000Z",
+  "library_name": "transformers",
+  "pipeline_tag": "any-to-any",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "any-to-any",
+    "license:other"
+  ],
+  "cardData": {
+    "license": "other",
+    "license_name": "nvidia-open-model-agreement"
+  },
+  "config": {
+    "model_type": "demo_omni"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "size": 1570
+    },
+    {
+      "rfilename": "README.md",
+      "size": 21004
+    },
+    {
+      "rfilename": "config.json",
+      "size": 4310
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors",
+      "size": 31000000000,
+      "lfs": {
+        "sha256": "861f31b2290a600c4cb89c412c160c3f20550679412766b57cda5e1b274315dd",
+        "size": 31000000000
+      }
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors",
+      "size": 32154880000,
+      "lfs": {
+        "sha256": "712b404691d820338e16bc4aee94d6780aeae0bff7b94af1682bd53b0812cda1",
+        "size": 32154880000
+      }
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "size": 120331
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 17078330,
+      "lfs": {
+        "sha256": "4f4f0eac32d2fc557597d3c96ca63258d29933caf07cd983337d253d2c379130",
+        "size": 17078330
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 181007
+    }
+  ]
+}

@@ -8,14 +8,47 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.sql.elements import UnaryExpression
 
 from framefound.auth.deps import CurrentUser, DbDep, SettingsDep, require_admin
-from framefound.db.models import Asset, AssetTag, Derivative, Tag, catalogued
+from framefound.db.models import (
+    Asset,
+    AssetTag,
+    Derivative,
+    Library,
+    Look,
+    ShotWindow,
+    Tag,
+    catalogued,
+)
+from framefound.looking import store as look_store
+from framefound.media import folders
+from framefound.media.folders import FolderError
 from framefound.media.signing import SigningError, sign_media_url
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+NEEDS_LIBRARY = "Choose a library to browse a folder."
+# The most folders one level lists. A level with more (a library that is one
+# flat folder per day for ten years) says so instead of sending them all.
+MAX_FOLDERS = 500
+
+# The orders `GET /assets` offers; `Asset.id` follows each to break ties.
+SORTS: dict[str, tuple[UnaryExpression[Any], ...]] = {
+    "recent": (Asset.first_indexed_at.desc(),),
+    "captured": (Asset.captured_at.desc().nullslast(),),
+    "captured_asc": (Asset.captured_at.asc().nullslast(),),
+    "name": (Asset.filename.asc(),),
+    "size": (Asset.size_bytes.desc(),),
+    # Best first; what no model has an opinion on yet goes last rather than
+    # reading as the worst. Among equals, the newest capture. NULLS LAST is
+    # spelled out: PostgreSQL puts NULLs first in a descending order.
+    "score": (
+        Asset.look_score.desc().nullslast(),
+        Asset.captured_at.desc().nullslast(),
+    ),
+}
 
 
 class AssetSummary(BaseModel):
@@ -32,8 +65,43 @@ class AssetSummary(BaseModel):
     width: int | None
     height: int | None
     captured_at: datetime | None
+    # What a local model made of it (framefound/looking): its score, 0-100,
+    # and one line about it. For a clip, its best shot's. `looked_at` is set
+    # only once nothing in it still needs looking at.
+    look_score: int | None = None
+    look_caption: str | None = None
+    looked_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class LookOut(BaseModel):
+    """What a local model said of a photograph or one shot, and who said it.
+
+    Model text, to be shown as text. `whole` is true for a photograph (or a
+    clip judged from one picture), false for a shot, with its times.
+    `complete`: on an asset, whether nothing in it still needs looking at
+    (every shot of a clip); on a shot, always true. `demo`: made up by the
+    demonstration, and the page says so."""
+
+    score: int | None
+    caption: str
+    reason: str
+    whole: bool
+    start_ms: int | None
+    end_ms: int | None
+    complete: bool
+    looked_at: datetime
+    model: str
+    model_revision: str
+    revision_short: str
+    variant: str
+    runtime: str
+    runtime_version: str
+    prompt_version: str
+    demo: bool
+
+    model_config = {"protected_namespaces": ()}
 
 
 class AssetDetail(AssetSummary):
@@ -69,6 +137,9 @@ class AssetDetail(AssetSummary):
     # none (no audio) | speech | no_speech | queued | failed | off. Lets the
     # page say *why* there are no words beside a clip instead of nothing.
     transcript_state: str = "none"
+    # A local model's look (framefound/looking): a photograph's, or a clip's
+    # best shot's. Null when nothing of it has been looked at.
+    look: LookOut | None = None
 
 
 class AssetPage(BaseModel):
@@ -95,13 +166,29 @@ async def list_assets(
     include_suggested_tags: bool = Query(
         default=False, description="With `tag`, also match assets where it is only suggested"
     ),
-    sort: str = Query(default="recent", pattern="^(recent|captured|captured_asc|name|size)$"),
+    sort: str = Query(default="recent", pattern="^(recent|captured|captured_asc|name|size|score)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    folder: str | None = Query(
+        default=None,
+        description='A folder of `library_id` ("" is its top); absent = no folder filter',
+    ),
+    deep: bool = Query(
+        default=False, description="With `folder`, also everything in the folders inside it"
+    ),
 ) -> AssetPage:
     query = select(Asset).where(catalogued())
     if library_id is not None:
         query = query.where(Asset.library_id == library_id)
+    if folder is not None:
+        # A path means nothing without its library: the same folder name is
+        # in every library that came off the same card.
+        if library_id is None:
+            raise HTTPException(400, NEEDS_LIBRARY)
+        try:
+            query = query.where(*(folders.under(folder) if deep else folders.directly_in(folder)))
+        except FolderError as err:
+            raise HTTPException(400, str(err)) from err
     if media_type is not None:
         query = query.where(Asset.media_type == media_type)
     if availability is not None:
@@ -133,14 +220,7 @@ async def list_assets(
         )
         query = query.where(Asset.id.in_(tagged))
 
-    orders: dict[str, UnaryExpression[Any]] = {
-        "recent": Asset.first_indexed_at.desc(),
-        "captured": Asset.captured_at.desc().nullslast(),
-        "captured_asc": Asset.captured_at.asc().nullslast(),
-        "name": Asset.filename.asc(),
-        "size": Asset.size_bytes.desc(),
-    }
-    order = orders[sort]
+    order = SORTS[sort]
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     # Asset.id breaks ties. The scanner commits 500 assets per transaction and
@@ -149,7 +229,7 @@ async def list_assets(
     # every page boundary that falls inside one.
     rows = (
         await db.execute(
-            query.order_by(order, Asset.id).offset((page - 1) * page_size).limit(page_size)
+            query.order_by(*order, Asset.id).offset((page - 1) * page_size).limit(page_size)
         )
     ).scalars()
     return AssetPage(
@@ -157,6 +237,161 @@ async def list_assets(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+# --------------------------------------------------------------- folders
+#
+# Browse's folder level: one level of a library at a time, answered from the
+# catalogue (what the scanner wrote), never from the disk — so it works with
+# the share away, and a path from the URL is only ever compared, never opened.
+# Registered before `/{asset_id}` for the reason given at `/near` below.
+
+
+class FolderCrumb(BaseModel):
+    name: str
+    path: str
+
+
+class FolderCounts(BaseModel):
+    """`items` is every catalogued asset (audio too); `photos` and `clips`
+    are the images and the videos among them."""
+
+    items: int = 0
+    photos: int = 0
+    clips: int = 0
+
+
+class FolderInside(FolderCounts):
+    # Photographs and clips with nothing left for a local model to look at
+    # (`assets.looked_at` set): a clip counts once every shot has been.
+    looked: int = 0
+
+
+class FolderRow(FolderInside):
+    name: str
+    path: str
+    # The latest capture time beneath the folder (else the file's mtime).
+    newest: datetime | None = None
+
+
+class FolderLevel(BaseModel):
+    library_id: uuid.UUID
+    library_name: str
+    path: str
+    crumbs: list[FolderCrumb]
+    folders: list[FolderRow]
+    here: FolderCounts
+    inside: FolderInside
+    truncated: bool
+
+
+def _looked() -> Any:
+    """1 for a photograph or clip with nothing left to look at, else 0.
+
+    Audio is never looked at, so it is never counted, whatever the column says.
+    """
+    return case(
+        (Asset.media_type.in_(("image", "video")) & Asset.looked_at.is_not(None), 1), else_=0
+    )
+
+
+def folder_level_query(library_id: uuid.UUID, path: str, dialect: str) -> Select[Any]:
+    """One row per folder directly inside `path`, plus one named "" for the
+    files directly in it, each with what it holds; by name, "" first.
+
+    Grouped through a subquery (see `folders.child_name` for why PostgreSQL
+    needs that). Raises FolderError for a path that is not a folder.
+    """
+    beneath = (
+        select(
+            folders.child_name(path, dialect).label("name"),
+            Asset.media_type.label("media_type"),
+            func.coalesce(Asset.captured_at, Asset.mtime).label("taken"),
+            _looked().label("looked"),
+        )
+        .where(Asset.library_id == library_id, catalogued(), *folders.under(path))
+        .subquery()
+    )
+    return (
+        select(
+            beneath.c.name,
+            func.count().label("items"),
+            func.sum(case((beneath.c.media_type == "image", 1), else_=0)).label("photos"),
+            func.sum(case((beneath.c.media_type == "video", 1), else_=0)).label("clips"),
+            func.sum(beneath.c.looked).label("looked"),
+            func.max(beneath.c.taken).label("newest"),
+        )
+        .group_by(beneath.c.name)
+        .order_by(beneath.c.name)
+    )
+
+
+@router.get("/folders", response_model=FolderLevel)
+async def folder_level(
+    _user: CurrentUser,
+    db: DbDep,
+    library_id: uuid.UUID | None = None,
+    path: str = Query(default="", description='A folder of the library; "" is its top'),
+) -> FolderLevel:
+    """One level of a library: the folders directly inside `path`, each with
+    what is beneath it, and the counts for `path` itself. A path nothing is
+    catalogued under is an empty level, not an error: a folder renamed on
+    the share since the last scan still opens and says so."""
+    if library_id is None:
+        raise HTTPException(400, NEEDS_LIBRARY)
+    try:
+        path = folders.clean_folder(path)
+    except FolderError as err:
+        raise HTTPException(400, str(err)) from err
+    library = await db.get(Library, library_id)
+    if library is None:
+        raise HTTPException(404, "No such library.")
+
+    dialect = db.get_bind().dialect.name
+    # One past the cap, plus the "" row, tells "exactly 500" from "more".
+    rows = (
+        await db.execute(folder_level_query(library_id, path, dialect).limit(MAX_FOLDERS + 2))
+    ).all()
+    here = FolderCounts()
+    children: list[FolderRow] = []
+    for name, items, photos, clips, looked, newest in rows:
+        if name == "":
+            here = FolderCounts(items=items, photos=photos or 0, clips=clips or 0)
+            continue
+        children.append(
+            FolderRow(
+                name=name,
+                path=f"{path}/{name}" if path else name,
+                items=items,
+                photos=photos or 0,
+                clips=clips or 0,
+                looked=looked or 0,
+                newest=newest,
+            )
+        )
+
+    total = (
+        await db.execute(
+            select(
+                func.count(),
+                func.sum(case((Asset.media_type == "image", 1), else_=0)),
+                func.sum(case((Asset.media_type == "video", 1), else_=0)),
+                func.sum(_looked()),
+            ).where(Asset.library_id == library_id, catalogued(), *folders.under(path))
+        )
+    ).one()
+    return FolderLevel(
+        library_id=library.id,
+        library_name=library.name,
+        path=path,
+        crumbs=[FolderCrumb(name=name, path=crumb) for name, crumb in folders.crumbs(path)],
+        folders=children[:MAX_FOLDERS],
+        here=here,
+        inside=FolderInside(
+            items=total[0], photos=total[1] or 0, clips=total[2] or 0, looked=total[3] or 0
+        ),
+        truncated=len(children) > MAX_FOLDERS,
     )
 
 
@@ -243,7 +478,113 @@ async def get_asset(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> Asset
         raise HTTPException(404, "Asset not found")
     detail = AssetDetail.model_validate(asset)
     detail.transcript_state = await _transcript_state(db, asset)
+    detail.look = await _asset_look(db, asset)
     return detail
+
+
+def _look_out(look: Look, *, complete: bool) -> LookOut:
+    return LookOut(
+        score=look.score,
+        caption=look.caption,
+        reason=look.reason,
+        whole=look.start_ms is None,
+        start_ms=look.start_ms,
+        end_ms=look.end_ms,
+        complete=complete,
+        looked_at=look.created_at,
+        model=look.model,
+        model_revision=look.model_revision,
+        revision_short=look.model_revision[:7],
+        variant=look.variant,
+        runtime=look.runtime,
+        runtime_version=look.runtime_version,
+        prompt_version=look.prompt_version,
+        demo=look.demo,
+    )
+
+
+async def _asset_look(db: DbDep, asset: Asset) -> LookOut | None:
+    """The look the asset page shows: the one the roll-up wrote onto the
+    asset's own row (`look_score`, `look_caption`), which search, culling and
+    the grid read. Which look that is, is the store's answer and nobody
+    else's (`store.best_current`): a photograph's look; a clip's
+    best-scoring shot whose times are still one of its windows (of equals,
+    the earliest), or its look of the whole while it has no windows. A look
+    left over from before a re-analysis moved the shots is not shown."""
+    best = await look_store.best_current(db, asset)
+    return None if best is None else _look_out(best, complete=asset.looked_at is not None)
+
+
+class ShotOut(BaseModel):
+    """One shot of a clip, as the motion analysis measured it, and what a
+    local model said of it (null until it has looked)."""
+
+    idx: int
+    start_ms: int
+    end_ms: int
+    # The middle still's moment: the page shows /media/{id}/frame?ts=<still_ms>.
+    still_ms: int
+    move: str
+    direction: str | None
+    smooth: float
+    energy: str
+    light: str | None
+    sky: str | None
+    # What is in it, most certain first (the catalogue's guess, not a model's).
+    subjects: list[str]
+    look: LookOut | None
+
+
+# The most subjects a shot lists; the analysis keeps a longer tail of weak guesses.
+SHOT_SUBJECTS = 5
+
+
+@router.get("/{asset_id}/shots", response_model=list[ShotOut])
+async def get_shots(asset_id: uuid.UUID, _user: CurrentUser, db: DbDep) -> list[ShotOut]:
+    """A clip's shots in order, each with its look; [] for a photograph or a
+    clip whose shots have not been found. A look is joined on the shot's
+    times, never on the window's id, which every re-analysis replaces.
+    Every shot shows its own current look (`store.current`): nothing is
+    chosen among them here, which is the asset's look above."""
+    from framefound.processing.shots import window_moments
+
+    asset = await db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "Asset not found")
+    if asset.media_type != "video":
+        return []
+    windows = (
+        await db.scalars(
+            select(ShotWindow).where(ShotWindow.asset_id == asset_id).order_by(ShotWindow.idx)
+        )
+    ).all()
+    if not windows:
+        return []
+    looks = await look_store.current(db, asset_id)
+    found: list[ShotOut] = []
+    for window in windows:
+        look = looks.get((window.start_ms, window.end_ms))
+        subjects = window.subjects if isinstance(window.subjects, dict) else {}
+        named = sorted(subjects, key=lambda name: (-float(subjects[name] or 0.0), name))
+        measured = window.look if isinstance(window.look, dict) else {}
+        sky = measured.get("sky")
+        found.append(
+            ShotOut(
+                idx=window.idx,
+                start_ms=window.start_ms,
+                end_ms=window.end_ms,
+                still_ms=window_moments(window.start_ms, window.end_ms)[1],
+                move=window.move,
+                direction=window.direction,
+                smooth=window.smooth,
+                energy=window.energy,
+                light=window.light,
+                sky=sky if isinstance(sky, str) else None,
+                subjects=named[:SHOT_SUBJECTS],
+                look=None if look is None else _look_out(look, complete=True),
+            )
+        )
+    return found
 
 
 async def _transcript_state(db: DbDep, asset: Asset) -> str:

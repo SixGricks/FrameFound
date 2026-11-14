@@ -13,55 +13,26 @@ takes an asset id accepts one (server._asset), so a line can be passed on
 as it is.
 """
 
-import re
-import uuid
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
-SHORT = 8
-_DJI = re.compile(r"^DJI_\d{14}_(\d{4})_\w+$", re.IGNORECASE)
-
-
-def short_id(value: uuid.UUID | str) -> str:
-    return str(value).replace("-", "")[:SHORT]
-
-
-def clip_name(filename: str, width: int = 24) -> str:
-    """A name short enough for a table: DJI_20261103051509_0639_D.MP4 is
-    DJI_0639 (the counter is what the operator says out loud); anything
-    else loses its extension and is cut to `width`."""
-    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
-    found = _DJI.match(stem)
-    if found:
-        return f"DJI_{found.group(1)}"
-    stem = stem.replace(" ", "_")
-    return stem if len(stem) <= width else stem[: width - 1] + "…"
+# The short words of a line moved to nle/shotlist.py, so the pages and jobs
+# that show a model the same lines can import them without the connector.
+# The names stay here for every tool that uses them.
+from framefound.nle.shotlist import LIGHT_SHORT as LIGHT_SHORT
+from framefound.nle.shotlist import SHORT as SHORT
+from framefound.nle.shotlist import clip_name as clip_name
+from framefound.nle.shotlist import score as score
+from framefound.nle.shotlist import short_id as short_id
 
 
 def seconds(value: float | None) -> str:
     if value is None:
         return ""
     return f"{value:.1f}"
-
-
-def score(value: float | None) -> str:
-    """.91 rather than 0.91: two characters saved on every line."""
-    if value is None:
-        return ""
-    text = f"{value:.2f}"
-    return text[1:] if text.startswith("0") else text
-
-
-LIGHT_SHORT = {
-    "golden hour": "golden",
-    "blue hour": "blue",
-    "low sun": "low-sun",
-    "mid sun": "mid-sun",
-    "high sun": "high-sun",
-}
 
 
 def table(header: str, lines: Iterable[str], footer: str = "") -> CallToolResult:

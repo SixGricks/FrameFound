@@ -26,6 +26,7 @@ are not the paths the editor's workstation sees — a path mapping belongs here
 eventually, and until then the export is honest about what it wrote.
 """
 
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -224,9 +225,27 @@ def build_project(
     return _document(root)
 
 
+_UNWRITABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def xml_text(text: str) -> str:
+    """`text` without the characters no XML 1.0 file can hold: control
+    characters other than tab and the line ends, lone surrogates, and the
+    two non-characters U+FFFE and U+FFFF.
+
+    ElementTree writes them as they are, and one NUL in a marker's note
+    makes the whole file one Premiere and Resolve refuse to import. A
+    model's reason can carry one as valid JSON (an escaped NUL); so can a
+    title or a note Claude sends. Text without them is returned unchanged,
+    so a file that was valid is written byte for byte as before."""
+    return _UNWRITABLE.sub("", text)
+
+
 def _document(root: ET.Element) -> str:
     ET.indent(root, space="  ")
-    body = ET.tostring(root, encoding="unicode")
+    # Every writer's last step, so a name, title or note from anywhere is
+    # covered: what cannot be in the file is left out of it.
+    body = xml_text(ET.tostring(root, encoding="unicode"))
     # The DOCTYPE is not optional: Premiere refuses files without it.
     return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n' + body + "\n"
 

@@ -196,6 +196,9 @@ class AiEditConfig:
     review_auto: bool = False
     # Pictures per run, by hand or by the nightly sweep.
     review_batch: int = 40
+    # The chat panel's model (framefound/chat). A new conversation starts on
+    # it and keeps it; changing this never moves a conversation already begun.
+    chat_model: str = "claude-opus-5-5"
 
     @property
     def ready(self) -> bool:

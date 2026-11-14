@@ -4,10 +4,13 @@ Each kind is attempted independently: a failed proxy never blocks a poster.
 Results land in the `derivatives` table with per-kind status; files live under
 <data_dir>/derivatives/<id[:2]>/<asset_id>/<kind>.<ext> (relative paths in the
 DB — the data volume is relocatable). Proxies alone may hang off a separate
-proxy store instead, under the same relative path (storage/stores.py).
+proxy store instead, under the same relative path (storage/stores.py), as may
+the other bulky kinds: slideshow renders, listing exports, basemaps.
 """
 
+import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,23 +22,36 @@ from framefound.db.models import Asset, Derivative, Library
 from framefound.processing import ffmpeg
 from framefound.processing.thumbnails import ThumbnailError, make_image_derivative
 from framefound.storage import stores
+from framefound.storage.worker_roots import NotHere
 
 log = structlog.get_logger()
 
 THUMBNAIL_EDGE = 512
 PREVIEW_EDGE = 2048
+# How long a writer waits for a move of its kind to finish before giving up
+# with the move's own message. Longer than the move waits for writers
+# (moves.WRITER_WAIT_S), so the two never give up on each other at once.
+MOVE_WAIT_S = 30 * 60.0
+MOVE_POLL_S = 5.0
 
 
 class OutOfSpace(RuntimeError):
     """Free space on the derivative store is below the configured floor."""
 
 
-class ProxyStoreUnavailable(OutOfSpace):
-    """The separate proxy store (storage/stores.py) is not connected.
+class StoreUnavailable(OutOfSpace):
+    """A kind's own store (storage/stores.py) is not connected, or is in the
+    last steps of being moved.
 
-    The same kind of pause as a full disk — nothing wrong with the clip, and
-    the work is picked up again once the store is back — so it shares the
-    exception the task wrappers already treat as "wait", not "fail"."""
+    The same kind of pause as a full disk — nothing wrong with the clip or
+    the slideshow, and the work can be done once the store is back — so it
+    shares the exception the task wrappers already treat as "wait", not
+    "fail"."""
+
+
+class ProxyStoreUnavailable(StoreUnavailable):
+    """The same, for the proxy store: the first kind to have one, and the
+    name the proxy code already catches."""
 
 
 def free_gb(data_dir: Path) -> float | None:
@@ -62,6 +78,41 @@ def ensure_space(data_dir: Path) -> None:
         raise OutOfSpace(
             f"Only {available:.1f} GB free for previews; generation pauses below {floor:.0f} GB"
         )
+
+
+def ensure_store(kind: str) -> None:
+    """Refuse to write `kind` (storage/stores.py) while its store is away or
+    being moved. Asked before anything is created: `mkdir` on a share that is
+    not mounted would start filling the empty folder it mounts on."""
+    # A worker on another machine with no setting for where the server keeps
+    # this kind hands the job back (celery_app.FrameFoundTask) rather than
+    # write where the server no longer looks.
+    elsewhere = stores.not_here(kind)
+    if elsewhere is not None:
+        raise NotHere(elsewhere)
+    problem = stores.write_problem(kind)
+    if problem is not None:
+        raise (ProxyStoreUnavailable if kind == "proxies" else StoreUnavailable)(problem)
+
+
+def store_ready(kind: str, sleep: Callable[[float], None] = time.sleep) -> None:
+    """`ensure_store`, after waiting out a move of `kind` that is in its last
+    steps (storage/moves.py).
+
+    That pause is short — the time it takes to copy what changed during the
+    long copy — and nothing queues a proxy a second time, so a clip that
+    reached the front of the queue just then waits rather than being
+    dropped; a finished render waits to be put where renders now live.
+    Blocking: tasks call it in a thread. A store that is away is not waited
+    for; that can last days, and raises at once."""
+    from framefound.config import get_settings
+
+    data_dir = get_settings().data_dir
+    waited = 0.0
+    while waited < MOVE_WAIT_S and stores.read_state(data_dir).is_paused(kind):
+        sleep(MOVE_POLL_S)
+        waited += MOVE_POLL_S
+    ensure_store(kind)
 
 
 def derivative_relpath(asset_id: uuid.UUID, kind: str, ext: str) -> str:
@@ -121,9 +172,7 @@ def _abs(data_dir: Path, derivative: Derivative) -> Path:
     if stores.is_proxy(derivative.relative_path):
         # Never mkdir into a proxy store that is not there: on an unmounted
         # share that would start filling the folder it mounts on.
-        problem = stores.proxy_store_problem()
-        if problem is not None:
-            raise ProxyStoreUnavailable(problem)
+        ensure_store("proxies")
     path = stores.derivative_path(data_dir, derivative.relative_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -215,9 +264,7 @@ async def generate_video_proxy(
 
     # Before the row is touched: a store that is away must not turn a ready
     # proxy's record into a pending one.
-    problem = stores.proxy_store_problem()
-    if problem is not None:
-        raise ProxyStoreUnavailable(problem)
+    await asyncio.to_thread(store_ready, "proxies")
     ensure_space(stores.proxy_root(data_dir))
     derivative = await _upsert(db, asset.id, "proxy", "mp4")
     target = _abs(data_dir, derivative)
@@ -229,6 +276,16 @@ async def generate_video_proxy(
         codec = await asyncio.to_thread(
             ffmpeg.transcode_proxy, source, target, library.proxy_resolution
         )
+        placed = stores.derivative_path(data_dir, derivative.relative_path)
+        if placed != target:
+            # A transcode can run for hours, and proxies were moved to another
+            # folder during this one (storage/moves.py). A move waits for a
+            # file that is still growing, but one that had not yet written a
+            # byte looks finished. The proxy follows the others: recorded as
+            # ready where it was made, it would be a proxy that never plays.
+            await asyncio.to_thread(store_ready, "proxies")
+            await asyncio.to_thread(stores.put_in_place, target, placed)
+            target = placed
         await _finish(db, derivative, target, codec=codec)
         log.info("proxy.generated", asset_id=str(asset.id), codec=codec)
     except ffmpeg.FfmpegError as err:

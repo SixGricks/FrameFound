@@ -218,6 +218,12 @@ class TailscaleOut(BaseModel):
     admin_console: str
     download: str
     message: str
+    # "macos" or "linux": which way in the card shows (the Mac app, or the
+    # Linux installer and command).
+    platform: str
+    # Read through the Mac app's command line, which cannot hand out a
+    # sign-in link: signing in is then done in the app.
+    via_app: bool
 
 
 def _tailscale_out(found: "tailscale_local.TailscaleStatus", message: str = "") -> TailscaleOut:
@@ -239,6 +245,8 @@ def _tailscale_out(found: "tailscale_local.TailscaleStatus", message: str = "") 
         admin_console=tailscale_local.ADMIN_CONSOLE,
         download=tailscale_local.DOWNLOAD,
         message=message,
+        platform=found.platform,
+        via_app=found.via_app,
     )
 
 

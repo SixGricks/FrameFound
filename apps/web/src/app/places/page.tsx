@@ -14,7 +14,9 @@ import PlaceMap from "@/components/PlaceMap";
 import Shell from "@/components/Shell";
 import Thumb from "@/components/Thumb";
 import { api, type MapConfig, type Place } from "@/lib/api";
+import { setChatContext } from "@/lib/chatContext";
 import { shortDate } from "@/lib/format";
+import { usePageTitle } from "@/lib/hooks";
 
 function placeHref(place: Place): string {
   // A little past the cluster edge so a member sitting exactly on the
@@ -30,6 +32,7 @@ function placeHref(place: Place): string {
 }
 
 export default function PlacesPage() {
+  usePageTitle("Places");
   const router = useRouter();
   const [places, setPlaces] = useState<Place[] | null>(null);
   const [mapConfig, setMapConfig] = useState<MapConfig | null>(null);
@@ -59,6 +62,27 @@ export default function PlacesPage() {
   }, []);
 
   const open = useCallback((place: Place) => router.push(placeHref(place)), [router]);
+
+  // For the chat panel: the places on the map, by name, the largest first
+  // and capped (a message should stay a message).
+  const onMap =
+    places === null
+      ? ""
+      : [...places]
+          .sort((a, b) => b.asset_count - a.asset_count)
+          .slice(0, 12)
+          .map((place) => `${place.name} (${place.asset_count})`)
+          .join("; ");
+  const placeCount = places?.length ?? null;
+  useEffect(() => {
+    if (placeCount === null) return;
+    return setChatContext({
+      title:
+        placeCount === 0
+          ? "Places — none on the map"
+          : `Places — ${placeCount} on the map${placeCount > 12 ? "; the largest" : ""}: ${onMap}`,
+    });
+  }, [placeCount, onMap]);
 
   return (
     <Shell>

@@ -16,6 +16,14 @@ Two rules hold whatever Claude is asked:
   as the learner's guesses, marked as Claude's, and becomes an example only
   when you say yes — on the Tags page, or in chat through `decide_tag`.
 
+**Inside FrameFound itself.** The same tools are also behind a chat panel in
+the web UI, with no token to make and nothing to set up on the workstation;
+there, the tools that record a decision or start a paid review ask you
+first. Where this install can run local models, the panel also has two
+tools the connector does not: a draft from the local Editor
+(`local_cut_draft`) and a folder review by the local Looker
+(`start_folder_review`, which asks first too). See [chat.md](chat.md).
+
 ---
 
 ## Connecting
@@ -71,7 +79,9 @@ Two rules hold whatever Claude is asked:
      reports `spawn npx ENOENT`, use the full path from `which npx` (for
      Homebrew, `"/opt/homebrew/bin/npx"`) as `command`.
 
-   Quit and reopen Claude Desktop after saving.
+   Quit Claude Desktop before you edit the file, and open it again
+   afterwards. Claude writes the file again when it quits, so an edit made
+   while it is open can be lost (seen on the Mac install).
 
    **claude.ai in a browser** (the "custom connector" in Settings) is not
    supported yet: it needs a server reachable from the public internet that
@@ -134,10 +144,10 @@ not fit its platform.
 | `overview` | Libraries, tag and queue counts, what this token may do | read |
 | `list_tags` | The vocabulary, with confirmed and pending counts | read |
 | `find_media` | Media by tags (`all` or `any`), type, library, capture dates; newest first | read |
-| `search_media` | Words → tags, visual search, transcripts, file names, merged and ranked | read |
+| `search_media` | Words → tags, visual search, transcripts, file names, merged and ranked; also captions a local model wrote, matched as "AI caption" | read |
 | `get_media` | Everything the catalogue knows about one item, with signed preview links | read |
 | `view_media` | The thumbnail (or a video's poster) itself, so Claude can look; with `ts_ms`, the video's sampled frame nearest that moment | read |
-| `review_queue` | Suggestions awaiting your judgement, strongest first, by tag or by who suggested | read |
+| `review_queue` | Suggestions awaiting your judgement, strongest first, by tag or by who suggested (clip, claude, mcp or local) | read |
 | `propose_tags` | Queue tag suggestions for one item, marked as Claude's | tag |
 | `decide_tag` | Record *your* yes or no on one tag for one item; the learner re-runs | tag |
 | `decide_tags` | Record many answers on one tag at once ("yes to all of these except the third"); only suggestions still waiting change; the learner re-runs once | tag |
@@ -147,9 +157,9 @@ not fit its platform.
 | `get_media_files` | One item's original path on each computer, and signed links to its proxy, poster and captions | read |
 | `get_transcript` | Every timed cue of what was said, optionally between two times | read |
 | `get_scenes` | A video's shots as start/end ranges, one per detected cut, with the moments to pass to `view_media` (and a signed link for you), and each scene's shot windows as compact lines | read |
-| `build_rough_cut` | Chosen pieces laid end to end as an FCP7 XML timeline for Premiere Pro or DaVinci Resolve (Final Cut Pro only via a converter such as 7toX); records the cut in cut history (`record: false` for a draft; `client` names who it is for) | read |
+| `build_rough_cut` | Chosen pieces laid end to end as an FCP7 XML timeline for Premiere Pro or DaVinci Resolve (Final Cut Pro only via a converter such as 7toX); records the cut in cut history (`record: false` for a draft; `client` names who it is for; `parent` keeps it as the next version of a cut it revises) | read |
 | `build_selects` | A search (or chosen moments) as selects for Premiere: a bin with a marker on each moment and a `<title> selects` string-out with handles; whole sentences for speech, the detected shot for pictures | read |
-| `find_shots` | Shot windows across a library — move, smoothness *at a playback speed*, timeline length at that speed, subject energy, light, subjects, already used — one compact line each | read |
+| `find_shots` | Shot windows across a library — move, smoothness *at a playback speed*, timeline length at that speed, subject energy, light, subjects, already used — one compact line each; where a local model has looked at a shot, its 0-100 score (an opinion, labelled), with `min_score` and `order="score"` ([below](#a-local-models-score-on-shots)) | read |
 | `contact_sheet` | One JPEG of many moments: find_shots lines, `(id, ts_ms)` pairs or one clip's windows; `strip` shows start, middle and end of each shot side by side | read |
 | `recent_cuts` | The last cuts for a library or client: shot count, average shot length, speed, move, light and subject mix | read |
 
@@ -202,7 +212,8 @@ thing. Each window has:
 **It describes; it never prescribes.** Nothing ranks a shot as good or bad
 for an edit, and nothing assumes a look — not "sunset last", not "always
 50%", not "drone only". find_shots returns what matches the filters you
-give it; the edit's pace and music decide.
+give it; the edit's pace and music decide. One field is the exception, and
+is labelled as one: [a local model's score](#a-local-models-score-on-shots).
 
 Ask in plain words — "find smooth golden-hour orbits at Brookside that hold
 6 s at 50%":
@@ -219,7 +230,9 @@ find_shots(folder="Brookside", moves=["orbit"], light=["golden"],
 window from a 29.97 source slowed to 50% in a 29.97 sequence is flagged
 `dup` (every frame shown twice); `real_frames_only` leaves those out. A
 window an earlier cut used is flagged `used`; `exclude_used` leaves those
-out. Then `contact_sheet(shots=[…the lines…])` shows them all in one image,
+out. (A draft the local Editor made counts as an earlier cut only once its
+Premiere file has been downloaded from the Cuts page; Claude's cuts and
+imported timelines count at once.) Then `contact_sheet(shots=[…the lines…])` shows them all in one image,
 and `build_rough_cut` takes the id and an in/out inside the range.
 
 **Variety, on purpose.** Every `build_rough_cut` is recorded (title, date,
@@ -230,6 +243,20 @@ editor can choose something different rather than repeat the last video.
 A timeline cut before history existed can be imported:
 `python -m framefound.ops.shots import-cut "<timeline>.xml" --library GELCO`.
 
+**Revising a cut.** `build_rough_cut` takes an optional `parent`: the id of
+a cut this one revises, in full or the short id. The new cut is kept in cut
+history beside it as the next version of the same family; neither replaces
+the other, and
+the answer's `version` and note say which version it became ("Kept as
+version 2 beside the cut it revises."). Every recorded cut's answer also
+carries its `cut_id` and `version`. The typical use is a draft the local
+Editor made ([local-models.md](local-models.md)) that you have asked Claude
+to review: **that draft's id is in the review request about it**, because
+`recent_cuts` does not list a local draft whose Premiere file was never
+downloaded. A finished cut's id is in `recent_cuts` with `verbose`. An id
+that is not in cut history is refused, and the refusal names both places to
+look.
+
 **Getting a library analysed.** New video is analysed as its proxy is made.
 For a library with proxies switched off (GELCO), proxies are made per
 course when one is about to be edited:
@@ -237,6 +264,68 @@ course when one is about to be edited:
 ```bash
 docker compose exec worker-media python -m framefound.ops.shots backfill --library GELCO --folder "Brookside" --make-proxies
 ```
+
+On the Mac install the same tool is `framefound ops shots backfill …`. Left
+without `--library`, the backfill does every library in turn, by name;
+`--folder` and `--limit` then apply inside each.
+
+### A local model's score on shots
+
+Where a model on this server — the Looker, chosen on the **AI models**
+page ([local-models.md](local-models.md)) — has looked at a shot, its line
+in `find_shots` ends with `score NN`: that model's 0-100 opinion of how
+usable the shot is. It is an opinion, not a measurement, and it is labelled
+everywhere it appears:
+
+- The word comes after every measured word and before the local path, and
+  ` made-up` follows it when the demo's made-up model said it rather than a
+  real one.
+- When any line shown has a score, the header adds
+  `[score: a local model's 0-100 opinion]`.
+- `verbose` adds `score`, `caption`, `score_reason`, `looked_by` and
+  `made_up`. `looked_by` says which build and question said it:
+  `<repo>@<revision>[/<variant>]#<prompt version>`, where the variant names
+  one build of several in a repository (a quantisation such as Q4_K_M); a
+  key too long to store ends in `~<digest>`.
+- Only the model's current, successful look at the shot's exact times
+  counts. A re-analysis that moves a shot's times drops its score until the
+  shot is looked at again.
+
+It is never the default order and never a filter unless you ask for it:
+
+- `order="score"` puts the highest-scored shots first and the unscored
+  last.
+- `min_score` (0 to 100; anything else is refused) keeps only shots scored
+  at least that, so it leaves out every shot no model has looked at. When
+  that leaves nothing, the answer says which case it is: "No shot here was
+  scored N or more by a local model. Lower min_score, or ask without it for
+  the measured shots." or "No shot here has a local model's score yet, so
+  min_score left out every one. Ask without min_score for the measured
+  shots."
+
+A shot nobody has looked at prints exactly as it did before scores
+existed.
+
+**The same looks reach two other tools.** `search_media` gains its weakest
+reason, a match in a caption the model wrote, labelled "AI caption". A
+score also moves a hit among the things that matched, by at most ten per
+cent either way, so the better take of the same subject comes first; it
+never makes anything match, and with no scores the order is what it was.
+`review_queue(origin="local")` lists the tags such a model suggested
+([tagging.md](tagging.md#suggestions-from-a-model-on-this-mac)). Culling a
+listing uses the score as well, but that is **Suggest removals** on the
+listing's page, not a connector tool
+([local-models.md](local-models.md#photographs-as-well-as-video)).
+
+*Where this stands (2026-11-13):* the connector reads a look wherever one
+exists. Looks are made by a review of a folder, which only an
+administrator can start, and by a library's switch for footage as it
+arrives ([local-models.md](local-models.md#reviewing-a-folder-on-request)).
+The connector has no tool that starts a review; FrameFound's own chat
+panel has one, which asks first ([chat.md](chat.md#a-review-by-the-local-looker)),
+and so do Browse and the Libraries page (**Review with AI**). All of it is
+built and tested and has not yet run on a Mac or with a real model. Until
+a review has run, no shot carries a score.
 
 ### Two ways to get a second opinion
 
@@ -297,6 +386,7 @@ cross it. [tagging.md](tagging.md) has the details.
 |---|---|
 | Tools | `framefound/mcp/server.py`, `video.py`, `shots.py`; compact answers `compact.py` |
 | Shot analysis | `framefound/media/motion.py`, `sun.py`, `shot_vocabulary.py`; `framefound/processing/shots.py`; `python -m framefound.ops.shots` |
+| A local model's score | `framefound/nle/shotlist.py` (`shot_looks`, `window_score`, `score_word`); tests `test_mcp_looks.py` |
 | Token gate | `framefound/mcp/auth.py` |
 | Mount | `framefound/main.py` (`/api/mcp`, stateless streamable HTTP) |
 | Decision | [ADR-0020](adr/0020-mcp-connector.md) |

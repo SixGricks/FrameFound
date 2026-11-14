@@ -40,6 +40,7 @@ class OldServer:
         self.env_text = env_text
         self.schema = schema
         self.log: list[str] = []
+        self.copies: list[list[str]] = []
         self.dump = b"PGDMP-old-catalogue"
 
     def __call__(self, argv: list[str], **kwargs: Any) -> SimpleNamespace:
@@ -70,7 +71,12 @@ class OldServer:
             else:  # pragma: no cover - a command the fake does not know
                 raise AssertionError(remote)
         elif Path(words[0]).name == "rsync":
-            self.log.append("copy proxies" if "--include=proxy.*" in words else "copy data")
+            self.copies.append(words)
+            kind = next((k for k in migrate.KIND_EXCLUDES if words[-2].endswith(f"/{k}/")), None)
+            if kind is not None:
+                self.log.append(f"copy {kind}")
+            else:
+                self.log.append("copy proxies" if "--include=proxy.*" in words else "copy data")
         else:  # pragma: no cover
             raise AssertionError(words)
         return SimpleNamespace(returncode=0, stdout=out, stderr="")
@@ -116,6 +122,8 @@ def run(
     *,
     answer: bool = True,
     proxy_problem: str | None = None,
+    kind_roots: dict[str, Path] | None = None,
+    kind_problems: dict[str, str | None] | None = None,
     **options: Any,
 ) -> list[str]:
     server.log = here.log  # one timeline for both machines
@@ -130,6 +138,8 @@ def run(
         proxy_problem=proxy_problem,
         say=said.append,
         confirm=lambda _question: answer,
+        kind_roots=kind_roots,
+        kind_problems=kind_problems,
     )
     return said
 
@@ -241,6 +251,51 @@ def test_proxies_are_not_copied_into_a_store_that_is_away(
         proxies="skip",
     )
     assert "copy proxies" not in here.log and "copy data" in here.log
+
+
+def test_bulky_kinds_with_folders_of_their_own_are_copied_straight_into_them(
+    here: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The old server kept slideshow videos and basemaps in its data folder.
+    Copied into this Mac's data folder first, twelve gigabytes of basemap
+    would cross the small disk on the way to the NAS."""
+    nas = tmp_path / "Photos" / "Framefound"
+    server = OldServer(["/media/intel/2026"])
+    roots = {"renders": nas / "renders", "basemaps": nas / "basemaps"}
+
+    said = run(here, server, monkeypatch, kind_roots=roots)
+
+    one_pass = ["copy data", "copy proxies", "copy renders", "copy basemaps"]
+    copies = [step for step in here.log if step.startswith("copy")]
+    assert copies == one_pass * 2  # the long copy, then what changed during it
+    # The plan says where they are going, before asking.
+    assert f"Slideshow videos: copied into {nas / 'renders'}" in said
+    assert f"Basemaps: copied into {nas / 'basemaps'}" in said
+    data, _proxies, renders, basemaps = server.copies[:4]
+    # What has a folder of its own stays out of the data folder; exports,
+    # which do not here, still go there with everything else.
+    assert "--exclude=/renders/" in data and "--exclude=/basemaps/" in data
+    assert "--exclude=/exports/" not in data
+    assert data[-1] == f"{here.env['FRAMEFOUND_DATA_DIR']}/"
+    assert renders[-2:] == [
+        "framefound@vm:/mnt/ffdata/framefound-data/renders/",
+        f"{nas / 'renders'}/",
+    ]
+    assert basemaps[-1] == f"{nas / 'basemaps'}/"
+
+
+def test_a_kind_whose_store_is_away_stops_it_before_anything_changes(
+    here: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with pytest.raises(MigrationError, match="slideshow videos have nowhere to go"):
+        run(
+            here,
+            OldServer(["/media/intel/2026"]),
+            monkeypatch,
+            kind_roots={"renders": tmp_path / "nas" / "renders"},
+            kind_problems={"renders": "The slideshow store is not connected."},
+        )
+    _nothing_changed(here)
 
 
 def test_an_older_checkout_than_the_old_server_is_refused(
@@ -389,6 +444,27 @@ def test_the_copies_split_proxies_from_everything_else(tmp_path: Path) -> None:
         assert argv[argv.index("-e") + 1].startswith("ssh -o ControlMaster=no")
 
 
+def test_a_kinds_copy_takes_its_finished_files_and_tolerates_having_none(tmp_path: Path) -> None:
+    options = Options(source="framefound@vm")
+    source = Source("framefound@vm", "framefound", tmp_path / "ctl")
+    renders = migrate.kind_copy(options, source, "/mnt/ffdata/data/", "renders", tmp_path / "r")
+    # `<old data>/renders/x.mp4` lands as `<renders folder>/x.mp4`.
+    assert renders[-2:] == ["framefound@vm:/mnt/ffdata/data/renders/", f"{tmp_path / 'r'}/"]
+    # A render's pieces and the old store's marker are not finished videos.
+    assert "--exclude=/work/" in renders and "--exclude=.framefound-*" in renders
+    # An old server that never made one has no such folder: not an error.
+    assert "--ignore-missing-args" in renders
+    assert "--partial" in renders
+    assert renders[renders.index("-e") + 1].startswith("ssh -o ControlMaster=no")
+    basemaps = migrate.kind_copy(options, source, "/mnt/ffdata/data", "basemaps", tmp_path / "b")
+    assert "--exclude=*.part" in basemaps  # an extract that never finished
+    # With nothing separate, the data copy is exactly the command it was.
+    plain = migrate.data_copy(options, source, "/mnt/ffdata/data", tmp_path / "data")
+    assert plain == migrate.data_copy(options, source, "/mnt/ffdata/data", tmp_path / "data", ())
+    assert "--exclude=/renders/" not in plain and "--exclude=/basemaps/" not in plain
+    assert set(migrate.KIND_EXCLUDES) == {"renders", "exports", "basemaps"}
+
+
 def test_the_secret_key_is_required() -> None:
     with pytest.raises(MigrationError, match="FRAMEFOUND_SECRET_KEY"):
         migrate.carried_settings({"FRAMEFOUND_SERVER_NAME": "x"})
@@ -398,4 +474,6 @@ def test_this_checkout_knows_its_own_migrations(tmp_path: Path) -> None:
     layout = Layout(home=tmp_path, source=REPO)
     assert migrate.knows_revision(layout, "0029")
     assert migrate.knows_revision(layout, "0030")
+    for later in ("0031", "0032", "0033", "0034", "0035"):
+        assert migrate.knows_revision(layout, later)
     assert not migrate.knows_revision(layout, "9999")

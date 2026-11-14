@@ -52,6 +52,7 @@ from framefound.db.models import (
 from framefound.mcp import compact
 from framefound.mcp.auth import Principal, open_session, principal
 from framefound.media.signing import SigningError, sign_media_url
+from framefound.nle import roughcut
 from framefound.storage import stores
 
 log = structlog.get_logger()
@@ -59,6 +60,8 @@ log = structlog.get_logger()
 # Long enough to outlast a conversation; the same horizon the panels get.
 MEDIA_TTL_S = 12 * 3600
 MAX_RESULTS = 100
+# search's reason names, as a `matched` entry says them.
+MATCHED_WORDS = {"suggested_tag": "suggested tag", "caption": "AI caption"}
 PREVIEW_EDGE = 768
 
 INSTRUCTIONS = """FrameFound is a self-hosted catalogue of this business's photographs, video and
@@ -67,7 +70,8 @@ change; the catalogue holds metadata, previews and tags.
 
 Tags come in two strengths. A *confirmed* tag is one the operator applied or agreed
 to. A *suggested* tag is a guess awaiting their yes or no — from the CLIP learner,
-from the server-side Claude reviewer, or from you. Treat suggestions as claims.
+from the server-side Claude reviewer, from a local model on this server, or from you.
+Treat suggestions as claims.
 
 To look at a picture, call view_media; thumbnails are small but enough to name a
 subject. When you propose tags, prefer the existing vocabulary (list_tags) and add
@@ -98,7 +102,10 @@ speed, subject energy, light (golden hour, overcast ...) and subjects. It answer
 line per shot. contact_sheet shows many shots in one picture (paste find_shots lines);
 prefer it to many view_media calls. recent_cuts summarises the last cuts for a client
 so the next one can differ on purpose. These describe the footage; they never decide a
-style: fast or slow, sped up or floaty, is the edit's choice.
+style: fast or slow, sped up or floaty, is the edit's choice. The one exception is
+labelled: a find_shots line ending `score NN` carries a local model's 0-100 opinion of
+how usable the shot is (min_score and order "score" use it); it is an opinion, not a
+measurement, and most shots have none.
 
 List answers (find_media, search_media, find_shots) are compact text lines by default,
 ids shortened to 8 characters, which every tool accepts. Ask for `verbose` (or
@@ -149,7 +156,9 @@ class MediaPage(BaseModel):
 
 
 class SearchHit(MediaItem):
-    matched: list[str] = Field(description="How it matched: tag, visual, transcript, name")
+    matched: list[str] = Field(
+        description="How it matched: tag, suggested tag, visual, transcript, name, AI caption"
+    )
     transcript: str | None = None
     at_ms: int | None = Field(
         default=None,
@@ -184,7 +193,7 @@ class QueueItem(BaseModel):
     media_type: str
     tag: str
     confidence: float | None
-    origin: str = Field(description="clip, claude or mcp")
+    origin: str = Field(description="clip, claude, mcp or local (a model on this server)")
     preview_url: str | None
 
 
@@ -333,34 +342,13 @@ def _item(
 
 async def _asset(db: AsyncSession, asset_id: str) -> Asset:
     """An asset by its UUID, or by the short id the compact answers print
-    (the first eight or more hex characters), when that is unambiguous."""
-    raw = asset_id.strip()
+    (the first eight or more hex characters), when that is unambiguous.
+    The rule is the cut writer's (`nle.roughcut.find_asset`), with its
+    sentences."""
     try:
-        key = uuid.UUID(raw)
-    except ValueError:
-        key = None
-    if key is None:
-        prefix = raw.replace("-", "").lower()
-        if len(prefix) < 8 or any(ch not in "0123456789abcdef" for ch in prefix):
-            raise ToolError(f"{asset_id!r} is not an asset id") from None
-        # A range rather than a string match: it works on PostgreSQL's uuid
-        # and SQLite's hex text alike, and uses the primary key.
-        low = uuid.UUID(prefix.ljust(32, "0"))
-        high = uuid.UUID(prefix.ljust(32, "f"))
-        found = (
-            (await db.execute(select(Asset).where(Asset.id >= low, Asset.id <= high).limit(2)))
-            .scalars()
-            .all()
-        )
-        if not found:
-            raise ToolError(f"No asset {asset_id}")
-        if len(found) > 1:
-            raise ToolError(f"{asset_id!r} matches more than one asset; give more of the id")
-        return found[0]
-    asset = await db.get(Asset, key)
-    if asset is None:
-        raise ToolError(f"No asset {asset_id}")
-    return asset
+        return await roughcut.find_asset(db, asset_id)
+    except roughcut.CutError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 async def _asset_key(db: AsyncSession, asset_id: str) -> uuid.UUID:
@@ -694,7 +682,8 @@ def build_server() -> MCPServer:
     ) -> CallToolResult:
         """Search by words: tags, what the pictures look like (visual search),
         what was said (transcripts) and file names, ranked into one list.
-        A `matched` of "visual" is CLIP's opinion; "tag" is the operator's.
+        A `matched` of "visual" is CLIP's opinion; "tag" is the operator's;
+        "AI caption" is a local model's description of it, the weakest.
         `at_ms` is the best moment in a video or recording; for a video, look
         at it with view_media(id, ts_ms=at_ms). `media_type` narrows to photos, video
         or audio; `profile` (see path_profiles) adds local paths. One compact
@@ -728,7 +717,7 @@ def build_server() -> MCPServer:
             # lists below only fill in details fusion did not carry.
             for fused in found.results:
                 for reason in fused.reasons:
-                    how = "suggested tag" if reason == "suggested_tag" else reason
+                    how = MATCHED_WORDS.get(reason, reason)
                     note(fused.asset_id, how, at_ms=fused.ts_ms, transcript=fused.snippet)
             for hit in found.tag_hits:
                 note(hit.asset_id, "tag" if hit.confirmed else "suggested tag")
@@ -936,11 +925,13 @@ def build_server() -> MCPServer:
     @server.tool()
     async def review_queue(
         tag: str | None = None,
-        origin: Literal["clip", "claude", "mcp"] | None = None,
+        origin: Literal["clip", "claude", "mcp", "local"] | None = None,
         limit: int = 40,
     ) -> list[QueueItem]:
         """Suggestions awaiting the operator's judgement, strongest first.
-        Narrow by tag or by who suggested it. Pair with view_media to help
+        Narrow by tag or by who suggested it: the CLIP learner ("clip"),
+        the server-side Claude reviewer ("claude"), you ("mcp"), or a local
+        model on this server ("local"). Pair with view_media to help
         them work through it, and decide_tag to record their answers."""
         who = principal()
         limit = max(1, min(limit, 200))

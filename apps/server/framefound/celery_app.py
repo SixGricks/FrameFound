@@ -10,6 +10,9 @@ Queues are segregated by resource class (ADR-0004):
   exports    - the operator's own renders and exports; server workers only
   transcribe - ASR (GPU-eligible)
   vision     - embeddings, captions, OCR (GPU-eligible)
+  local_ai   - local AI models: a wake-up only; the work is the rows of
+               local_ai_jobs (local_models/jobs.py). One job at a time, at
+               the lowest priority; on the Mac, worker-local-ai consumes it
 """
 
 import time
@@ -20,7 +23,7 @@ from celery import Celery, Task
 from celery.exceptions import Reject
 from celery.schedules import crontab
 
-from framefound.config import get_settings
+from framefound.config import Settings, get_settings
 from framefound.logging import configure_logging
 from framefound.storage import worker_roots
 from framefound.storage.worker_roots import NotHere, data_store_problem, is_remote_worker
@@ -106,3 +109,31 @@ celery_app.conf.update(
         },
     },
 )
+
+
+# The local-AI lane's tick (local_models/jobs.py): what starts a job when the
+# overnight window opens or a pause is lifted from another tab, reaps a job
+# whose worker died, and unloads a model that may no longer be loaded. Once a
+# minute, in UTC like every beat entry; whether it is overnight is decided by
+# the Mac's own clock inside the tick, never by a crontab. `expires` so ticks
+# cannot pile up behind a long download (the lane runs one job at a time).
+LOCAL_AI_TICK: dict[str, Any] = {
+    "task": "framefound.local_ai_tick",
+    "schedule": 60.0,
+    "options": {"expires": 50},
+}
+
+
+def local_ai_beat(settings: Settings | None = None) -> dict[str, dict[str, Any]]:
+    """The beat entries local AI adds: the tick, only on an install that can run
+    models. The containers get none (D26): there is nothing there for it to do.
+    Nor does the review copy (demo mode): its jobs run inside the API, and a
+    worker ticking beside it would drive stand-ins of its own (P30)."""
+    from framefound import local_models
+
+    if local_models.availability(settings).mode != "ready":
+        return {}
+    return {"local-ai-tick": {**LOCAL_AI_TICK, "options": dict(LOCAL_AI_TICK["options"])}}
+
+
+celery_app.conf.beat_schedule.update(local_ai_beat())

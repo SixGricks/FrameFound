@@ -171,7 +171,13 @@ services:
           # at one: two models resident is the profile that got this killed,
           # and RAM has removed the reason to run it close to the edge.
           memory: 6G
-    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "transcribe", "--concurrency=1"]
+    # It also consumes `local_ai`, the local-AI lane, so a message on it is
+    # never stranded. Nothing is ever queued there in the containers: models
+    # run only on the Mac install, the API refuses every local-AI write here,
+    # and beat schedules no tick. One that arrives anyway closes any active
+    # job with the reason and returns in milliseconds, so it cannot hold up a
+    # transcription. The name has an underscore; the tests' -Q pattern allows it.
+    command: ["celery", "-A", "framefound.worker", "worker", "-Q", "transcribe,local_ai", "--concurrency=1"]
     env_file: .env
     environment:
       # Inside containers the media bind always lands at /media;

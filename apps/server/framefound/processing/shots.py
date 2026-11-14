@@ -14,15 +14,21 @@ Two passes, on two queues, because they need different things:
 
 Both rebuild everything they own from scratch, so either can be re-run at
 any time (`python -m framefound.ops.shots`).
+
+`still_at` is the other thing here: a picture of any moment of a clip, for
+whoever needs to look at one (a contact sheet, a look judged on a still).
+It is the only function in the app that grabs a still nobody saved.
 """
 
 import asyncio
 import json
 import math
+import os
 import shutil
 import subprocess
+import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -35,12 +41,18 @@ from framefound.config import get_settings
 from framefound.db.models import Asset, Derivative, Frame, Library, ShotWindow
 from framefound.media import motion
 from framefound.media.sun import light_class, sun_position
+from framefound.nle import shotlist
 from framefound.processing import derivatives as deriv
 from framefound.storage import stores
 
 log = structlog.get_logger()
 
 STILL_WIDTH = 480
+# What `still_at` hands back, with -1 for the moment, when a clip has no
+# picture to give: a grey tile the size of a still. It means "no picture",
+# never the clip.
+BLANK_SIZE = (STILL_WIDTH, 270)
+BLANK_GREY = (60, 60, 60)
 # Window stills sit a quarter second inside each end, clear of the cut.
 STILL_INSET_S = 0.25
 # A slow box decodes a 1080p H.264 proxy at well over real time; four times
@@ -219,6 +231,59 @@ def light_for(elevation: float, look: dict[str, Any]) -> str:
     return light_class(elevation)
 
 
+# --- how a still reaches its name ----------------------------------------------
+#
+# One way, used by the motion pass and by `still_at` alike, because both
+# write the same files.
+
+# A thread-side cap, not an asyncio one: grabs run in worker threads, and an
+# asyncio primitive created at import would bind to whichever loop used it
+# first.
+_extract_slots = threading.BoundedSemaphore(3)
+
+
+def _read_still(path: Path) -> Any:
+    """The picture in a file, loaded and independent of it, or None when the
+    file cannot be read as one."""
+    from PIL import Image
+
+    try:
+        with Image.open(path) as picture:
+            return picture.convert("RGB")
+    except Exception as exc:  # whatever is wrong with it, it is not a picture
+        log.warning("shots.still_unreadable", path=str(path), reason=str(exc)[:120])
+        return None
+
+
+def _grab(src: Path, dst: Path, at_s: float, width: int) -> Any:
+    """One frame of `src` as a loaded picture, kept at `dst`.
+
+    The frame is written beside its place and moved in only once it has been
+    read back as a picture. A saved still is "this moment of the clip" from
+    then on, for a contact sheet and for a model alike, so half a file left
+    by an ffmpeg that was stopped must never be standing there under that
+    name; and two sheets asking for the same moment at once must not read
+    each other's file while it is being written.
+
+    A file already at `dst` is replaced, and only by a whole picture: when
+    the grab fails it is left as it was."""
+    from PIL import Image
+
+    from framefound.processing import scenes
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    part = dst.with_name(f"{dst.stem}.{uuid.uuid4().hex[:8]}.part{dst.suffix}")
+    try:
+        with _extract_slots:
+            scenes.extract_frame(src, part, at_s, max_width=width)
+        with Image.open(part) as picture:
+            image = picture.convert("RGB")
+        os.replace(part, dst)
+    finally:
+        part.unlink(missing_ok=True)
+    return image
+
+
 # --- the motion pass -----------------------------------------------------------
 
 
@@ -232,17 +297,22 @@ async def _scene_cuts(db: AsyncSession, asset_id: uuid.UUID) -> list[float]:
 
 
 def _extract_stills(src: Path, data_dir: Path, asset_id: uuid.UUID, moments: list[int]) -> int:
-    from framefound.processing import scenes
+    """Save a still at each of a clip's window moments; how many it now has.
 
+    Each is written by `_grab`, the same way a still grabbed later is. This
+    used to point ffmpeg at the still's own name and to count any file found
+    there as made. A worker stopped mid-write (a restart or an update kills
+    them) then left half a JPEG at the middle of a window, which is the
+    moment a look is judged on, and no later analysis ever replaced it. So a
+    file that is already there is kept only if it reads as a picture."""
     made = 0
     for ts_ms in moments:
         target = data_dir / still_relpath(asset_id, ts_ms)
-        if target.is_file():
+        if target.is_file() and _read_still(target) is not None:
             made += 1
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            scenes.extract_frame(src, target, ts_ms / 1000, max_width=STILL_WIDTH)
+            _grab(src, target, ts_ms / 1000, STILL_WIDTH)
             made += 1
         except Exception as exc:  # one bad seek must not lose the analysis
             log.warning("shots.still_skipped", ts_ms=ts_ms, reason=str(exc)[:120])
@@ -259,12 +329,76 @@ def window_moments(start_ms: int, end_ms: int) -> tuple[int, int, int]:
     return start_ms + inset, (start_ms + end_ms) // 2, end_ms - inset
 
 
-async def analyse_motion(db: AsyncSession, asset: Asset, library: Library, path: Path) -> int:
-    """The motion pass for one clip. Returns how many windows it wrote."""
+async def motion_pass(db: AsyncSession, asset: Asset, library: Library, path: Path) -> int:
+    """The motion pass as every caller runs it — the Celery task and the
+    backfill's `--inline` loop alike: `analyse_motion`, with a local model's
+    looks following the rebuilt windows. Returns how many windows it wrote.
+
+    The looks step lived in the Celery task alone, so a backfill run inline
+    left looks of shots that no longer exist current and the clip's roll-up
+    (`looked_at`, the score search and culling read) stale.
+
+    It runs the moment the new windows are committed, before the stills are
+    grabbed (minutes of ffmpeg on a long clip): an inline backfill stopped
+    during the stills would otherwise leave the windows rebuilt and the
+    looks never retired, and the next run skips a clip whose motion pass is
+    done, so nothing would come back to it.
+
+    It is handed to `analyse_motion` as a step rather than written into it
+    so it runs exactly once whatever stands in for the analysis: one that
+    does not call it (a stand-in in a test, or a clip that is not a video)
+    gets it afterwards. A failure in it may roll the session back,
+    which expires `asset`: callers take what they need from it first."""
+    asset_id = asset.id
+    settled = False
+
+    async def windows_committed() -> None:
+        nonlocal settled
+        settled = True
+        await settle_looks(db, asset_id)
+
+    count = await analyse_motion(db, asset, library, path, windows_committed)
+    if not settled:
+        await settle_looks(db, asset_id)
+    return count
+
+
+async def settle_looks(db: AsyncSession, asset_id: uuid.UUID) -> bool:
+    """`looking.store.after_reanalysis` + commit for a clip whose windows
+    were just rebuilt: looks at shots whose times moved stop counting, and
+    the roll-up follows. Looking must never fail the analysis that has just
+    succeeded, so a failure is rolled back (leaving the session clean) and
+    logged, and False is returned."""
+    try:
+        from framefound.looking import store as looks
+
+        await looks.after_reanalysis(db, asset_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        log.warning("looks.after_reanalysis_failed", asset_id=str(asset_id), exc_info=True)
+        return False
+    return True
+
+
+async def analyse_motion(
+    db: AsyncSession,
+    asset: Asset,
+    library: Library,
+    path: Path,
+    windows_committed: Callable[[], Awaitable[None]] | None = None,
+) -> int:
+    """The motion pass for one clip. Returns how many windows it wrote.
+
+    `windows_committed` runs as soon as the new windows are committed, before
+    the stills are grabbed. Callers run `motion_pass`, which passes the step
+    that lets a local model's looks follow the new windows. The step may
+    roll the session back, so nothing after it reads `asset`."""
     from framefound.processing.probe import probe_ffprobe
 
     if asset.media_type != "video":
         return 0
+    asset_id = asset.id
     data_dir = get_settings().data_dir
     proxy = proxy_path(data_dir, asset.id)
     if not proxy.is_file():
@@ -329,18 +463,90 @@ async def analyse_motion(db: AsyncSession, asset: Asset, library: Library, path:
         )
         moments.extend(window_moments(start_ms, end_ms))
     await db.commit()
+    if windows_committed is not None:
+        await windows_committed()
     stills = await asyncio.to_thread(
-        _extract_stills, proxy, data_dir, asset.id, sorted(set(moments))
+        _extract_stills, proxy, data_dir, asset_id, sorted(set(moments))
     )
     log.info(
         "shots.analysed",
-        asset_id=str(asset.id),
+        asset_id=str(asset_id),
         windows=len(found),
         stills=stills,
         seconds=round(seconds, 1),
         realtime=round(duration / seconds, 2) if seconds else None,
     )
     return len(found)
+
+
+# --- a still of any moment -----------------------------------------------------
+
+# How many files that will not read `still_at` steps past before it says the
+# clip has no picture. One is what a stopped ffmpeg leaves behind. A clip
+# with more than a few has something else wrong with it, and opening every
+# frame it has, for each tile of a contact sheet, would not find a picture
+# either.
+UNREADABLE_LIMIT = 4
+
+
+async def still_at(
+    db: AsyncSession, asset: Asset, ts_ms: int, *, data_dir: Path
+) -> tuple[Any, int]:
+    """A picture of the clip at `ts_ms`, and the moment it actually shows.
+
+    In order: the still the analysis saved there; a sampled frame within
+    0.6 s; one grabbed from the proxy now (and kept, so the next look is
+    instant); failing all of those the nearest sampled frame, however far
+    off; and with none of them a grey blank and -1.
+
+    A caller treats -1 as "no picture": the blank is never shown to a model
+    and never previewed as if it were the clip.
+
+    Which file on disk is a moment's still is `nle.shotlist`'s rule and is
+    not written again here. What this adds is the one thing that rule must
+    never do: start ffmpeg. So a page that is only looking calls
+    `shotlist.still_path`, and whatever may wait on a grab calls this.
+
+    A file that is there but cannot be read as a picture counts as not
+    there. With a proxy the moment is grabbed afresh, which also mends a
+    broken saved still for every later reader. Without one the broken file
+    is stepped past to the clip's sampled frames, nearest first: it must not
+    hide them, or a clip with a good frame a fifth of a second away would be
+    answered "no picture" for as long as the proxy store was away."""
+    ts_ms = max(0, int(ts_ms))
+    unreadable: set[Path] = set()
+    found = await shotlist.still_found(db, asset.id, ts_ms, data_dir, nearest=False)
+    if found is not None:
+        picture = await asyncio.to_thread(_read_still, found[0])
+        if picture is not None:
+            return picture, found[1]
+        unreadable.add(found[0])
+    proxy = proxy_path(data_dir, asset.id)
+    if await asyncio.to_thread(proxy.is_file):
+        saved = data_dir / still_relpath(asset.id, ts_ms)
+        try:
+            picture = await asyncio.to_thread(_grab, proxy, saved, ts_ms / 1000, STILL_WIDTH)
+            return picture, ts_ms
+        except Exception as exc:  # a clip that will not seek still gets its nearest frame
+            log.warning(
+                "shots.still_grab_failed",
+                asset_id=str(asset.id),
+                ts_ms=ts_ms,
+                reason=str(exc)[:120],
+            )
+    for _ in range(UNREADABLE_LIMIT - len(unreadable)):
+        found = await shotlist.still_found(
+            db, asset.id, ts_ms, data_dir, nearest=True, skip=unreadable
+        )
+        if found is None:
+            break
+        picture = await asyncio.to_thread(_read_still, found[0])
+        if picture is not None:
+            return picture, found[1]
+        unreadable.add(found[0])
+    from PIL import Image
+
+    return Image.new("RGB", BLANK_SIZE, BLANK_GREY), -1
 
 
 # --- the descriptor pass -------------------------------------------------------

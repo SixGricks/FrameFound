@@ -128,6 +128,15 @@ def switch(layout: Layout, target: Path, data_dir: Path, launchd: Launchd, say: 
     if separate:
         stores.mark_proxy_store(target)
     envfile.update(layout.env_file, {"FRAMEFOUND_PROXY_DIR": str(target) if separate else ""})
+    # A folder recorded for proxies by an earlier move from the Storage page
+    # (storage/stores.py) would outrank the setting just written. The newest
+    # instruction wins, so that record goes — and comes back as "the data
+    # store" when a bulk folder is set, where no setting at all would mean
+    # the bulk folder's own `proxies`.
+    stores.clear_override(data_dir, "proxies")
+    bulk_setting = envfile.read(layout.env_file).get("FRAMEFOUND_BULK_DIR", "").strip()
+    if not separate and (stores.read_state(data_dir).bulk or bulk_setting):
+        stores.set_override(data_dir, "proxies", data_dir)
     installer.stop_all(launchd, services.APP_SERVICES)
     for name in services.APP_SERVICES:
         launchd.start(name)

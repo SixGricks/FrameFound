@@ -7,7 +7,9 @@ the point of the feature is that correcting it makes it better, immediately
 and visibly.
 """
 
+import queue
 import re
+import threading
 import uuid
 from datetime import datetime
 
@@ -19,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from framefound.ai.tagging import slugify
 from framefound.auth.deps import CurrentUser, DbDep, require_admin
-from framefound.db.models import Asset, AssetTag, Library, Tag, catalogued
+from framefound.db.models import Asset, AssetTag, Library, Look, Tag, catalogued
 
 log = structlog.get_logger()
 
@@ -83,10 +85,20 @@ class PendingSuggestion(BaseModel):
     filename: str
     media_type: str
     confidence: float | None
-    # Who suggested it: clip (the learner), claude (the API reviewer) or
-    # mcp (Claude through the connector). The operator judges them alike,
-    # but deserves to know which second opinion they are weighing.
+    # Who suggested it: clip (the learner), claude (the API reviewer), mcp
+    # (Claude through the connector) or local (a model on this Mac). The
+    # operator judges them alike, but deserves to know which second opinion
+    # they are weighing.
     origin: str = "clip"
+    # A local model's suggestion on a clip: the moment it is about, so the
+    # page opens the clip there. Null for a photograph and for every other
+    # origin.
+    at_ms: int | None = None
+    # The local model that suggested it, by its repository's last part
+    # ("gemma-4-e4b-it-4bit"); null for every other origin.
+    model: str | None = None
+    # Made up by the demonstration; the page says so.
+    demo: bool = False
 
 
 async def _counts(db: DbDep) -> tuple[dict[uuid.UUID, int], dict[uuid.UUID, int]]:
@@ -203,15 +215,62 @@ async def suggest_tags(
     ]
 
 
-def _relearn(tag_id: uuid.UUID) -> None:
-    """Queue the learner. A queue that is down must not fail the operator's
-    edit — the tag is saved either way, and the next edit will pick it up."""
+# The learner is handed to the queue from a thread of its own. Celery's
+# publish blocks: with the broker unreachable it retries the connection for
+# about 5.5 s before giving up, and called inside these async handlers that
+# held the operator's "Saving…" on every Y press — and the whole event loop
+# with it, so every other request on the server waited too. Every edit is
+# committed before `_relearn` is called, so nothing the operator sees depends
+# on the enqueue finishing.
+_relearn_lock = threading.Lock()
+_relearn_waiting: set[str] = set()
+_relearn_jobs: queue.SimpleQueue[str] = queue.SimpleQueue()
+_relearn_thread: threading.Thread | None = None
+
+
+def _enqueue_learner(tag_id: str) -> None:
+    """Publish one learner pass. Runs on the enqueue thread, never a request."""
     try:
         from framefound.processing.tag_tasks import learn_tag
 
-        learn_tag.delay(str(tag_id))
-    except Exception:
-        log.warning("tagging.enqueue_failed", tag_id=str(tag_id))
+        learn_tag.delay(tag_id)
+    except Exception as err:
+        log.warning("tagging.enqueue_failed", tag_id=tag_id, error=str(err))
+
+
+def _enqueue_forever() -> None:
+    while True:
+        tag_id = _relearn_jobs.get()
+        with _relearn_lock:
+            # Off the waiting list before publishing, not after: once the pass
+            # is sent a worker may read the tag at any moment, so an edit made
+            # during the publish needs a pass of its own.
+            _relearn_waiting.discard(tag_id)
+        _enqueue_learner(tag_id)
+
+
+def _relearn(tag_id: uuid.UUID) -> None:
+    """Queue the learner and return at once. A queue that is down must not
+    fail the operator's edit, nor make them wait for it — the tag is saved
+    either way, and the next edit will pick it up.
+
+    Ten quick answers about one tag while the queue is slow send one pass,
+    not ten: a pass still waiting to be sent reads the tag when it runs, so
+    it already covers every answer committed before it."""
+    global _relearn_thread
+    key = str(tag_id)
+    with _relearn_lock:
+        if key in _relearn_waiting:
+            return
+        _relearn_waiting.add(key)
+        _relearn_jobs.put(key)
+        if _relearn_thread is None or not _relearn_thread.is_alive():
+            # A daemon: a pass still unsent at shutdown is dropped rather than
+            # holding the server open; the next edit queues the tag again.
+            _relearn_thread = threading.Thread(
+                target=_enqueue_forever, name="tag-relearn-enqueue", daemon=True
+            )
+            _relearn_thread.start()
 
 
 @router.get("/assets/{asset_id}", response_model=list[AssetTagOut])
@@ -411,11 +470,16 @@ async def pending_for_tag(
     db: DbDep,
     limit: int = Query(default=60, ge=1, le=200),
 ) -> list[PendingSuggestion]:
-    """Suggestions awaiting judgement, strongest first — a review queue."""
+    """Suggestions awaiting judgement, strongest first — a review queue.
+
+    A local model's suggestion carries the look that made it (one outer
+    join): which model said it, whether the demonstration made it up, and
+    the moment of the clip it is about."""
     rows = (
         await db.execute(
-            select(AssetTag, Asset)
+            select(AssetTag, Asset, Look.model, Look.demo)
             .join(Asset, Asset.id == AssetTag.asset_id)
+            .outerjoin(Look, Look.id == AssetTag.look_id)
             .where(AssetTag.tag_id == tag_id, AssetTag.source == "suggested", catalogued())
             .order_by(AssetTag.confidence.desc().nullslast())
             .limit(limit)
@@ -428,8 +492,11 @@ async def pending_for_tag(
             media_type=asset.media_type,
             confidence=link.confidence,
             origin=link.origin or "clip",
+            at_ms=link.at_ms,
+            model=(repo.rpartition("/")[2] or repo) if repo else None,
+            demo=bool(demo),
         )
-        for link, asset in rows
+        for link, asset, repo, demo in rows
     ]
 
 

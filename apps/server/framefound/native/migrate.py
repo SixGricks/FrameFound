@@ -4,7 +4,9 @@ What moves: the catalogue (one database dump), the settings that must not
 change (the secret key above all — it unseals every stored secret), the
 derived files, and the proxies. What changes on the way: each library's
 root, once — the old server saw `/media/intel`, this Mac sees
-`/Volumes/intel`.
+`/Volumes/intel`. The old server kept everything in one data folder; here
+the bulky kinds may each have a folder of their own (storage/stores.py), and
+each is copied straight into it rather than through this Mac's disk.
 
 The order keeps the old server answering for as long as possible and makes
 every step repeatable:
@@ -23,13 +25,14 @@ stop`; `docker compose up -d` there undoes the migration.
 
 import os
 import shlex
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from framefound.native import database, envfile, installer, proc, services
 from framefound.native.launchd import Launchd
 from framefound.native.layout import Layout
+from framefound.storage import stores
 from framefound.storage.reachability import root_state
 from framefound.storage.worker_roots import RootMapping, parse_root_map, translate
 
@@ -67,6 +70,13 @@ SOURCE_APP_SERVICES = (
 # old server's own backups (they hold its settings file), and its marker.
 DATA_EXCLUDES = ("/tmp/", "/backups/", "/renders/work/", ".framefound-*")  # noqa: S108
 PROXY_PATTERN = "proxy.*"
+# The other kinds that may have a folder of their own here, and what in the
+# old data store's folder of that name is not a finished file of that kind.
+KIND_EXCLUDES: dict[str, tuple[str, ...]] = {
+    "renders": ("/work/",),  # a render's pieces
+    "exports": (),
+    "basemaps": ("*.part",),  # an extract that was still being written
+}
 
 
 class MigrationError(RuntimeError):
@@ -182,8 +192,12 @@ def plan_roots(roots: list[str], maps: str, volumes: Path) -> list[RootPlan]:
     return plans
 
 
-def data_copy(options: Options, source: Source, store: str, target: Path) -> list[str]:
-    """Everything derived except proxies, into the data folder."""
+def data_copy(
+    options: Options, source: Source, store: str, target: Path, elsewhere: Iterable[str] = ()
+) -> list[str]:
+    """Everything derived except proxies, into the data folder. The kinds
+    in `elsewhere` are left out too: they have folders of their own here
+    (`kind_copy`)."""
     return [
         options.rsync,
         "-rlts",
@@ -193,6 +207,7 @@ def data_copy(options: Options, source: Source, store: str, target: Path) -> lis
         source.rsync_shell(),
         *(f"--exclude={pattern}" for pattern in DATA_EXCLUDES),
         f"--exclude=/derivatives/*/*/{PROXY_PATTERN}",
+        *(f"--exclude=/{kind}/" for kind in elsewhere),
         f"{source.host}:{store.rstrip('/')}/",
         f"{target}/",
     ]
@@ -216,6 +231,25 @@ def proxy_copy(options: Options, source: Source, store: str, target: Path) -> li
     ]
 
 
+def kind_copy(options: Options, source: Source, store: str, kind: str, target: Path) -> list[str]:
+    """One bulky kind's finished files, into that kind's own folder here:
+    the old `<data>/renders/x.mp4` becomes `<renders folder>/x.mp4`."""
+    return [
+        options.rsync,
+        "-rlts",
+        "--partial",
+        "--info=progress2",
+        # An old server that never rendered a slideshow has no `renders`
+        # folder. That is nothing to copy, not a failed migration.
+        "--ignore-missing-args",
+        "-e",
+        source.rsync_shell(),
+        *(f"--exclude={pattern}" for pattern in (*KIND_EXCLUDES[kind], ".framefound-*")),
+        f"{source.host}:{store.rstrip('/')}/{kind}/",
+        f"{target}/",
+    ]
+
+
 def rewrite_roots_sql(plans: list[RootPlan]) -> str:
     """One statement per library root that moves. Values go in as SQL string
     literals with quotes doubled; a library folder may contain an apostrophe."""
@@ -234,7 +268,13 @@ def rewrite_roots_sql(plans: list[RootPlan]) -> str:
     return "BEGIN; " + " ".join(statements) + " COMMIT;" if statements else ""
 
 
-def describe(plans: list[RootPlan], options: Options, store: str, proxy_root: Path) -> list[str]:
+def describe(
+    plans: list[RootPlan],
+    options: Options,
+    store: str,
+    proxy_root: Path,
+    kind_roots: Mapping[str, Path] | None = None,
+) -> list[str]:
     lines = [f"From {options.source} ({options.directory}/), data store {store}", "", "Libraries:"]
     for plan in plans:
         note = "" if plan.state == "ok" else f"   <- {plan.state} on this Mac"
@@ -246,6 +286,10 @@ def describe(plans: list[RootPlan], options: Options, store: str, proxy_root: Pa
             f"copied into {proxy_root}"
             if options.proxies == "copy"
             else "left behind (rebuild later with: framefound proxies rebuild)"
+        ),
+        *(
+            f"{stores.words(kind).things.capitalize()}: copied into {root}"
+            for kind, root in (kind_roots or {}).items()
         ),
         "The old server's app is "
         + (
@@ -266,7 +310,13 @@ def migrate(
     proxy_problem: str | None,
     say: Say,
     confirm: Callable[[str], bool],
+    kind_roots: Mapping[str, Path] | None = None,
+    kind_problems: Mapping[str, str | None] | None = None,
 ) -> None:
+    """`kind_roots` names the folder of each bulky kind (other than proxies)
+    that has one of its own on this Mac, and `kind_problems` why any of them
+    cannot be written to right now. Left out, everything but proxies goes
+    into the data folder, as it did before there were kinds."""
     layout.run.mkdir(parents=True, exist_ok=True)
     source = Source(options.source, options.directory, layout.run / "migrate-ssh.sock")
     # A connection left by an interrupted run would be reused blindly.
@@ -275,7 +325,19 @@ def migrate(
     say(f"Connecting to {options.source}")
     proc.run(source.open())
     try:
-        _migrate(layout, env, launchd, options, source, proxy_root, proxy_problem, say, confirm)
+        _migrate(
+            layout,
+            env,
+            launchd,
+            options,
+            source,
+            proxy_root,
+            proxy_problem,
+            say,
+            confirm,
+            dict(kind_roots or {}),
+            dict(kind_problems or {}),
+        )
     finally:
         proc.run(source.close(), capture=True, check=False)
 
@@ -290,6 +352,8 @@ def _migrate(
     proxy_problem: str | None,
     say: Say,
     confirm: Callable[[str], bool],
+    kind_roots: dict[str, Path],
+    kind_problems: dict[str, str | None],
 ) -> None:
 
     # 1. Plan — everything that can refuse does so before anything changes.
@@ -340,12 +404,19 @@ def _migrate(
         )
     if options.proxies == "copy" and proxy_problem is not None:
         raise MigrationError(f"The proxies have nowhere to go: {proxy_problem}")
+    for kind in kind_roots:
+        # Copied into the empty folder an unmounted share leaves behind,
+        # they would land on this Mac's disk under the share's name.
+        if kind_problems.get(kind) is not None:
+            raise MigrationError(
+                f"The {stores.words(kind).things} have nowhere to go: {kind_problems[kind]}"
+            )
     if database.count(env, "users") and not options.replace:
         raise MigrationError(
             "This install already has a catalogue with users in it. Pass --replace "
             "to overwrite it with the old server's."
         )
-    for line in describe(plans, options, store, proxy_root):
+    for line in describe(plans, options, store, proxy_root, kind_roots):
         say(line)
     away = [plan.server for plan in plans if plan.state != "ok"]
     if away:
@@ -359,9 +430,12 @@ def _migrate(
 
     def copy_files(note: str) -> None:
         say(note)
-        proc.run(data_copy(options, source, store, Path(env["FRAMEFOUND_DATA_DIR"])))
+        data_dir = Path(env["FRAMEFOUND_DATA_DIR"])
+        proc.run(data_copy(options, source, store, data_dir, elsewhere=kind_roots))
         if options.proxies == "copy":
             proc.run(proxy_copy(options, source, store, proxy_root))
+        for kind, root in kind_roots.items():
+            proc.run(kind_copy(options, source, store, kind, root))
 
     # 2. The long copy, with the old server still serving.
     copy_files("Copying derived files (the old server stays up for this)")

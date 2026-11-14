@@ -3,11 +3,13 @@ has to respect it: generation, the scanner, the move command and the
 "what is missing" check."""
 
 import shutil
+import threading
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -22,7 +24,7 @@ from framefound.processing import derivatives as deriv
 from framefound.processing import shots
 from framefound.scanner.scan import _walk
 from framefound.storage import stores
-from framefound.storage.stores import PROXY_STORE_MARKER
+from framefound.storage.stores import BULK_STORE_MARKER, INCOMING_MARKER, PROXY_STORE_MARKER
 from framefound.storage.worker_roots import DATA_STORE_MARKER
 
 PROXY = "derivatives/ab/abcd/proxy.mp4"
@@ -125,7 +127,17 @@ def test_the_shot_code_finds_the_proxy_in_its_store(
 # --- the scanner ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("marker", [PROXY_STORE_MARKER, DATA_STORE_MARKER])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        PROXY_STORE_MARKER,
+        DATA_STORE_MARKER,
+        # The bulk folder sits on the Photos drive, which may be a library.
+        BULK_STORE_MARKER,
+        # A move still copying into a folder: not a store yet, already not footage.
+        INCOMING_MARKER,
+    ],
+)
 def test_the_scanner_never_catalogues_a_store(tmp_path: Path, marker: str) -> None:
     """A proxy store on the same share as the footage must not come back as
     footage — every proxy a second, worse copy of its own original."""
@@ -252,6 +264,33 @@ def test_moving_back_into_the_data_store_clears_the_setting(
     assert not (data / PROXY_STORE_MARKER).exists()
 
 
+def test_the_command_outranks_an_earlier_move_made_from_the_storage_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A folder recorded for proxies (storage/stores.py) beats the setting
+    this command writes. Left in place, the command would report success
+    and change nothing."""
+    layout, data = _install(tmp_path)
+    earlier, nas, bulk = tmp_path / "earlier", tmp_path / "nas", tmp_path / "bulk"
+    stores.mark_proxy_store(earlier)
+    stores.set_override(data, "proxies", earlier)
+    monkeypatch.setattr(proxies.proc, "run", _local_copy)
+
+    proxies.move(layout, settings(data), nas, FakeLaunchd(), lambda _m: None)  # type: ignore[arg-type]
+
+    assert stores.load_overrides(data) == {}
+    assert stores.proxy_root(data, settings(data, nas)) == nas
+
+    # With a bulk folder set, "no setting" would mean its own `proxies`
+    # folder, so moving back into the data store has to be said outright.
+    envfile.update(layout.env_file, {"FRAMEFOUND_BULK_DIR": str(bulk)})
+    with_bulk = Settings(data_dir=data, proxy_dir=nas, bulk_dir=bulk)
+    proxies.move(layout, with_bulk, data, FakeLaunchd(), lambda _m: None)  # type: ignore[arg-type]
+
+    assert envfile.read(layout.env_file)["FRAMEFOUND_PROXY_DIR"] == ""
+    assert stores.proxy_root(data, Settings(data_dir=data, bulk_dir=bulk)) == data
+
+
 def test_the_copy_takes_only_proxies_and_can_resume(tmp_path: Path) -> None:
     argv = proxies.copy_command("rsync", tmp_path / "a", tmp_path / "b")
     assert argv[0] == "rsync" and "--partial" in argv
@@ -329,6 +368,76 @@ async def test_an_unplugged_store_is_never_read_as_everything_missing(
 
     with pytest.raises(proxy_store.StoreAway):
         await proxy_store.missing(db, data)
+
+
+async def test_the_store_is_looked_at_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, db: AsyncSession
+) -> None:
+    """The Storage page's rebuild calls this from a request: a proxy share
+    that has hung must stall that request alone, not every other one."""
+    data, nas = tmp_path / "data", tmp_path / "nas"
+    stores.mark_proxy_store(nas)
+    use(monkeypatch, data, nas)
+    loop_thread = threading.current_thread()
+    looked_from: list[threading.Thread] = []
+    real = stores.proxy_store_problem
+
+    def watched(*args: Any, **kwargs: Any) -> str | None:
+        looked_from.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stores, "proxy_store_problem", watched)
+    await proxy_store.missing(db, data)
+
+    assert looked_from and loop_thread not in looked_from
+
+
+async def test_videos_that_never_got_a_proxy_are_found_for_the_rebuild(
+    db: AsyncSession,
+) -> None:
+    """A clip whose proxy job met a store that was away has no record of a
+    proxy at all, so "on record but missing" never finds it."""
+
+    async def video(name: str, *, makes_proxies: bool = True, **more: object) -> Asset:
+        library = Library(name=f"L-{name}", root_path="/media/x", generate_proxies=makes_proxies)
+        db.add(library)
+        await db.flush()
+        asset = Asset(
+            library_id=library.id,
+            relative_path=f"{name}.mp4",
+            filename=f"{name}.mp4",
+            extension="mp4",
+            media_type="video",
+            size_bytes=1,
+            mtime=datetime.now(UTC),
+            **{"processing_status": "ready", **more},
+        )
+        db.add(asset)
+        await db.flush()
+        return asset
+
+    def record(asset: Asset, status: str) -> None:
+        db.add(
+            Derivative(
+                asset_id=asset.id,
+                kind="proxy",
+                relative_path=deriv.derivative_relpath(asset.id, "proxy", "mp4"),
+                media_format="mp4",
+                status=status,
+            )
+        )
+
+    skipped = await video("skipped")  # its store was away: nothing was recorded
+    cut_short = await video("cut-short")  # its worker was stopped mid-transcode
+    record(cut_short, "pending")
+    record(await video("made"), "ready")
+    record(await video("unreadable"), "failed")  # tried, and not tried again unasked
+    await video("not-wanted", makes_proxies=False)  # its library makes no proxies
+    await video("gone", availability="missing")
+    await video("not-in-yet", processing_status="pending")  # the pipeline still has it
+    await db.commit()
+
+    assert set(await proxy_store.never_made(db)) == {skipped.id, cut_short.id}
 
 
 # --- the System page -----------------------------------------------------------

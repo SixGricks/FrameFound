@@ -72,7 +72,11 @@ unset on the server. With it set:
 `media` (proxies) and `frames`. The operator's own work (listing exports,
 slideshow renders, object removal, AI edits, basemaps) is on the `exports`
 queue, which a remote worker should not consume, so nothing somebody is
-waiting on depends on it.
+waiting on depends on it. Nor does a remote worker ever take `local_ai`, the
+local AI models' queue: those jobs need the Mac's own model server and the
+copies of the models on its disk, so on the Mac only `worker-local-ai`
+consumes it (the containers' `worker-ai` takes it only to answer that models
+cannot run there).
 
 The processing page shows a **Machines** section once a second machine has
 done work, and each recent failure names its machine (`jobs.worker`).

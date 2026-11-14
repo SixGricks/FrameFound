@@ -1,0 +1,67 @@
+{
+  "framefound_note": "An invented model: no such repository exists. Every value is made up for the demo's Compare page (L2 design 8.9), so a review copy has a second installed model that reads pictures. One weights file of 3,113,851,289 bytes (2.9 GB): about 3.5 GB in memory, so it fits the daytime budget at the defaults. Kept out of the top of demo_data (fake.fixture_names) so the tests that walk every model there keep their list.",
+  "id": "mlx-community/demo-small-4bit",
+  "author": "mlx-community",
+  "sha": "5555555555555555555555555555555555555555",
+  "lastModified": "2026-10-14T00:00:00.000Z",
+  "private": false,
+  "disabled": false,
+  "gated": false,
+  "library_name": "mlx",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+    "mlx",
+    "safetensors",
+    "mlx-vlm",
+    "image-text-to-text",
+    "base_model:google/demo-small",
+    "base_model:quantized:google/demo-small",
+    "4-bit",
+    "license:apache-2.0"
+  ],
+  "cardData": {
+    "base_model": "google/demo-small",
+    "license": "apache-2.0"
+  },
+  "config": {
+    "model_type": "demo"
+  },
+  "siblings": [
+    {
+      "rfilename": "README.md",
+      "size": 640
+    },
+    {
+      "rfilename": "chat_template.jinja",
+      "size": 9000
+    },
+    {
+      "rfilename": "config.json",
+      "size": 2100
+    },
+    {
+      "rfilename": "model.safetensors",
+      "size": 3113851289,
+      "lfs": {
+        "sha256": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "size": 3113851289
+      }
+    },
+    {
+      "rfilename": "processor_config.json",
+      "size": 1316
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b",
+        "size": 11422654
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "size": 1811
+    }
+  ]
+}
