@@ -1,6 +1,6 @@
 # FrameFound server image — one image, many entrypoints (api/worker/scanner/...).
 # TODO(m4): CUDA-enabled variant for worker-ai.
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 # Media probing/processing binaries (invoked as subprocesses, never linked).
 RUN apt-get update \
