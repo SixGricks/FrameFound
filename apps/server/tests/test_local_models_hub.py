@@ -190,17 +190,23 @@ def test_a_large_files_pointer_id_is_not_taken_for_the_id_of_its_bytes() -> None
     # Hugging Face gives a large file a blobId too: the id of the pointer left
     # in git. Checked against the downloaded bytes it would fail every time.
     payload = page()
+    file_id = ""
     for entry in payload["siblings"]:
         if entry["rfilename"] == "tokenizer.json":
+            file_id = entry["lfs"]["sha256"]
             entry["blobId"] = "a" * 40
-            entry["lfs"]["sha256"] = entry["lfs"]["sha256"].upper()
+            entry["lfs"]["sha256"] = file_id.upper()
             entry["size"] = 135  # the pointer's size, were it ever sent in place of the file's
 
     tokenizer = next(f for f in hub.parse_info(payload).files if f.path == "tokenizer.json")
 
     assert tokenizer.blob_id is None
     assert tokenizer.size == 32_169_626
-    assert tokenizer.sha256 == "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+    # The bytes' own id, from `lfs`, in lower case. (Compared with the page's
+    # value rather than written out: a 64-character hex string beside the word
+    # "tokenizer" reads to the secrets scan as a leaked token.)
+    assert len(file_id) == 64 and file_id == file_id.lower()
+    assert tokenizer.sha256 == file_id
 
 
 @pytest.mark.parametrize(("said", "read"), [(True, "yes"), ("manual", "manual"), (None, "")])

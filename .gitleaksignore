@@ -1,0 +1,4 @@
+# Known false positives (gitleaks fingerprints: commit:file:rule:line).
+# A test compared a Hugging Face file's published SHA-256 with a value written
+# out beside the word "tokenizer"; the test no longer writes it out.
+801bdac1b3ecf14d4e68a8bb86531c50fbacd92e:apps/server/tests/test_local_models_hub.py:generic-api-key:203
