@@ -1186,12 +1186,35 @@ def _standing(kind: str, source: Path | None, target: Path, mode: str, settings:
             f"{target} is the folder {words.things} already live in ({source}), under "
             "another name. Nothing was changed."
         )
+    if _inside(target, source):
+        # The kind's files are listed from `source` recursively (the model
+        # library's `library/**/*`, a proxy's whole path), so every catch-up
+        # pass would find the copies it had just written and copy them again,
+        # one folder deeper each time, until the disk or the clock stopped it.
+        raise MoveError(
+            f"{target} is inside the folder {words.things} live in now ({source}). "
+            "Choose a folder outside it. Nothing was changed."
+        )
     if mode == "copy" and away is not None:
         raise MoveError(
             f"The current {words.store} cannot be copied from: {away} Connect it, "
             f"or start the new folder empty and have the {words.things} made again."
         )
     return "move"
+
+
+def _inside(target: Path, source: Path) -> bool:
+    """True when `target` is a folder somewhere below `source`, as written
+    or once links and `..` are followed (the folder need not exist yet: its
+    nearest existing parent is what is resolved)."""
+    if source in target.parents:
+        return True
+    try:
+        real_source = source.resolve()
+        real_target = target.resolve()
+    except OSError:
+        return False
+    return real_target != real_source and real_source in real_target.parents
 
 
 def _mark_incoming(kind: str, target: Path) -> bool:

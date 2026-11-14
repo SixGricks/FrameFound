@@ -1175,6 +1175,40 @@ async def test_making_the_proxies_again_says_plainly_why_it_could_not(
 # --- the model library -----------------------------------------------------------------
 
 
+async def test_a_folder_inside_the_one_a_kind_lives_in_is_not_a_target(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    """The kind's files are listed from its folder recursively, so a copy
+    made inside that folder would be found and copied again on every pass,
+    one level deeper each time. The model library lives outside the data
+    folder from the start, so its very first move can name such a folder."""
+    client, data, nas = site["client"], site["data"], site["nas"]
+    put(tmp_path / "models" / "library" / "google" / "m-1" / ("a" * 40), "w.safetensors", b"w")
+
+    nested = tmp_path / "models" / "library" / "moved"
+    refused = await client.post(
+        "/api/v1/storage/kinds/models/move", json={"target": str(nested), **SURE}
+    )
+
+    assert refused.status_code == 400, refused.text
+    assert "is inside the folder models live in now" in message(refused)
+    assert not nested.exists()
+    assert (await client.get("/api/v1/storage/move")).json() is None  # no move was started
+
+    # The same for a kind already moved to the NAS, and the long way round.
+    put(data, RENDER, b"video")
+    started = await client.post(
+        "/api/v1/storage/kinds/renders/move", json={"target": str(nas / "renders"), **SURE}
+    )
+    await worker_runs(site, started.json()["id"])
+    for target in (nas / "renders" / "deeper", nas / "other" / ".." / "renders" / "deeper"):
+        again = await client.post(
+            "/api/v1/storage/kinds/renders/move", json={"target": str(target), **SURE}
+        )
+        assert again.status_code == 400 and "is inside the folder" in message(again)
+    assert (await kinds(site))["renders"]["path"] == str(nas / "renders")
+
+
 async def test_the_model_library_is_sized_by_its_files_and_can_be_moved(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
